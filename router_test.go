@@ -145,10 +145,8 @@ func TestRouterRegexAnchoring(t *testing.T) {
 		t.Run(target, func(t *testing.T) {
 			t.Parallel()
 
-			ehttptest.KnownBug(t, "S12", func(t testing.TB) {
-				rec := aDo(s, "GET", target)
-				ehttptest.Eq(t, "S12: regex must match the whole segment", rec.Code, 404)
-			})
+			rec := aDo(s, "GET", target)
+			ehttptest.Eq(t, "S12: regex must match the whole segment", rec.Code, 404)
 		})
 	}
 }
@@ -440,9 +438,7 @@ func TestRouterMiddlewareScopeAndOrder(t *testing.T) {
 
 		aDo(s, "GET", "/api/x")
 
-		ehttptest.KnownBug(t, "S1", func(t testing.TB) {
-			ehttptest.Eq(t, "S1: Route(prefix, mw...) applies mw to the group", strings.Join(log, ">"), "global>group>route>handler")
-		})
+		ehttptest.Eq(t, "S1: Route(prefix, mw...) applies mw to the group", strings.Join(log, ">"), "global>group>route>handler")
 	})
 
 	t.Run("middleware that does not call next stops the chain", func(t *testing.T) {
@@ -526,9 +522,7 @@ func TestRouterGroups(t *testing.T) {
 
 		aDo(s, "GET", "/api/x")
 
-		ehttptest.KnownBug(t, "S1", func(t testing.TB) {
-			ehttptest.True(t, "S1", ran, "group middleware never ran")
-		})
+		ehttptest.True(t, "S1", ran, "group middleware never ran")
 	})
 
 	t.Run("S1 nested group middleware runs", func(t *testing.T) {
@@ -542,9 +536,7 @@ func TestRouterGroups(t *testing.T) {
 
 		aDo(s, "GET", "/a/b/x")
 
-		ehttptest.KnownBug(t, "S1", func(t testing.TB) {
-			ehttptest.Eq(t, "S1: nested Route keeps outer and inner mw", strings.Join(log, ">"), "outer>inner")
-		})
+		ehttptest.Eq(t, "S1: nested Route keeps outer and inner mw", strings.Join(log, ">"), "outer>inner")
 	})
 
 	t.Run("S1 auth middleware on a group protects its routes", func(t *testing.T) {
@@ -566,9 +558,7 @@ func TestRouterGroups(t *testing.T) {
 
 		rec := aDo(s, "GET", "/admin/secret")
 
-		ehttptest.KnownBug(t, "S1", func(t testing.TB) {
-			ehttptest.Eq(t, "S1: unauthenticated request must be rejected", rec.Code, 401)
-		})
+		ehttptest.Eq(t, "S1: unauthenticated request must be rejected", rec.Code, 401)
 	})
 
 	t.Run("group middleware does not leak to routes outside the group", func(t *testing.T) {
@@ -608,9 +598,7 @@ func TestRouterGroups(t *testing.T) {
 
 		aDo(s, "GET", "/outside")
 
-		ehttptest.KnownBug(t, "S2", func(t testing.TB) {
-			ehttptest.Eq(t, "S2: sub.Use is scoped to the group", len(log), 0)
-		})
+		ehttptest.Eq(t, "S2: sub.Use is scoped to the group", len(log), 0)
 	})
 
 	t.Run("S2 sub.Use does not run for 404", func(t *testing.T) {
@@ -623,9 +611,7 @@ func TestRouterGroups(t *testing.T) {
 
 		aDo(s, "GET", "/unknown")
 
-		ehttptest.KnownBug(t, "S2", func(t testing.TB) {
-			ehttptest.Eq(t, "S2: sub.Use is scoped to the group", len(log), 0)
-		})
+		ehttptest.Eq(t, "S2: sub.Use is scoped to the group", len(log), 0)
 	})
 
 	t.Run("S2 nested sub.Use does not run outside the nested group", func(t *testing.T) {
@@ -641,8 +627,6 @@ func TestRouterGroups(t *testing.T) {
 
 		aDo(s, "GET", "/a/y")
 
-		ehttptest.KnownBug(t, "S2", func(t testing.TB) {
-			ehttptest.Eq(t, "S2: inner.Use must not affect the outer group", len(log), 0)
-		})
+		ehttptest.Eq(t, "S2: inner.Use must not affect the outer group", len(log), 0)
 	})
 }

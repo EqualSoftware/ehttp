@@ -360,11 +360,9 @@ func TestCSecurityS1GroupAuthBypass(t *testing.T) {
 		srv.Route("/admin", cAuth()).GET("/secret", cSecretHandler)
 		ts := fixtures.Start(t, srv)
 
-		ehttptest.KnownBug(t, "S1", func(t testing.TB) {
-			resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/admin/secret", nil)
-			ehttptest.Eq(t, "S1: group middleware must run", resp.StatusCode, 401)
-			ehttptest.True(t, "S1", !strings.Contains(body, "secret"), "secret body leaked: %q", body)
-		})
+		resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/admin/secret", nil)
+		ehttptest.Eq(t, "S1: group middleware must run", resp.StatusCode, 401)
+		ehttptest.True(t, "S1", !strings.Contains(body, "secret"), "secret body leaked: %q", body)
 	})
 
 	t.Run("nested Route keeps parent and own middleware", func(t *testing.T) {
@@ -374,17 +372,13 @@ func TestCSecurityS1GroupAuthBypass(t *testing.T) {
 		ts := fixtures.Start(t, srv)
 
 		t.Run("inherits the parent auth", func(t *testing.T) {
-			ehttptest.KnownBug(t, "S1", func(t testing.TB) {
-				resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/admin/users/1", nil)
-				ehttptest.Eq(t, "S1: nested group inherits auth", resp.StatusCode, 401)
-			})
+			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/admin/users/1", nil)
+			ehttptest.Eq(t, "S1: nested group inherits auth", resp.StatusCode, 401)
 		})
 
 		t.Run("runs its own middleware", func(t *testing.T) {
-			ehttptest.KnownBug(t, "S1", func(t testing.TB) {
-				resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/admin/users/1", http.Header{"Authorization": {"x"}})
-				ehttptest.Eq(t, "S1: nested group's own middleware runs", resp.Header.Get("X-Nested"), "1")
-			})
+			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/admin/users/1", http.Header{"Authorization": {"x"}})
+			ehttptest.Eq(t, "S1: nested group's own middleware runs", resp.Header.Get("X-Nested"), "1")
 		})
 	})
 
@@ -443,10 +437,8 @@ func TestCSecurityS2GroupUseLeaksToWholeServer(t *testing.T) {
 
 	t.Run("route outside the group", func(t *testing.T) {
 		// public was registered before api.Use, so only 404/405/OPTIONS expose the leak.
-		ehttptest.KnownBug(t, "S2", func(t testing.TB) {
-			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/missing", nil)
-			ehttptest.Eq(t, "S2: group middleware must not run on unrelated 404s", resp.Header.Get("X-Group"), "")
-		})
+		resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/missing", nil)
+		ehttptest.Eq(t, "S2: group middleware must not run on unrelated 404s", resp.Header.Get("X-Group"), "")
 	})
 
 	t.Run("route registered after Use outside the group", func(t *testing.T) {
@@ -456,10 +448,8 @@ func TestCSecurityS2GroupUseLeaksToWholeServer(t *testing.T) {
 		srv.GET("/later", cSecretHandler)
 		ts := fixtures.Start(t, srv)
 
-		ehttptest.KnownBug(t, "S2", func(t testing.TB) {
-			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/later", nil)
-			ehttptest.Eq(t, "S2: sub.Use is scoped to the group", resp.Header.Get("X-Group"), "")
-		})
+		resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/later", nil)
+		ehttptest.Eq(t, "S2: sub.Use is scoped to the group", resp.Header.Get("X-Group"), "")
 	})
 }
 
@@ -658,24 +648,20 @@ func TestCSecurityS12UnanchoredRouteRegex(t *testing.T) {
 
 	for _, bad := range []string{"abc1x", "5;drop", "x9", "9x"} {
 		t.Run("rejects "+bad, func(t *testing.T) {
-			ehttptest.KnownBug(t, "S12", func(t testing.TB) {
-				resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/items/"+bad, nil)
-				ehttptest.Eq(t, "S12: regex param must match the whole segment ("+body+")", resp.StatusCode, 404)
-			})
+			resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/items/"+bad, nil)
+			ehttptest.Eq(t, "S12: regex param must match the whole segment ("+body+")", resp.StatusCode, 404)
 		})
 	}
 
 	t.Run("invalid regex fails at registration", func(t *testing.T) {
-		ehttptest.KnownBug(t, "S12", func(t testing.TB) {
-			panicked := func() (p bool) {
-				defer func() { p = recover() != nil }()
-				ehttp.NewServer().GET("/x/:id|[0-9", func(res *ehttp.ResponseWriter, req *ehttp.Request) {})
+		panicked := func() (p bool) {
+			defer func() { p = recover() != nil }()
+			ehttp.NewServer().GET("/x/:id|[0-9", func(res *ehttp.ResponseWriter, req *ehttp.Request) {})
 
-				return false
-			}()
+			return false
+		}()
 
-			ehttptest.True(t, "S12 + principle 5 (fail fast at boot)", panicked, "invalid regexp registered without panic")
-		})
+		ehttptest.True(t, "S12 + principle 5 (fail fast at boot)", panicked, "invalid regexp registered without panic")
 	})
 }
 

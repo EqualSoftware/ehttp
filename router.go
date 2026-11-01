@@ -43,44 +43,31 @@ type route struct {
 	method      string
 	pattern     string
 	segments    []string
+	regexes     []*regexp.Regexp
 	handle      HandlerFunc
 	middlewares []MiddlewareHandlerFunc
 }
 
 func (r *Router) Use(m ...MiddlewareHandlerFunc) {
-	if r.parent != nil {
-		r.parent.Use(m...)
-		return
-	}
-
 	r.middlewares = append(r.middlewares, m...)
 }
 
 func (r *Router) Route(prefix string, m ...MiddlewareHandlerFunc) *Router {
-	if r.parent != nil {
-		return r.parent.Route(r.prefix+prefix, m...)
-	}
-
-	next_middlewares := make([]MiddlewareHandlerFunc, 0, len(r.middlewares)+len(m))
-
-	if len(r.middlewares) > 0 {
-		next_middlewares = append(next_middlewares, r.middlewares...)
-	}
-
-	if len(m) > 0 {
-		next_middlewares = append(next_middlewares, m...)
-	}
-
 	return &Router{
 		parent:      r,
 		prefix:      prefix,
-		middlewares: next_middlewares,
+		middlewares: slices.Clone(m),
 	}
 }
 
+// Handle registers a route. A group passes its own middlewares to its
+// parent, so the middlewares of the outer group run first.
 func (r *Router) Handle(method, pattern string, h HandlerFunc, m ...MiddlewareHandlerFunc) {
 	if r.parent != nil {
-		r.parent.Handle(method, r.prefix+pattern, h, m...)
+		all := make([]MiddlewareHandlerFunc, 0, len(r.middlewares)+len(m))
+		all = append(all, r.middlewares...)
+		all = append(all, m...)
+		r.parent.Handle(method, r.prefix+pattern, h, all...)
 		return
 	}
 
@@ -102,9 +89,38 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc, m ...MiddlewareHa
 		method:      strings.ToUpper(method),
 		pattern:     r.prefix + pattern,
 		segments:    segments,
+		regexes:     compileSegments(pattern, segments),
 		handle:      h,
 		middlewares: m,
 	})
+}
+
+// compileSegments compiles the regex of each ":name|regex" segment one time.
+// The regex is anchored. An invalid regex panics at registration.
+func compileSegments(pattern string, segments []string) []*regexp.Regexp {
+	regexes := make([]*regexp.Regexp, len(segments))
+
+	for i, segment := range segments {
+		if !strings.HasPrefix(segment, ":") {
+			continue
+		}
+
+		_, expr, ok := strings.Cut(segment[1:], "|")
+		if !ok {
+			continue
+		}
+
+		// Compile expr alone first: an unbalanced ")" must not escape the group.
+		if _, err := regexp.Compile(expr); err != nil {
+			panic("ehttp: invalid route regex " + strconv.Quote(expr) + " in pattern " + strconv.Quote(pattern) + ": " + err.Error())
+		}
+
+		re := regexp.MustCompile("^(?:" + expr + ")$")
+
+		regexes[i] = re
+	}
+
+	return regexes
 }
 
 func (r *Router) GET(pattern string, h HandlerFunc, m ...MiddlewareHandlerFunc) {
@@ -218,10 +234,10 @@ func (route *route) match(req *Request, segments []string) bool {
 		}
 
 		if strings.HasPrefix(route_segment, ":") {
-			key, regex_pattern, contains_regex := strings.Cut(strings.TrimPrefix(route_segment, ":"), "|")
+			key, _, contains_regex := strings.Cut(strings.TrimPrefix(route_segment, ":"), "|")
 
 			if contains_regex {
-				if regexp.MustCompile(regex_pattern).MatchString(segments[i]) {
+				if route.regexes[i].MatchString(segments[i]) {
 					req.Request.SetPathValue(key, segments[i])
 					continue
 				}

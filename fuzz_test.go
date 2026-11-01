@@ -48,7 +48,8 @@ func dNewFuzzRouter(got *dMatch) *Router {
 	r.GET("/static/x", record())
 	r.GET("/users/:id", record("id"))
 	r.GET("/a/:x/b/:y", record("x", "y"))
-	r.GET("/v/:n|^[0-9]+$", record("n"))
+	r.GET("/v/:n|[0-9]+", record("n"))
+	r.GET("/w/:m|a|b", record("m"))
 	r.GET("/files/...", record("..."))
 	return r
 }
@@ -78,7 +79,9 @@ func dExpectedRoute(escaped string) string {
 	case n == 5 && segs[1] == "a" && segs[3] == "b" && nonEmpty(2) && nonEmpty(4):
 		return "/a/:x/b/:y"
 	case n == 3 && segs[1] == "v" && dDigitsRe.MatchString(segs[2]):
-		return "/v/:n|^[0-9]+$"
+		return "/v/:n|[0-9]+"
+	case n == 3 && segs[1] == "w" && (segs[2] == "a" || segs[2] == "b"):
+		return "/w/:m|a|b"
 	case n >= 3 && segs[1] == "files":
 		return "/files/..."
 	}
@@ -89,7 +92,7 @@ func dExpectedRoute(escaped string) string {
 func FuzzRouterMatch(f *testing.F) {
 	for _, p := range []string{
 		"", "/", "//", "/users/1", "/users/", "/users//", "/users", "/users/1/2",
-		"/a/1/b/2", "/a//b/2", "/a/1/b/", "/v/123", "/v/12a", "/v/", "/files/a/b",
+		"/a/1/b/2", "/a//b/2", "/a/1/b/", "/v/123", "/v/12a", "/v/", "/w/a", "/w/b", "/w/ab", "/w/c", "/files/a/b",
 		"/files/", "/files", "/files/..", "/files/%2e%2e/x", "/users/%00", "/users/a b",
 		"/users/\xff", "/static/x/", "/STATIC/x", "/users/%2e%2e", "/users/a%2Fb",
 		"/files/%2F", "/files/a%2Fb/c", "/v/%30", "/users/%00", "/a/%2e/b/%2e%2e",
@@ -154,9 +157,13 @@ func FuzzRouterMatch(f *testing.F) {
 		}
 
 		// invariant 3: the anchored regex route only receives digits (S12).
-		// The regex is "^[0-9]+$" in the fixture, so it is anchored by hand.
+		// The fixture regexes are not anchored by hand: the router anchors them.
 		if n, ok := got.params["n"]; ok && !regexp.MustCompile(`^\d+$`).MatchString(n) {
 			t.Errorf("[S12] /v/:n got %q, not digits", n)
+		}
+
+		if m, ok := got.params["m"]; ok && m != "a" && m != "b" {
+			t.Errorf("[S12] /w/:m got %q, not a or b", m)
 		}
 	})
 }
@@ -605,23 +612,27 @@ func TestFuzzKnownBugs(t *testing.T) {
 
 	t.Run("S12 route regex is not anchored", func(t *testing.T) {
 		t.Parallel()
-		ehttptest.KnownBug(t, "S12", func(t testing.TB) {
-			status := 0
-			r := &Router{cors: &CorsOptions{}}
-			r.GET("/i/:id|[0-9]+", func(res *ResponseWriter, _ *Request) { res.SendStatus(200) })
-			status = ehttptest.Do(r, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/i/abc1", http.NoBody)).Code
-			ehttptest.Eq(t, "S12", status, 404)
-		})
+		status := 0
+		r := &Router{cors: &CorsOptions{}}
+		r.GET("/i/:id|[0-9]+", func(res *ResponseWriter, _ *Request) { res.SendStatus(200) })
+		status = ehttptest.Do(r, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/i/abc1", http.NoBody)).Code
+		ehttptest.Eq(t, "S12", status, 404)
 	})
 
-	t.Run("S12 invalid route regex panics at request time", func(t *testing.T) {
+	t.Run("S12 unbalanced paren does not escape the anchor group", func(t *testing.T) {
 		t.Parallel()
-		ehttptest.KnownBug(t, "S12", func(t testing.TB) {
-			defer func() { _ = recover() }()
-			r := &Router{cors: &CorsOptions{}}
-			r.GET("/i/:id|[", func(*ResponseWriter, *Request) {}) // must panic here (boot)
-			ehttptest.True(t, "S12", false, "Handle accepted an invalid regex; it panics later, per request")
-		})
+		defer func() { _ = recover() }()
+		r := &Router{cors: &CorsOptions{}}
+		r.GET("/i/:id|[0-9]+)|(x", func(*ResponseWriter, *Request) {}) // must panic here (boot)
+		ehttptest.True(t, "S12", false, "Handle accepted an unbalanced regex")
+	})
+
+	t.Run("S12 invalid route regex panics at registration", func(t *testing.T) {
+		t.Parallel()
+		defer func() { _ = recover() }()
+		r := &Router{cors: &CorsOptions{}}
+		r.GET("/i/:id|[", func(*ResponseWriter, *Request) {}) // must panic here (boot)
+		ehttptest.True(t, "S12", false, "Handle accepted an invalid regex; it panics later, per request")
 	})
 
 	t.Run("S3 CORS foreign origin accepted without Sec-Fetch-Site", func(t *testing.T) {
