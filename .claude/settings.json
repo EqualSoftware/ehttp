@@ -1,6 +1,16 @@
 {
-  "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "enabledPlugins": {
-    "gopls-lsp@claude-plugins-official": true
-  }
+    "gopls-lsp@claude-plugins-official": true,
+    "dx-agents@claude-orchestration": true
+  },
+  "extraKnownMarketplaces": {
+    "claude-orchestration": {
+      "source": {
+        "source": "github",
+        "repo": "EqualSoftware/claude-orchestration",
+        "autoUpdate": true
+      }
+    }
+  },
+  "agent": "dx-agents:architect"
 }
