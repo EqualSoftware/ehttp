@@ -467,56 +467,50 @@ func TestClientBaseURLJoin(t *testing.T) {
 
 	for _, target := range []string{"/../admin", "/x/%2e%2e/%2e%2e/admin"} {
 		t.Run("stays under the prefix "+target, func(t *testing.T) {
-			ehttptest.KnownBug(t, "S14", func(t testing.TB) {
-				uri, err := do(target)
+			uri, err := do(target)
 
-				// (a) the client refuses before it sends: no request seen and an
-				// error that is not a network failure. A dial or transport error
-				// is not a refusal.
-				if uri == "" {
-					var opErr *net.OpError
+			// (a) the client refuses before it sends: no request seen and an
+			// error that is not a network failure. A dial or transport error
+			// is not a refusal.
+			if uri == "" {
+				var opErr *net.OpError
 
-					ehttptest.True(t, "RFC 3986 §5.2.4 (refuse before sending)", err != nil && !errors.As(err, &opErr),
-						"no request reached the server and err = %v", err)
+				ehttptest.True(t, "RFC 3986 §5.2.4 (refuse before sending)", err != nil && !errors.As(err, &opErr),
+					"no request reached the server and err = %v", err)
 
-					return
-				}
+				return
+			}
 
-				// (b) the server saw a path that stays under the prefix.
+			// (b) the server saw a path that stays under the prefix.
 
-				p, _, _ := strings.Cut(uri, "?")
-				// a server resolves dot segments before routing (RFC 3986 §5.2.4).
-				resolved := path.Clean(strings.ReplaceAll(strings.ToLower(p), "%2e", "."))
+			p, _, _ := strings.Cut(uri, "?")
+			// a server resolves dot segments before routing (RFC 3986 §5.2.4).
+			resolved := path.Clean(strings.ReplaceAll(strings.ToLower(p), "%2e", "."))
 
-				ehttptest.True(t, "RFC 3986 §5.2.4 (a base URL is a prefix)", strings.HasPrefix(resolved, "/api/v1/"),
-					"server saw %q, which resolves to %q", uri, resolved)
-			})
+			ehttptest.True(t, "RFC 3986 §5.2.4 (a base URL is a prefix)", strings.HasPrefix(resolved, "/api/v1/"),
+				"server saw %q, which resolves to %q", uri, resolved)
 		})
 	}
 
 	t.Run("keeps an encoded slash", func(t *testing.T) {
-		ehttptest.KnownBug(t, "S14", func(t testing.TB) {
-			uri, err := do("/files/a%2Fb")
-			if err != nil {
-				t.Fatal(err)
-			}
+		uri, err := do("/files/a%2Fb")
+		if err != nil {
+			t.Fatal(err)
+		}
 
-			ehttptest.Eq(t, "RFC 3986 §2.2 (%2F is data, not a separator)", uri, "/api/v1/files/a%2Fb")
-		})
+		ehttptest.Eq(t, "RFC 3986 §2.2 (%2F is data, not a separator)", uri, "/api/v1/files/a%2Fb")
 	})
 
 	t.Run("keeps repeated query keys", func(t *testing.T) {
-		ehttptest.KnownBug(t, "S14", func(t testing.TB) {
-			uri, err := do("/q?a=1&a=2")
-			if err != nil {
-				t.Fatal(err)
-			}
+		uri, err := do("/q?a=1&a=2")
+		if err != nil {
+			t.Fatal(err)
+		}
 
-			_, query, _ := strings.Cut(uri, "?")
-			vals, _ := url.ParseQuery(query)
+		_, query, _ := strings.Cut(uri, "?")
+		vals, _ := url.ParseQuery(query)
 
-			ehttptest.Eq(t, "RFC 3986 §3.4 (the query is kept whole)", strings.Join(vals["a"], ","), "1,2")
-		})
+		ehttptest.Eq(t, "RFC 3986 §3.4 (the query is kept whole)", strings.Join(vals["a"], ","), "1,2")
 	})
 }
 

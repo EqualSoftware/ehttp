@@ -150,14 +150,7 @@ func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 	}
 
 	if client.baseUrl != nil {
-		req_url = client.baseUrl.JoinPath(cfg.url.Path)
-		query := req_url.Query()
-
-		for key, value := range cfg.url.Query() {
-			query.Add(key, value[len(value)-1])
-		}
-
-		req_url.RawQuery = query.Encode()
+		req_url = joinBaseURL(client.baseUrl, cfg.url)
 	} else {
 		req_url = cfg.url
 	}
@@ -253,4 +246,66 @@ func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 	)
 
 	return result, nil
+}
+
+// joinBaseURL puts the path of target under the path of base. The path stays
+// escaped, so %2F is data and not a separator. Dot segments are resolved
+// inside target and cannot leave the base prefix (RFC 3986 §5.2.4): a path
+// that tries to leave it is clamped to the prefix. The query keeps every value
+// of the base and of target.
+func joinBaseURL(base, target *url.URL) *url.URL {
+	escaped := base.EscapedPath()
+	if target.EscapedPath() != "" {
+		escaped = strings.TrimRight(escaped, "/") + cleanEscapedPath(target.EscapedPath())
+	}
+
+	path, err := url.PathUnescape(escaped)
+	if err != nil {
+		return base
+	}
+
+	joined := *base
+	joined.Path = path
+	joined.RawPath = escaped
+
+	query := base.Query()
+	for key, values := range target.Query() {
+		for _, value := range values {
+			query.Add(key, value)
+		}
+	}
+
+	joined.RawQuery = query.Encode()
+
+	return &joined
+}
+
+// cleanEscapedPath removes the dot segments of an escaped path and gives it a
+// leading slash. A ".." at the root is dropped. A trailing slash is kept.
+func cleanEscapedPath(p string) string {
+	segments := strings.Split(p, "/")
+	out := make([]string, 0, len(segments))
+
+	for i, segment := range segments {
+		last := i == len(segments)-1
+
+		switch strings.ToLower(segment) {
+		case "", ".", "%2e":
+			if last {
+				out = append(out, "")
+			}
+		case "..", ".%2e", "%2e.", "%2e%2e":
+			if len(out) > 0 {
+				out = out[:len(out)-1]
+			}
+
+			if last {
+				out = append(out, "")
+			}
+		default:
+			out = append(out, segment)
+		}
+	}
+
+	return "/" + strings.Join(out, "/")
 }
