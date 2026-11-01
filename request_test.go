@@ -95,7 +95,8 @@ func TestRequestAccepts(t *testing.T) {
 		{"prefix of the value is not a match", "text/html", "text/htmlx", false, "C8", "RFC 9110 §12.5.1"},
 		{"dot is not a regex wildcard", "text/h.ml", "text/html", false, "C8", "RFC 9110 §12.5.1"},
 		{"alternation is not a regex operator", "text/x|y", "application/y", false, "C8", "RFC 9110 §12.5.1"},
-		{"malformed Accept", "garbage", "text/html", false, "", "RFC 9110 §12.5.1 (unusable header)"},
+		{"wildcard with q=0 means not acceptable", "*/*;q=0", "text/html", false, "C8", "RFC 9110 §12.4.2"},
+		{"q=0 type excludes it even with a wildcard member", "text/html;q=0, */*", "text/html", false, "C8", "RFC 9110 §12.5.1"},
 		{"malformed value", "text/html", "garbage", false, "", "RFC 9110 §8.3.1"},
 	}
 
@@ -114,6 +115,38 @@ func TestRequestAccepts(t *testing.T) {
 
 			if tt.bug != "" {
 				ehttptest.KnownBug(t, tt.bug, check)
+				return
+			}
+
+			check(t)
+		})
+	}
+}
+
+// Author decision (C8): an invalid Accept header is answered with 406
+// (RFC 9110 §12.5.1 lets a server do that), so Accepts is false for every value.
+func TestRequestAcceptsMalformedHeaderIsRefused(t *testing.T) {
+	t.Parallel()
+
+	values := []string{"text/html", "application/json", "garbage"}
+
+	for _, accept := range []string{"garbage", "/", "text/", ";;;", "*/*, garbage", "*/*,("} {
+		t.Run(accept, func(t *testing.T) {
+			t.Parallel()
+
+			check := func(t testing.TB) {
+				req := aReq("GET", "/", nil)
+				req.Request.Header.Set(HeaderAccept, accept)
+
+				for _, v := range values {
+					ehttptest.Eq(t, "RFC 9110 §12.5.1 + C8 (invalid Accept is refused with 406) value "+v, req.Accepts(v), false)
+				}
+			}
+
+			// "garbage" is used as an unanchored regex today, so it matches
+			// the value "garbage" (C8).
+			if accept == "garbage" || strings.HasPrefix(accept, "*/*") {
+				ehttptest.KnownBug(t, "C8", check)
 				return
 			}
 

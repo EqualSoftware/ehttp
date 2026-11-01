@@ -73,7 +73,7 @@ func TestBodyLimitContract(t *testing.T) {
 
 		ehttptest.Eq(t, "RFC 9110 §15.5.14", rec.Code, 413)
 		ehttptest.True(t, "BodyLimit contract", !called, "next was called for an oversized request")
-		ehttptest.Eq(t, "C5 (413 without reading all)", cr.n, 0)
+		ehttptest.Eq(t, "BodyLimit contract + RFC 9110 §15.5.14 (reject on Content-Length, body unread)", cr.n, 0)
 	})
 
 	t.Run("no body passes through", func(t *testing.T) {
@@ -85,23 +85,31 @@ func TestBodyLimitContract(t *testing.T) {
 		ehttptest.Eq(t, "BodyLimit contract", rec.Body.String(), "ok")
 	})
 
-	t.Run("unknown length is capped while reading", func(t *testing.T) {
+	// For a body of unknown length (chunked) the middleware cannot reject up
+	// front. Its contract: the handler's read fails with ErrRequestBodyTooLarge
+	// and stops at the limit. The 413 is then the handler's job: it propagates
+	// the error (RFC 9110 §15.5.14). BodyLimit does not write 413 itself here.
+	t.Run("unknown length: handler read fails with ErrRequestBodyTooLarge and stops at the limit", func(t *testing.T) {
 		t.Parallel()
 
 		var readErr error
-		var n int
+		src := &bCountingReader{r: strings.NewReader(strings.Repeat("a", 100))}
 		h := fixtures.PostHandler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
-			b, err := io.ReadAll(req.Request.Body)
-			readErr, n = err, len(b)
+			_, readErr = req.Body()
+			if readErr != nil {
+				res.SendStatus(413) // a handler that propagates the error
+				return
+			}
+
 			res.SendStatus(200)
 		}, middleware.BodyLimit("10"))
 
-		ehttptest.Do(h, bPost(io.NopCloser(strings.NewReader(strings.Repeat("a", 100))), -1))
+		rec := ehttptest.Do(h, bPost(io.NopCloser(src), -1))
 
-		var mbe *http.MaxBytesError
-		ehttptest.True(t, "net/http MaxBytesReader", readErr != nil && errorsAs(readErr, &mbe),
-			"read error = %v, want *http.MaxBytesError", readErr)
-		ehttptest.True(t, "net/http MaxBytesReader", n <= 10, "read %d bytes, limit is 10", n)
+		ehttptest.True(t, "ErrRequestBodyTooLarge contract", errors.Is(readErr, ehttp.ErrRequestBodyTooLarge),
+			"read error = %v, want ErrRequestBodyTooLarge", readErr)
+		ehttptest.True(t, "net/http MaxBytesReader (reads at most limit+1)", src.n <= 11, "source read %d bytes, limit is 10", src.n)
+		ehttptest.Eq(t, "RFC 9110 §15.5.14 (handler propagates the error)", rec.Code, 413)
 	})
 
 	t.Run("body within limit is readable", func(t *testing.T) {
@@ -153,5 +161,3 @@ func (c *bCountingReader) Read(p []byte) (int, error) {
 
 	return n, err
 }
-
-func errorsAs(err error, target any) bool { return errors.As(err, target) }

@@ -10,10 +10,14 @@
 package ehttp
 
 import (
+	"bufio"
+	"bytes"
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -49,12 +53,46 @@ func dNewFuzzRouter(got *dMatch) *Router {
 	return r
 }
 
+var dDigitsRe = regexp.MustCompile(`^\d+$`)
+
+// dExpectedRoute names the fixture route that an escaped path selects.
+// It models the documented rules directly: one trailing slash is ignored, a
+// :param needs a non-empty segment, "..." needs at least one segment (it may
+// be empty), and a regex param must match the whole segment.
+func dExpectedRoute(escaped string) string {
+	segs := strings.Split(escaped, "/")
+	if segs[len(segs)-1] == "" {
+		segs = segs[:len(segs)-1]
+	}
+
+	n := len(segs)
+	nonEmpty := func(i int) bool { return segs[i] != "" }
+
+	switch {
+	case n == 1 && segs[0] == "":
+		return "/"
+	case n == 3 && segs[1] == "static" && segs[2] == "x":
+		return "/static/x"
+	case n == 3 && segs[1] == "users" && nonEmpty(2):
+		return "/users/:id"
+	case n == 5 && segs[1] == "a" && segs[3] == "b" && nonEmpty(2) && nonEmpty(4):
+		return "/a/:x/b/:y"
+	case n == 3 && segs[1] == "v" && dDigitsRe.MatchString(segs[2]):
+		return "/v/:n|^[0-9]+$"
+	case n >= 3 && segs[1] == "files":
+		return "/files/..."
+	}
+
+	return ""
+}
+
 func FuzzRouterMatch(f *testing.F) {
 	for _, p := range []string{
 		"", "/", "//", "/users/1", "/users/", "/users//", "/users", "/users/1/2",
 		"/a/1/b/2", "/a//b/2", "/a/1/b/", "/v/123", "/v/12a", "/v/", "/files/a/b",
 		"/files/", "/files", "/files/..", "/files/%2e%2e/x", "/users/%00", "/users/a b",
-		"/users/\xff", "/static/x/", "/STATIC/x",
+		"/users/\xff", "/static/x/", "/STATIC/x", "/users/%2e%2e", "/users/a%2Fb",
+		"/files/%2F", "/files/a%2Fb/c", "/v/%30", "/users/%00", "/a/%2e/b/%2e%2e",
 	} {
 		f.Add(p)
 	}
@@ -62,13 +100,25 @@ func FuzzRouterMatch(f *testing.F) {
 	f.Fuzz(func(t *testing.T, path string) {
 		var got dMatch
 		r := dNewFuzzRouter(&got)
-		req := &http.Request{
-			Method: http.MethodGet,
-			URL:    &url.URL{Path: path},
-			Header: http.Header{},
+
+		// Parse the target as a server does, so RawPath is set and %2e%2e,
+		// %2F and %00 reach the router as on the wire (RFC 9112 §3.2).
+		req, err := http.ReadRequest(bufio.NewReader(strings.NewReader("GET " + path + " HTTP/1.1\r\nHost: x\r\n\r\n")))
+		if err != nil {
+			t.Skip() // not a request target a server would accept
 		}
+
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, req) // invariant 1: no panic
+
+		// invariant 4: the matched route is the one that the segment rules
+		// give (README routing), by an oracle independent of route.match.
+		// A path with percent-encoding is the C10 domain: the router may decode
+		// segments before it matches (RFC 3986 §2.1), so the oracle on the
+		// escaped form does not apply. TestRouterParamDecoding covers it.
+		if want := dExpectedRoute(req.URL.EscapedPath()); !strings.Contains(req.URL.EscapedPath(), "%") && got.pattern != want {
+			t.Errorf("[README routing] %q routed to %q, want %q", req.URL.EscapedPath(), got.pattern, want)
+		}
 
 		if got.pattern == "" {
 			return
@@ -76,7 +126,13 @@ func FuzzRouterMatch(f *testing.F) {
 
 		// invariant 2: a matched parameter is always a segment of the path
 		// the router saw (RFC 3986 §3.3), never invented or merged.
-		escaped := (&Request{Request: req}).Path()
+		// With a "%" in the path the value may be raw or decoded (C10, RFC 3986
+		// §2.1, §2.2); only check the values when no "%" is present.
+		escaped := req.URL.EscapedPath()
+		if strings.Contains(escaped, "%") {
+			return
+		}
+
 		segs := strings.Split(escaped, "/")
 		for k, v := range got.params {
 			if k == "..." {
@@ -107,6 +163,57 @@ func FuzzRouterMatch(f *testing.F) {
 
 // ---------------------------------------------------------------- range
 
+// dRangeSimple matches a valid single byte range: a-b, a- or -n (RFC 9110 §14.1.2).
+var dRangeSimple = regexp.MustCompile(`^bytes=(?:(\d{1,9})-(\d{0,9})|-(\d{1,9}))$`)
+
+// dRangeClass reports whether header is a valid single range for the oracle
+// (a <= b, n > 0), and whether it is in the C2 domain, where fileParseRange
+// differs from http.ServeContent today: open ended, suffix, or an end of 0.
+func dRangeClass(header string) (valid, known bool) {
+	m := dRangeSimple.FindStringSubmatch(header)
+	if m == nil {
+		return false, false
+	}
+
+	if m[3] != "" { // bytes=-n
+		n, _ := strconv.ParseInt(m[3], 10, 64)
+		return n > 0, true
+	}
+
+	if m[2] == "" { // bytes=a-
+		return true, true
+	}
+
+	a, _ := strconv.ParseInt(m[1], 10, 64)
+	b, _ := strconv.ParseInt(m[2], 10, 64)
+
+	return a <= b, b == 0
+}
+
+// dServeContentRange is the oracle: what http.ServeContent answers for header
+// on a body of size bytes. ok is false when it ignores the range (status 200).
+func dServeContentRange(header string, size int64) (start, end int64, code int, ok bool) {
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
+	req.Header.Set("Range", header)
+
+	rec := httptest.NewRecorder()
+	http.ServeContent(rec, req, "", time.Time{}, bytes.NewReader(make([]byte, size)))
+
+	switch rec.Code {
+	case http.StatusPartialContent:
+		var total int64
+		if _, err := fmt.Sscanf(rec.Header().Get("Content-Range"), "bytes %d-%d/%d", &start, &end, &total); err != nil {
+			return 0, 0, 0, false
+		}
+
+		return start, end, rec.Code, true
+	case http.StatusRequestedRangeNotSatisfiable:
+		return 0, 0, rec.Code, true
+	}
+
+	return 0, 0, rec.Code, false
+}
+
 func FuzzParseRange(f *testing.F) {
 	for _, h := range []string{
 		"bytes=0-0", "bytes=0-", "bytes=-5", "bytes=5-2", "bytes=0-99", "bytes=9-9",
@@ -116,6 +223,8 @@ func FuzzParseRange(f *testing.F) {
 	} {
 		f.Add(h, int64(10))
 	}
+	f.Add("bytes=2-5", int64(10))
+	f.Add("bytes=0-99", int64(10))
 	f.Add("bytes=0-0", int64(0))
 	f.Add("bytes=0-0", int64(1))
 	f.Add("bytes=0-5", int64(-1))
@@ -137,6 +246,19 @@ func FuzzParseRange(f *testing.F) {
 		default:
 			t.Errorf("status %d is neither 206 nor 416", code)
 		}
+
+		// invariant 3: for a valid single range outside the C2 domain, the
+		// answer is exactly the one of http.ServeContent (RFC 9110 §14.1.2).
+		// The oracle is unreliable for an empty body, so size starts at 1.
+		valid, known := dRangeClass(header)
+		if !valid || known || size < 1 || size > 1<<20 {
+			return
+		}
+
+		ws, we, wcode, ok := dServeContentRange(header, size)
+		if ok && [3]int64{s, e, int64(code)} != [3]int64{ws, we, int64(wcode)} {
+			t.Errorf("[RFC 9110 §14.1.2] %q size=%d: got %d-%d/%d, ServeContent %d-%d/%d", header, size, s, e, code, ws, we, wcode)
+		}
 	})
 }
 
@@ -153,13 +275,73 @@ func dAcceptsKnown(accept, value string) bool {
 		strings.Contains(strings.ToLower(accept), strings.ToLower(value))
 }
 
+// dIsToken reports whether s is a token: one or more tchar (RFC 9110 §5.6.2).
+func dIsToken(s string) bool {
+	if s == "" {
+		return false
+	}
+
+	for i := range len(s) {
+		c := s[i]
+		if c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0 {
+			continue
+		}
+
+		return false
+	}
+
+	return true
+}
+
+// dIsMediaRange reports whether m is "type/subtype", "type/*" or "*/*" with
+// token parts (RFC 9110 §12.5.1), without parameters.
+func dIsMediaRange(m string) bool {
+	typ, sub, ok := strings.Cut(m, "/")
+	if !ok {
+		return false
+	}
+
+	if typ == "*" {
+		return sub == "*"
+	}
+
+	return dIsToken(typ) && (sub == "*" || dIsToken(sub))
+}
+
+// dPlainWildcard reports whether accept is a list that has a "*/*" member, no
+// ";" anywhere (so no q value), and only valid media ranges as members (empty
+// members are ignored, RFC 9110 §5.6.1). An invalid member makes the field
+// invalid, and C8 answers it with 406, so the invariant does not apply.
+func dPlainWildcard(accept string) bool {
+	if strings.Contains(accept, ";") {
+		return false
+	}
+
+	wildcard := false
+
+	for _, m := range strings.Split(accept, ",") {
+		m = strings.Trim(m, " \t")
+		if m == "" {
+			continue
+		}
+
+		if !dIsMediaRange(m) {
+			return false
+		}
+
+		wildcard = wildcard || m == "*/*"
+	}
+
+	return wildcard
+}
+
 func FuzzAccepts(f *testing.F) {
 	for _, s := range [][2]string{
 		{"", "text/html"}, {"*/*", "text/html"}, {"text/html", "text/html"},
 		{"text/html", "application/json"}, {"text/*", "text/html"},
 		{"application/json, text/plain", "text/plain"}, {"text/html;q=0", "text/html"},
 		{"application/vnd.api+json", "application/vnd.api+json"},
-		{"(", "text/html"}, {"text/html", "("}, {"text/html;q=", "text/html"},
+		{"*/*,(", "text/html"}, {"*/*;q=0", "text/html"}, {"text/html;q=0, */*", "text/html"}, {"(", "text/html"}, {"text/html", "("}, {"text/html;q=", "text/html"},
 	} {
 		f.Add(s[0], s[1])
 	}
@@ -172,9 +354,11 @@ func FuzzAccepts(f *testing.F) {
 
 		got := req.Accepts(value) // invariant 1: no panic
 
-		// invariant 2 (RFC 9110 §12.5.1): an empty Accept or one with */*
-		// accepts every media type.
-		if (accept == "" || strings.Contains(accept, "*/*")) && !got {
+		// invariant 2 (RFC 9110 §12.5.1): an empty Accept, or a list that has
+		// a plain */* member and no parameters at all, accepts every media
+		// type. A parameter can be q=0, which excludes the type (§12.4.2), so
+		// "*/*;q=0" and "text/html;q=0, */*" are outside this invariant.
+		if (accept == "" || dPlainWildcard(accept)) && !got {
 			t.Errorf("[RFC 9110 §12.5.1] Accept %q must accept %q", accept, value)
 		}
 
@@ -265,16 +449,19 @@ func FuzzCorsOrigin(f *testing.F) {
 		opts := &CorsOptions{Origin: []string{allowed}}
 
 		got := corsAcceptOrigin(req, opts) // invariant 1: no panic
-		list := []string{allowed}
 
+		// With an empty Sec-Fetch-Site production fails open (S3), so that
+		// domain has no oracle here; the KnownBug rows below cover it.
 		switch {
 		case allowed == "*":
 			ehttptest.True(t, "Fetch §3.2.3", got, "* allowlist must accept %q", origin)
 		case site == "same-origin" || site == "none":
 			ehttptest.True(t, "Fetch Metadata §2.1", got, "Sec-Fetch-Site %q is not a cross-origin request", site)
 		case site == "cross-site" || site == "same-site" || (site != "" && site != "same-origin" && site != "none"):
-			// invariant: a cross-origin request passes iff it is on the allowlist.
-			ehttptest.Eq(t, "Fetch §3.2.5", got, corsMatch(list, origin))
+			// invariant: a cross-origin request passes iff its origin equals the
+			// allowlist entry exactly (case-sensitive, no normalisation). The
+			// oracle is a plain string compare, not production's corsMatch.
+			ehttptest.Eq(t, "Fetch §3.2.5", got, origin != "" && origin == allowed)
 		}
 	})
 }
@@ -339,6 +526,41 @@ func TestFuzzKnownBugs(t *testing.T) {
 			})
 		})
 	}
+
+	t.Run("C2 fileParseRange equals http.ServeContent", func(t *testing.T) {
+		t.Parallel()
+
+		headers := []string{
+			"bytes=0-0", "bytes=2-5", "bytes=0-99", "bytes=9-9", "bytes=10-10", "bytes=0-9",
+			"bytes=0-", "bytes=5-", "bytes=9-", "bytes=-1", "bytes=-3", "bytes=-99",
+		}
+
+		for _, h := range headers {
+			valid, known := dRangeClass(h)
+			if !valid {
+				t.Fatalf("test header %q is not a valid single range", h)
+			}
+
+			check := func(t testing.TB) {
+				ws, we, wcode, ok := dServeContentRange(h, 10)
+				if !ok {
+					t.Fatalf("oracle ignored %q", h)
+				}
+
+				s, e, code := fileParseRange(h, 10)
+				ehttptest.Eq(t, "RFC 9110 §14.1.2 (oracle: http.ServeContent) "+h, [3]int64{s, e, int64(code)}, [3]int64{ws, we, int64(wcode)})
+			}
+
+			t.Run(h, func(t *testing.T) {
+				if known {
+					ehttptest.KnownBug(t, "C2", check)
+					return
+				}
+
+				check(t)
+			})
+		}
+	})
 
 	const inmEtag = `W/"1-00000001"`
 	for _, inm := range []string{"*", `"x", ` + inmEtag, strings.TrimPrefix(inmEtag, "W/")} {
@@ -410,9 +632,21 @@ func TestFuzzKnownBugs(t *testing.T) {
 		})
 	})
 
-	t.Run("ND-1 CORS allowlist ignored without Sec-Fetch-Site", func(t *testing.T) {
+	t.Run("S3 CORS foreign origin accepted without Sec-Fetch-Site", func(t *testing.T) {
 		t.Parallel()
-		ehttptest.KnownBug(t, "ND-1", func(t testing.TB) {
+		ehttptest.KnownBug(t, "S3", func(t testing.TB) {
+			// The origin host equals the Host header, but the origin is not on
+			// the allowlist: S3 allows an origin iff it is in the allowlist.
+			req := &Request{Request: &http.Request{Header: http.Header{}, Host: "evil.example"}}
+			req.Request.Header.Set(HeaderOrigin, "http://evil.example")
+			opts := &CorsOptions{Origin: []string{"http://app.example"}}
+			ehttptest.Eq(t, "Fetch §3.2.5 + S3 (allowed iff in the allowlist)", corsAcceptOrigin(req, opts), false)
+		})
+	})
+
+	t.Run("S3 (ND-1) CORS allowlist ignored without Sec-Fetch-Site", func(t *testing.T) {
+		t.Parallel()
+		ehttptest.KnownBug(t, "S3", func(t testing.TB) {
 			req := &Request{Request: &http.Request{Header: http.Header{}, Host: "api.example"}}
 			req.Request.Header.Set(HeaderOrigin, "http://app.example")
 			opts := &CorsOptions{Origin: []string{"http://app.example"}}

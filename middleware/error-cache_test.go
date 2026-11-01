@@ -23,7 +23,7 @@ func TestErrorCache(t *testing.T) {
 		wantCache bool
 	}{
 		{200, false},
-		{204, false},
+		{204, false}, // no content: RFC 9110 §15.3.5
 		{301, false},
 		{399, false},
 		{400, true},
@@ -36,12 +36,19 @@ func TestErrorCache(t *testing.T) {
 		t.Run(bStatusName(tt.code), func(t *testing.T) {
 			t.Parallel()
 
-			rec := ehttptest.Do(fixtures.Handler(fixtures.Status(tt.code, "payload"), middleware.ErrorCache(time.Minute)), fixtures.Req("GET", "/x"))
+			// A 204 has no content (RFC 9110 §15.3.5): the handler sends none.
+			h, body, ctype := fixtures.Status(tt.code, "payload"), "payload", ehttp.MIMETextPlainCharsetUTF8
+			if tt.code == 204 {
+				h = func(res *ehttp.ResponseWriter, _ *ehttp.Request) { res.SendStatus(204) }
+				body, ctype = "", ""
+			}
+
+			rec := ehttptest.Do(fixtures.Handler(h, middleware.ErrorCache(time.Minute)), fixtures.Req("GET", "/x"))
 			cc := rec.Header().Get("Cache-Control")
 
 			ehttptest.Eq(t, basis+" status kept", rec.Code, tt.code)
-			ehttptest.Eq(t, basis+" body kept", rec.Body.String(), "payload")
-			ehttptest.Eq(t, basis+" content-type kept", rec.Header().Get("Content-Type"), ehttp.MIMETextPlainCharsetUTF8)
+			ehttptest.Eq(t, basis+" body kept (204: RFC 9110 §15.3.5, empty)", rec.Body.String(), body)
+			ehttptest.Eq(t, basis+" content-type kept", rec.Header().Get("Content-Type"), ctype)
 			ehttptest.Eq(t, basis+" cache only >=400", strings.Contains(cc, "max-age=60"), tt.wantCache)
 		})
 	}

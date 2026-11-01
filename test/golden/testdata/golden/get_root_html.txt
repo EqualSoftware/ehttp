@@ -1,18 +1,14 @@
 status: 200
-header Access-Control-Allow-Credentials: true
-header Access-Control-Allow-Headers: *
-header Access-Control-Allow-Methods: GET, HEAD, OPTIONS, POST
-header Access-Control-Allow-Origin: *
-header Cache-Control: public, max-age=300, stale-while-revalidate=300, stale-if-error=300
+header Cache-Control: max-age=300, stale-while-revalidate=300, stale-if-error=300
 header Content-Length: 271
 header Content-Type: text/html; charset=UTF-8
 header Date: <volatile>
 header Etag: W/"271-ba8cbeff"
 header Last-Modified: Tue, 02 Jan 2024 03:04:05 GMT
-header Vary: Accept-Encoding, User-Agent
+header Vary: Accept, Accept-Encoding, Origin, User-Agent
 header X-Content-Type-Options: nosniff
 header X-Frame-Options: SAMEORIGIN
 header X-Request-Id: <uuid>
-header X-Xss-Protection: 1; mode=block
+header X-Xss-Protection: 0
 body-len: 271
 body-sha256: a3a71c632963b63945d7ced7a69dd7c5da0dea7c41f58ee838b9d51af7b435bb

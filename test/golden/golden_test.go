@@ -1,10 +1,31 @@
-// C6 - golden snapshots of end-to-end responses.
+// C6 - golden files of end-to-end responses.
 //
-// IMPORTANT: a golden file is a SNAPSHOT of the CURRENT behaviour, bugs
-// included. It is not an oracle of correct behaviour. When a fix changes a
-// response, the diff of testdata/golden/*.txt shows exactly what changed;
-// review it, then regenerate with `go test -run TestGolden -update ./test/golden`
-// (or `make golden-update`).
+// IMPORTANT: a golden file holds the CORRECT response, never a snapshot of a
+// bug. A scenario with a `bug` ID has a hand-written golden file and its
+// compare runs inside ehttptest.KnownBug: it is skipped while the response
+// differs and fails once the response matches, so the marker must go. The
+// update mode (`-update`, `make golden-update`) never writes those files; it
+// rewrites only the scenarios with no known bug. When a fix lands, remove the
+// `bug` ID of the scenario; the file is already right.
+//
+// Corrections applied to every golden file (and their IDs):
+//   - S3  : no Access-Control-Allow-Origin/Credentials without Origin, no
+//     literal `*` Allow-Headers with credentials, `Vary: Origin` on every
+//     response (the allowlist is specific), Access-Control-Max-Age on an
+//     allowed preflight, an allowed preflight is 200 (ND-1 is absorbed by S3);
+//     no Access-Control-* header at all when there is no Origin or the origin
+//     is not allowed; Access-Control-Allow-Methods only on an allowed
+//     preflight (Fetch §3.2.3, §3.2.5);
+//   - S10 : no `public`; no Cache-Control at all on a 403 preflight;
+//   - S11 : `Vary: Accept` on the routes that switch on Accept;
+//   - C9  : X-XSS-Protection is 0;
+//   - C2  : 206 for bytes=0-0 and bytes=-5, 416 carries Content-Range;
+//   - C10 : the :name route parameter is decoded;
+//   - C14 : a 304 repeats the ETag and Vary of the 200
+//     (RFC 9110 §15.4.5). The baseline report has no ID for it.
+//
+// The Vary field is rendered as a sorted list of names: its order carries no
+// meaning (RFC 9110 §12.5.5).
 //
 // The server is the real examples/server/app. Deliberate differences from
 // running the example:
@@ -31,6 +52,7 @@ import (
 
 	"github.com/EqualSoftware/ehttp"
 	"github.com/EqualSoftware/ehttp/examples/server/app"
+	"github.com/EqualSoftware/ehttp/internal/ehttptest"
 )
 
 func init() {
@@ -94,7 +116,10 @@ func goldenServer(t *testing.T) *httptest.Server {
 }
 
 type goldenScenario struct {
-	name    string
+	name string
+	// bug lists the known-bug IDs ("S3+S10") while the golden file differs
+	// from the response. Empty: the file is a plain regression snapshot.
+	bug     string
 	method  string
 	path    string
 	headers map[string]string
@@ -119,6 +144,8 @@ func goldenRender(resp *http.Response, body []byte, sentRequestID bool) string {
 	for _, k := range names {
 		v := strings.Join(resp.Header[k], " | ")
 		switch {
+		case k == "Vary":
+			v = goldenVary(resp.Header[k])
 		case k == "Date":
 			v = "<volatile>"
 		case k == "X-Request-Id" && !sentRequestID:
@@ -131,6 +158,25 @@ func goldenRender(resp *http.Response, body []byte, sentRequestID bool) string {
 	fmt.Fprintf(&b, "body-len: %d\nbody-sha256: %s\n", len(body), hex.EncodeToString(sum[:]))
 
 	return b.String()
+}
+
+// goldenVary renders Vary as a sorted, de-duplicated list of field names.
+func goldenVary(lines []string) string {
+	seen := map[string]bool{}
+	names := []string{}
+
+	for _, line := range lines {
+		for _, n := range strings.Split(line, ",") {
+			if n = strings.TrimSpace(n); n != "" && !seen[n] {
+				seen[n] = true
+				names = append(names, n)
+			}
+		}
+	}
+
+	sort.Strings(names)
+
+	return strings.Join(names, ", ")
 }
 
 func goldenDo(t *testing.T, base string, sc goldenScenario) string {
@@ -201,47 +247,51 @@ func TestGolden(t *testing.T) { //nolint:paralleltest // WithCors mutates a glob
 	origin := map[string]string{"Origin": "http://localhost:3000"}
 
 	scenarios := []goldenScenario{
-		{name: "get_root_html", method: "GET", path: "/", headers: htmlAccept},
-		{name: "get_root_json", method: "GET", path: "/", headers: map[string]string{"Accept": "application/json"}},
-		{name: "get_root_plain_default", method: "GET", path: "/"},
-		{name: "head_root", method: "HEAD", path: "/", headers: htmlAccept},
-		{name: "cors_simple_allowed_origin", method: "GET", path: "/healthcheck", headers: origin},
-		{name: "cors_simple_foreign_origin", method: "GET", path: "/healthcheck", headers: map[string]string{"Origin": "http://evil.example"}},
-		{name: "cors_preflight_allowed", method: "OPTIONS", path: "/body", headers: map[string]string{
+		{name: "get_root_html", bug: "S3+S10+S11+C9", method: "GET", path: "/", headers: htmlAccept},
+		{name: "get_root_json", bug: "S3+S10+S11+C9", method: "GET", path: "/", headers: map[string]string{"Accept": "application/json"}},
+		{name: "get_root_plain_default", bug: "S3+S10+S11+C9", method: "GET", path: "/"},
+		{name: "head_root", bug: "S3+S10+S11+C9", method: "HEAD", path: "/", headers: htmlAccept},
+		{name: "cors_simple_allowed_origin", bug: "S3+C9", method: "GET", path: "/healthcheck", headers: origin},
+		{name: "cors_simple_foreign_origin", bug: "S3+C9", method: "GET", path: "/healthcheck", headers: map[string]string{"Origin": "http://evil.example"}},
+		{name: "cors_preflight_allowed", bug: "S3+S10+C9", method: "OPTIONS", path: "/body", headers: map[string]string{
 			"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST",
 		}},
-		{name: "cors_preflight_allowed_with_sec_fetch_site", method: "OPTIONS", path: "/body", headers: map[string]string{
+		{name: "cors_preflight_allowed_with_sec_fetch_site", bug: "S3+C9", method: "OPTIONS", path: "/body", headers: map[string]string{
 			"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST", "Sec-Fetch-Site": "cross-site",
 		}},
-		{name: "cors_preflight_foreign", method: "OPTIONS", path: "/body", headers: map[string]string{
+		{name: "cors_preflight_foreign", bug: "S3+S10+C9", method: "OPTIONS", path: "/body", headers: map[string]string{
 			"Origin": "http://evil.example", "Access-Control-Request-Method": "POST", "Sec-Fetch-Site": "cross-site",
 		}},
-		{name: "conditional_etag_304", method: "GET", path: "/", headers: htmlAccept, before: goldenETag},
-		{name: "conditional_if_modified_since_root", method: "GET", path: "/", headers: map[string]string{
+		{name: "conditional_etag_304", bug: "S3+S10+S11+C9", method: "GET", path: "/", headers: htmlAccept, before: goldenETag},
+		{name: "conditional_if_modified_since_root", bug: "S3+S10+S11+C9+C14", method: "GET", path: "/", headers: map[string]string{
 			"If-Modified-Since": goldenFixedTime.Format(http.TimeFormat),
 		}},
-		{name: "file_full", method: "GET", path: "/file"},
-		{name: "file_head", method: "HEAD", path: "/file"},
-		{name: "file_range_0_9", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-9"}},
-		{name: "file_range_0_0_snapshot_of_C2", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-0"}},
-		{name: "file_range_suffix_snapshot_of_C2", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=-5"}},
-		{name: "file_range_unsatisfiable", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=99999999-"}},
-		{name: "file_if_modified_since", method: "GET", path: "/file", headers: map[string]string{
+		{name: "file_full", bug: "S3+S10+C9", method: "GET", path: "/file"},
+		{name: "file_head", bug: "S3+S10+C9", method: "HEAD", path: "/file"},
+		{name: "file_range_0_9", bug: "S3+S10+C9", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-9"}},
+		{name: "file_range_0_0", bug: "S3+S10+C9+C2", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-0"}},
+		{name: "file_range_suffix", bug: "S3+S10+C9+C2", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=-5"}},
+		{name: "file_range_unsatisfiable", bug: "S3+S10+C9+C2", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=99999999-"}},
+		{name: "file_if_modified_since", bug: "S3+S10+C9", method: "GET", path: "/file", headers: map[string]string{
 			"If-Modified-Since": goldenFixedTime.Format(http.TimeFormat),
 		}},
-		{name: "not_found", method: "GET", path: "/nope"},
-		{name: "method_not_allowed", method: "POST", path: "/healthcheck"},
-		{name: "body_created", method: "POST", path: "/body", body: "hello"},
-		{name: "body_over_limit_declared", method: "POST", path: "/body", body: strings.Repeat("a", 5000)},
-		{name: "param_route_encoded", method: "GET", path: "/api/v1/hello/John%20Doe"},
-		{name: "native_handler", method: "GET", path: "/native"},
-		{name: "request_id_echo", method: "GET", path: "/healthcheck", headers: map[string]string{"X-Request-Id": "fixed-id-1"}},
+		{name: "not_found", bug: "S3+S10+C9", method: "GET", path: "/nope"},
+		{name: "method_not_allowed", bug: "S3+S10+C9", method: "POST", path: "/healthcheck"},
+		{name: "body_created", bug: "S3+C9", method: "POST", path: "/body", body: "hello"},
+		{name: "body_over_limit_declared", bug: "S3+S10+C9", method: "POST", path: "/body", body: strings.Repeat("a", 5000)},
+		{name: "param_route_encoded", bug: "S3+S10+C9+C10", method: "GET", path: "/api/v1/hello/John%20Doe"},
+		{name: "native_handler", bug: "S3+S10+C9", method: "GET", path: "/native"},
+		{name: "request_id_echo", bug: "S3+C9", method: "GET", path: "/healthcheck", headers: map[string]string{"X-Request-Id": "fixed-id-1"}},
 	}
 
 	for _, sc := range scenarios { //nolint:paralleltest // shares one server
 		t.Run(sc.name, func(t *testing.T) {
-			got := goldenDo(t, ts.URL, sc)
+			got := goldenDo(t, ts.URL, sc) // setup and request: a failure here is a real FAIL
 			path := filepath.Join("testdata", "golden", sc.name+".txt")
+
+			if goldenUpdating() && sc.bug != "" {
+				t.Skipf("golden %s is hand-written (known bug %s): update leaves it alone", sc.name, sc.bug)
+			}
 
 			if goldenUpdating() {
 				if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
@@ -257,9 +307,20 @@ func TestGolden(t *testing.T) { //nolint:paralleltest // WithCors mutates a glob
 			if err != nil {
 				t.Fatalf("[C6] missing golden %s (run with -update): %v", path, err)
 			}
-			if string(want) != got {
-				t.Errorf("[C6] %s differs from golden.\n--- want\n%s--- got\n%s", sc.name, want, got)
+			compare := func(t testing.TB) {
+				t.Helper()
+
+				if string(want) != got {
+					t.Errorf("[C6] %s differs from golden.\n--- want\n%s--- got\n%s", sc.name, want, got)
+				}
 			}
+
+			if sc.bug != "" {
+				ehttptest.KnownBug(t, sc.bug, compare)
+				return
+			}
+
+			compare(t)
 		})
 	}
 }

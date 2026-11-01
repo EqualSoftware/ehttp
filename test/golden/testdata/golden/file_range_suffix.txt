@@ -1,0 +1,16 @@
+status: 206
+header Accept-Ranges: bytes
+header Cache-Control: max-age=300, stale-while-revalidate=300, stale-if-error=300
+header Content-Length: 5
+header Content-Range: bytes 332544-332548/332549
+header Content-Type: image/png
+header Date: <volatile>
+header Etag: W/"332549-32658cc8"
+header Last-Modified: Tue, 02 Jan 2024 03:04:05 GMT
+header Vary: Accept-Encoding, Origin
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: SAMEORIGIN
+header X-Request-Id: <uuid>
+header X-Xss-Protection: 0
+body-len: 5
+body-sha256: 7d341ff2748977e012b350422a303fe20515e13a0635e0277bb930af1e603ee5

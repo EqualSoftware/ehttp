@@ -98,7 +98,6 @@ func TestRouterMatching(t *testing.T) {
 		{"query string is not part of the path", "RFC 3986 §3.4", "/users?x=1", 200, "users"},
 		{"path is case sensitive", "net/http ServeMux", "/Users", 404, ""},
 		{"empty inner segment never matches static", "Express routing", "/users//me", 404, ""},
-		{"encoded slash stays inside one segment", "RFC 3986 §2.2 (%2F is data, not a separator)", "/files/a%2Fb", 200, "file:a%2Fb"},
 		{"unknown path", "RFC 9110 §15.5.5", "/nope", 404, ""},
 	}
 
@@ -111,6 +110,19 @@ func TestRouterMatching(t *testing.T) {
 			ehttptest.Eq(t, tt.basis, rec.Body.String(), tt.body)
 		})
 	}
+}
+
+func TestRouterEncodedSlashStaysInOneSegment(t *testing.T) {
+	t.Parallel()
+
+	h := aMatchServer()
+	rec := aDo(h, "GET", "/files/a%2Fb")
+
+	ehttptest.Eq(t, "RFC 3986 §2.2 (%2F is data, not a separator)", rec.Code, 200)
+
+	ehttptest.KnownBug(t, "C10", func(t testing.TB) {
+		ehttptest.Eq(t, "C10 + RFC 3986 §2.1 (the param value is decoded)", rec.Body.String(), "file:a/b")
+	})
 }
 
 func TestRouterRegistrationOrderDecidesStaticVsParam(t *testing.T) {

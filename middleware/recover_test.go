@@ -101,18 +101,6 @@ func TestRecoverRethrowsAbortHandler(t *testing.T) {
 	})
 }
 
-// S6: once the response started, a 500 JSON must not be appended to it.
-func TestRecoverAfterResponseStarted(t *testing.T) {
-	t.Parallel()
-
-	ehttptest.KnownBug(t, "S6", func(t testing.TB) {
-		h := fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
-			res.String("partial")
-			panic("late")
-		}, middleware.Recover())
-
-		rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
-
-		ehttptest.Eq(t, "S6 (no 500 body after headers sent)", rec.Body.String(), "partial")
-	})
-}
+// The "response already started" case (a 500 JSON glued to a chunked body,
+// RFC 9112 §8: the client must see an incomplete message) needs a real
+// server. It lives in test/security (TestCSecurityS6PanicAfterHeadersSent).

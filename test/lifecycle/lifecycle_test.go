@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -45,11 +46,18 @@ func TestCLifecycleTimeoutLateWriteIsBlocked(t *testing.T) {
 	release := make(chan struct{})
 	done := make(chan error, 1)
 
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+
 	ts := cTimeoutServer(t, 30*time.Millisecond, func(res *ehttp.ResponseWriter, req *ehttp.Request) {
 		<-release // ignores the context on purpose: non-cooperative handler
 		done <- req.Context().Err()
 		res.String("late")
 	})
+
+	// Registered after the server, so it runs before the server closes and a
+	// failed Fetch cannot leave the handler blocked.
+	t.Cleanup(unblock)
 
 	resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/t", nil)
 
@@ -57,7 +65,7 @@ func TestCLifecycleTimeoutLateWriteIsBlocked(t *testing.T) {
 	ehttptest.True(t, "RFC 9110 §15.5: a final status was sent before the handler finished",
 		resp.StatusCode >= 400, "status = %d", resp.StatusCode)
 
-	close(release)
+	unblock()
 
 	select {
 	case err := <-done:
@@ -181,7 +189,14 @@ func TestCLifecycleClientDisconnectCancelsContext(t *testing.T) {
 		errc <- err
 	}()
 
-	<-started
+	select {
+	case <-started:
+	case err := <-errc:
+		t.Fatalf("request ended before the handler started: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never started")
+	}
+
 	cancel() // client goes away
 
 	select {
@@ -310,14 +325,33 @@ func TestCLifecycleListenShutdownWaitsForInflight(t *testing.T) {
 		return srv
 	})
 
-	clientDone := make(chan struct{})
+	// The goroutine must not call t.Fatal: it sends the error to the test goroutine.
+	clientDone := make(chan error, 1)
 
 	go func() {
-		defer close(clientDone)
-		fixtures.Fetch(t, http.MethodGet, "http://127.0.0.1:"+l.Port+"/slow", nil)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:"+l.Port+"/slow", http.NoBody)
+		if err != nil {
+			clientDone <- err
+			return
+		}
+
+		resp, err := fixtures.Client().Do(req)
+		if err == nil {
+			_, err = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+
+		clientDone <- err
 	}()
 
-	<-started
+	select {
+	case <-started:
+	case err := <-clientDone:
+		t.Fatalf("request ended before the handler started: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never started")
+	}
+
 	l.Cancel()
 
 	var listenErr error
@@ -329,8 +363,16 @@ func TestCLifecycleListenShutdownWaitsForInflight(t *testing.T) {
 	}
 
 	returnedBeforeHandler := !finished.Load()
-	<-clientDone
 	_ = listenErr
+
+	select {
+	case err := <-clientDone:
+		if err != nil {
+			t.Fatalf("in-flight request failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("client never got its response")
+	}
 
 	ehttptest.KnownBug(t, "S8", func(t testing.TB) {
 		ehttptest.True(t, "S8: graceful shutdown waits for in-flight requests (net/http Server.Shutdown)",

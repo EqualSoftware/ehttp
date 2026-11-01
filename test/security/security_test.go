@@ -1,6 +1,7 @@
 package security_test
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -250,10 +252,11 @@ func TestCSecurityS3WildcardWithCredentials(t *testing.T) {
 	})
 
 	t.Run("boot fails fast", func(t *testing.T) {
-		ehttptest.KnownBug(t, "S3", func(t testing.TB) {
-			orig := *ehttp.DefaultCorsOptions
-			defer func() { *ehttp.DefaultCorsOptions = orig }()
+		orig := *ehttp.DefaultCorsOptions
 
+		t.Cleanup(func() { *ehttp.DefaultCorsOptions = orig })
+
+		ehttptest.KnownBug(t, "S3", func(t testing.TB) {
 			panicked := func() (p bool) {
 				defer func() { p = recover() != nil }()
 				ehttp.NewServer(ehttp.WithCors(ehttp.CorsOptions{Credentials: true}))
@@ -370,14 +373,18 @@ func TestCSecurityS1GroupAuthBypass(t *testing.T) {
 		admin.Route("/users", cMark("X-Nested")).GET("/1", cSecretHandler)
 		ts := fixtures.Start(t, srv)
 
-		ehttptest.KnownBug(t, "S1", func(t testing.TB) {
-			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/admin/users/1", nil)
-			ehttptest.Eq(t, "S1: nested group inherits auth", resp.StatusCode, 401)
+		t.Run("inherits the parent auth", func(t *testing.T) {
+			ehttptest.KnownBug(t, "S1", func(t testing.TB) {
+				resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/admin/users/1", nil)
+				ehttptest.Eq(t, "S1: nested group inherits auth", resp.StatusCode, 401)
+			})
 		})
 
-		ehttptest.KnownBug(t, "S1", func(t testing.TB) {
-			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/admin/users/1", http.Header{"Authorization": {"x"}})
-			ehttptest.Eq(t, "S1: nested group's own middleware runs", resp.Header.Get("X-Nested"), "1")
+		t.Run("runs its own middleware", func(t *testing.T) {
+			ehttptest.KnownBug(t, "S1", func(t testing.TB) {
+				resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/admin/users/1", http.Header{"Authorization": {"x"}})
+				ehttptest.Eq(t, "S1: nested group's own middleware runs", resp.Header.Get("X-Nested"), "1")
+			})
 		})
 	})
 
@@ -521,10 +528,31 @@ func TestCSecurityS6PanicAfterHeadersSent(t *testing.T) {
 		ehttptest.Eq(t, "premise check S6: only what was sent before the panic", body, "partial")
 	})
 
-	t.Run("chunked body gets the error JSON appended", func(t *testing.T) {
+	// The correct fix aborts the stream (re-panic http.ErrAbortHandler): the
+	// client sees an incomplete message (RFC 9112 §8), e.g. io.ErrUnexpectedEOF.
+	// Without the abort, the 500 JSON is glued to the body already in flight.
+	t.Run("chunked body is aborted, not completed with the error JSON", func(t *testing.T) {
+		// The handler flushes first, so the status line and headers must arrive.
+		// A dial error or a timeout here is a real failure, not the fix.
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/stream", http.NoBody)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+
+		resp, err := fixtures.Client().Do(req)
+		if err != nil {
+			t.Fatalf("headers did not arrive: %v", err)
+		}
+		defer resp.Body.Close()
+
+		b, readErr := io.ReadAll(resp.Body)
+
 		ehttptest.KnownBug(t, "S6", func(t testing.TB) {
-			_, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/stream", nil)
-			ehttptest.Eq(t, "S6: no 500 JSON glued to a response already in flight", body, "chunk-1;")
+			incomplete := errors.Is(readErr, io.ErrUnexpectedEOF)
+			cleanWithoutJSON := readErr == nil && !strings.Contains(string(b), `"code"`)
+
+			ehttptest.True(t, "RFC 9112 §8 + S6: incomplete message (io.ErrUnexpectedEOF), or a complete one without the error JSON",
+				incomplete || cleanWithoutJSON, "body = %q, read error = %v", b, readErr)
 		})
 	})
 }
@@ -539,14 +567,31 @@ func TestCSecurityC11RequestId(t *testing.T) {
 	srv.GET("/", func(res *ehttp.ResponseWriter, req *ehttp.Request) { res.String("ok") })
 	ts := fixtures.Start(t, srv)
 
-	t.Run("giant id is not echoed back", func(t *testing.T) {
-		huge := strings.Repeat("a", 64*1024)
+	// C11 (author decision): an incoming id is kept only with 1 to 128
+	// characters of [A-Za-z0-9._-]; otherwise a new id that follows the same rule.
+	validID := regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
-		ehttptest.KnownBug(t, "C11", func(t testing.TB) {
-			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL, http.Header{"X-Request-Id": {huge}})
-			ehttptest.True(t, "C11: bounded id (<=256 bytes)", len(resp.Header.Get("X-Request-Id")) <= 256,
-				"echoed %d bytes", len(resp.Header.Get("X-Request-Id")))
+	for name, id := range map[string]string{
+		"64 KiB id":  strings.Repeat("a", 64*1024),
+		"129 chars":  strings.Repeat("a", 129),
+		"with space": "a b",
+		"with slash": "a/b",
+	} {
+		t.Run(name+" is replaced by a valid id", func(t *testing.T) {
+			ehttptest.KnownBug(t, "C11", func(t testing.TB) {
+				resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL, http.Header{"X-Request-Id": {id}})
+				got := resp.Header.Get("X-Request-Id")
+
+				ehttptest.True(t, "C11: the untrusted id is not echoed", got != id, "echoed %d bytes", len(got))
+				ehttptest.True(t, "C11: the new id follows the same rule", validID.MatchString(got), "id = %q", got)
+			})
 		})
+	}
+
+	t.Run("a valid 128-char id is kept", func(t *testing.T) {
+		id := strings.Repeat("a", 128)
+		resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL, http.Header{"X-Request-Id": {id}})
+		ehttptest.Eq(t, "C11: 1 to 128 characters are kept", resp.Header.Get("X-Request-Id"), id)
 	})
 
 	t.Run("missing id gets a generated one", func(t *testing.T) {
@@ -559,13 +604,36 @@ func TestCSecurityC11RequestId(t *testing.T) {
 		ehttptest.Eq(t, "RequestId contract", resp.Header.Get("X-Request-Id"), "abc-123")
 	})
 
-	// Premise review: net/http parses CR/LF as a header boundary and rejects control bytes.
-	t.Run("CRLF injection cannot split the response", func(t *testing.T) {
-		raw := fixtures.Raw(t, cHost(ts), "GET / HTTP/1.1\r\nHost: x\r\nX-Request-Id: abc\r\nSet-Cookie: pwn=1\r\nConnection: close\r\n\r\n")
-		head, _, _ := strings.Cut(raw, "\r\n\r\n")
+	// RFC 9112 §5.2: obs-fold and a bare LF must not let a request header
+	// smuggle a second header into the response. net/http folds the first
+	// into one value and drops the second today; the test pins that.
+	for name, raw := range map[string]string{
+		"obs-fold":     "GET / HTTP/1.1\r\nHost: x\r\nX-Request-Id: abc\r\n Set-Cookie: pwn=1\r\nConnection: close\r\n\r\n",
+		"bare LF":      "GET / HTTP/1.1\r\nHost: x\r\nX-Request-Id: abc\nSet-Cookie: pwn=1\r\nConnection: close\r\n\r\n",
+		"bare CR":      "GET / HTTP/1.1\r\nHost: x\r\nX-Request-Id: abc\rSet-Cookie: pwn=1\r\nConnection: close\r\n\r\n",
+		"obs-fold tab": "GET / HTTP/1.1\r\nHost: x\r\nX-Request-Id: abc\r\n\tSet-Cookie: pwn=1\r\nConnection: close\r\n\r\n",
+	} {
+		t.Run("CRLF injection via "+name+" cannot split the response", func(t *testing.T) {
+			rawResp := fixtures.Raw(t, cHost(ts), raw)
+			head, _, _ := strings.Cut(rawResp, "\r\n\r\n")
 
-		ehttptest.True(t, "C11 premise: no injection (ids are single header values)", !strings.Contains(head, "pwn=1"), "response head: %q", head)
-	})
+			resp, err := http.ReadResponse(bufio.NewReader(strings.NewReader(rawResp)), nil)
+			if err != nil {
+				t.Fatalf("response is not valid HTTP: %v (%q)", err, rawResp)
+			}
+			defer resp.Body.Close()
+
+			id := resp.Header.Get("X-Request-Id")
+
+			ehttptest.Eq(t, "RFC 9112 §5.2: no injected Set-Cookie", resp.Header.Get("Set-Cookie"), "")
+
+			for _, line := range strings.Split(head, "\r\n") {
+				ehttptest.True(t, "RFC 9112 §5.2: no injected Set-Cookie line", !strings.HasPrefix(strings.ToLower(line), "set-cookie:"), "response head: %q", head)
+			}
+
+			ehttptest.True(t, "RFC 9112 §5.2: echoed id has no CR or LF", !strings.ContainsAny(id, "\r\n"), "id = %q", id)
+		})
+	}
 
 	t.Run("control byte in id never reaches the response", func(t *testing.T) {
 		raw := fixtures.Raw(t, cHost(ts), "GET / HTTP/1.1\r\nHost: x\r\nX-Request-Id: a\x01b\r\nConnection: close\r\n\r\n")
@@ -615,8 +683,11 @@ func TestCSecurityS12UnanchoredRouteRegex(t *testing.T) {
 // C5: BodyLimit
 // ---------------------------------------------------------------------------
 
-func cBodyServer(t testing.TB, limit string) (*httptest.Server, *atomic.Int32) {
-	called := new(atomic.Int32)
+// cBodyServer returns the server, the count of handler calls and the count
+// of reads that failed with ErrRequestBodyTooLarge. The handler propagates
+// that error as 413 itself: BodyLimit does not write 413 for chunked bodies.
+func cBodyServer(t testing.TB, limit string) (ts *httptest.Server, called, tooLarge *atomic.Int32) {
+	called, tooLarge = new(atomic.Int32), new(atomic.Int32)
 
 	srv := ehttp.NewServer()
 	srv.POST("/up", func(res *ehttp.ResponseWriter, req *ehttp.Request) {
@@ -624,6 +695,7 @@ func cBodyServer(t testing.TB, limit string) (*httptest.Server, *atomic.Int32) {
 
 		b, err := req.Body()
 		if errors.Is(err, ehttp.ErrRequestBodyTooLarge) {
+			tooLarge.Add(1)
 			res.SendStatus(413)
 			return
 		}
@@ -631,7 +703,7 @@ func cBodyServer(t testing.TB, limit string) (*httptest.Server, *atomic.Int32) {
 		res.String(fmt.Sprint(len(b)))
 	}, middleware.BodyLimit(limit))
 
-	return fixtures.Start(t, srv), called
+	return fixtures.Start(t, srv), called, tooLarge
 }
 
 func cPost(t testing.TB, url string, body io.Reader, length int64) (resp *http.Response, respBody string) {
@@ -652,7 +724,7 @@ func cPost(t testing.TB, url string, body io.Reader, length int64) (resp *http.R
 }
 
 func TestCSecurityC5BodyLimit(t *testing.T) {
-	ts, called := cBodyServer(t, "1KB")
+	ts, called, tooLarge := cBodyServer(t, "1KB")
 
 	t.Run("declared length above limit is 413 without running the handler", func(t *testing.T) {
 		resp, _ := cPost(t, ts.URL+"/up", strings.NewReader(strings.Repeat("a", 2048)), 2048)
@@ -660,9 +732,14 @@ func TestCSecurityC5BodyLimit(t *testing.T) {
 		ehttptest.Eq(t, "C5: handler not reached", called.Load(), int32(0))
 	})
 
-	t.Run("chunked body above limit is 413", func(t *testing.T) {
+	// BodyLimit cannot reject a chunked body up front. Its contract is that
+	// the handler's read fails with ErrRequestBodyTooLarge; the handler maps
+	// that to 413 (RFC 9110 §15.5.14).
+	t.Run("chunked body above limit: handler read fails with ErrRequestBodyTooLarge, handler's 413 reaches the client", func(t *testing.T) {
+		before := tooLarge.Load()
 		resp, _ := cPost(t, ts.URL+"/up", io.NopCloser(strings.NewReader(strings.Repeat("a", 64*1024))), -1)
-		ehttptest.Eq(t, "RFC 9110 §15.5.14 + http.MaxBytesReader", resp.StatusCode, 413)
+		ehttptest.Eq(t, "ErrRequestBodyTooLarge contract: read error reached the handler", tooLarge.Load(), before+1)
+		ehttptest.Eq(t, "RFC 9110 §15.5.14 (handler propagates the error)", resp.StatusCode, 413)
 	})
 
 	t.Run("body at the limit passes", func(t *testing.T) {
@@ -685,7 +762,7 @@ func TestCSecurityC5BodyLimit(t *testing.T) {
 	})
 
 	t.Run("limit with a space rejects a 100-byte body", func(t *testing.T) {
-		spaced, _ := cBodyServer(t, "4 KB")
+		spaced, _, _ := cBodyServer(t, "4 KB")
 
 		ehttptest.KnownBug(t, "C5", func(t testing.TB) {
 			resp, _ := cPost(t, spaced.URL+"/up", strings.NewReader(strings.Repeat("a", 100)), 100)

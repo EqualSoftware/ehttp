@@ -1,15 +1,11 @@
 status: 201
-header Access-Control-Allow-Credentials: true
-header Access-Control-Allow-Headers: *
-header Access-Control-Allow-Methods: GET, HEAD, OPTIONS, POST
-header Access-Control-Allow-Origin: *
 header Content-Length: 5
 header Content-Type: text/plain; charset=UTF-8
 header Date: <volatile>
-header Vary: Accept-Encoding
+header Vary: Accept-Encoding, Origin
 header X-Content-Type-Options: nosniff
 header X-Frame-Options: SAMEORIGIN
 header X-Request-Id: <uuid>
-header X-Xss-Protection: 1; mode=block
+header X-Xss-Protection: 0
 body-len: 5
 body-sha256: 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824

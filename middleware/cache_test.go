@@ -23,8 +23,12 @@ func TestCache(t *testing.T) {
 		cc := rec.Header().Get("Cache-Control")
 
 		ehttptest.Eq(t, basis, rec.Code, 200)
-		for _, d := range []string{"max-age=60", "stale-while-revalidate=60", "stale-if-error=60"} {
-			ehttptest.True(t, basis, strings.Contains(cc, d), "Cache-Control %q lacks %q", cc, d)
+		for d, why := range map[string]string{
+			"max-age=60":                "RFC 9111 §5.2.2.1",
+			"stale-while-revalidate=60": "RFC 5861 §3",
+			"stale-if-error=60":         "RFC 5861 §4",
+		} {
+			ehttptest.True(t, why, strings.Contains(cc, d), "Cache-Control %q lacks %q", cc, d)
 		}
 	})
 
@@ -64,11 +68,14 @@ func TestCache(t *testing.T) {
 	t.Run("same on every status the handler picks", func(t *testing.T) {
 		t.Parallel()
 
+		ok := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Cache(time.Minute)), fixtures.Req("GET", "/x"))
 		h := fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) { res.SendStatus(404) }, middleware.Cache(time.Minute))
 		rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
+		cc := rec.Header().Get("Cache-Control")
 
 		ehttptest.Eq(t, "middleware contract", rec.Code, 404)
-		ehttptest.True(t, "middleware contract", rec.Header().Get("Cache-Control") != "", "no Cache-Control on 404")
+		ehttptest.True(t, "RFC 9111 §5.2.2.1", strings.Contains(cc, "max-age=60"), "Cache-Control %q lacks max-age=60 on 404", cc)
+		ehttptest.Eq(t, "middleware contract (same value on every status)", cc, ok.Header().Get("Cache-Control"))
 	})
 }
 

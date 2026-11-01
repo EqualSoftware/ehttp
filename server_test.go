@@ -158,13 +158,20 @@ func TestServerWithCors(t *testing.T) {
 		ehttptest.Eq(t, "WithCors partial options", rec.Header().Get(HeaderAccessControlAllowHeaders), "*")
 	})
 
-	t.Run("Credentials is taken as given", func(t *testing.T) {
+	t.Run("Credentials with the wildcard origin fails at boot", func(t *testing.T) {
 		aRestoreCors(t)
 
-		s := NewServer(WithCors(CorsOptions{Credentials: true}))
-		rec := aDo(s, "GET", "/x")
+		ehttptest.KnownBug(t, "S3", func(t testing.TB) {
+			panicked := func() (p bool) {
+				defer func() { p = recover() != nil }()
+				NewServer(WithCors(CorsOptions{Credentials: true}))
 
-		ehttptest.Eq(t, "WithCors", rec.Header().Get(HeaderAccessControlAllowCredentials), "true")
+				return false
+			}()
+
+			ehttptest.True(t, "Fetch §3.2.5: credentials never go with the * origin", panicked,
+				"Credentials:true with the * origin did not panic at boot")
+		})
 	})
 
 	t.Run("a second server does not inherit the first one's CORS options", func(t *testing.T) {
@@ -180,18 +187,8 @@ func TestServerWithCors(t *testing.T) {
 		})
 	})
 
-	t.Run("CacheDuration reaches the preflight", func(t *testing.T) {
-		aRestoreCors(t)
-
-		s := NewServer(WithCors(CorsOptions{CacheDuration: time.Hour}))
-		rec := aDo(s, "OPTIONS", "/x", HeaderOrigin, "https://a.example", HeaderAccessControlRequestMethod, "GET")
-
-		ehttptest.KnownBug(t, "S3", func(t testing.TB) {
-			ehttptest.True(t, "S3: WithCors copies CacheDuration", strings.Contains(rec.Header().Get(HeaderCacheControl), "max-age=3600"),
-				"Cache-Control: %q", rec.Header().Get(HeaderCacheControl))
-		})
-	})
-
+	// An OPTIONS response is not cacheable (RFC 9110 §9.3.7), so the preflight
+	// cache is Access-Control-Max-Age only and never Cache-Control.
 	t.Run("CacheDuration becomes Access-Control-Max-Age", func(t *testing.T) {
 		aRestoreCors(t)
 
@@ -312,6 +309,9 @@ func TestServerListenWaitsForInFlightRequests(t *testing.T) {
 		once     sync.Once
 	)
 
+	releaseOnce := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(releaseOnce) // a failed step must not leave the handler blocked
+
 	s.GET("/slow", func(res *ResponseWriter, _ *Request) {
 		close(started)
 		<-release
@@ -350,7 +350,7 @@ func TestServerListenWaitsForInFlightRequests(t *testing.T) {
 	<-started
 
 	// If Listen waits for the request, the handler ends after this delay.
-	timer := time.AfterFunc(200*time.Millisecond, func() { once.Do(func() { close(release) }) })
+	timer := time.AfterFunc(200*time.Millisecond, releaseOnce)
 	defer timer.Stop()
 
 	cancel()
@@ -363,7 +363,7 @@ func TestServerListenWaitsForInFlightRequests(t *testing.T) {
 
 	handlerFinishedBeforeListenReturned := finished.Load()
 
-	once.Do(func() { close(release) })
+	releaseOnce()
 
 	select {
 	case r := <-clientDone:

@@ -1,16 +1,12 @@
 status: 200
-header Access-Control-Allow-Credentials: true
-header Access-Control-Allow-Headers: *
-header Access-Control-Allow-Methods: GET, HEAD, OPTIONS, POST
-header Access-Control-Allow-Origin: *
-header Cache-Control: public, max-age=300, stale-while-revalidate=300, stale-if-error=300
-header Content-Length: 28
+header Cache-Control: max-age=300, stale-while-revalidate=300, stale-if-error=300
+header Content-Length: 26
 header Content-Type: application/json; charset=UTF-8
 header Date: <volatile>
-header Vary: Accept-Encoding
+header Vary: Accept-Encoding, Origin
 header X-Content-Type-Options: nosniff
 header X-Frame-Options: SAMEORIGIN
 header X-Request-Id: <uuid>
-header X-Xss-Protection: 1; mode=block
-body-len: 28
-body-sha256: d9197fa1b07f2e9426e88811f7f464fc86ddd108380f4c841da1b99271da84a1
+header X-Xss-Protection: 0
+body-len: 26
+body-sha256: be7aec02b4fccad60369f88d0e89b8c788b18fcb7e979c1acd5f425d690a1773

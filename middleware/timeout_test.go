@@ -67,10 +67,15 @@ func TestTimeoutSlowHandler(t *testing.T) {
 			rec := ehttptest.Do(fixtures.Handler(slow(seen), middleware.Timeout(time.Second)), fixtures.Req("GET", "/x"))
 
 			ehttptest.Eq(t, "fake clock: answered at the deadline", time.Since(start), time.Second)
-			ehttptest.True(t, "RFC 9110 §15.5.9/§15.6.4", rec.Code == 408 || rec.Code == 503 || rec.Code == 504, "status = %d", rec.Code)
 
 			synctest.Wait()
 			ehttptest.Eq(t, "context contract", (<-seen).Error(), "context deadline exceeded")
+
+			// 408 is for a slow request read (RFC 9110 §15.5.9), not for a slow handler.
+			// S5 decision (option A in todo.md): 503; 504 is also valid (§15.6.5).
+			ehttptest.KnownBug(t, "S5", func(t testing.TB) {
+				ehttptest.True(t, "RFC 9110 §15.6.4/§15.6.5 (not 408, §15.5.9)", rec.Code == 503 || rec.Code == 504, "status = %d", rec.Code)
+			})
 		})
 	})
 

@@ -132,6 +132,29 @@ func cLacksToken(name, token string) cWant {
 	}
 }
 
+// cNotSharedCacheable checks that a shared cache must not store the response
+// (RFC 9111 §3, §5.2.2.5, §5.2.2.10): no Cache-Control, or private, or
+// no-store is fine; public, s-maxage or a bare max-age is not.
+func cNotSharedCacheable() cWant {
+	return func(t testing.TB, basis string, r *cResp) {
+		t.Helper()
+
+		toks := cTokens(r.Header, "Cache-Control")
+		for _, tok := range toks {
+			if tok == "private" || tok == "no-store" {
+				return
+			}
+		}
+
+		for _, tok := range toks {
+			if tok == "public" || strings.HasPrefix(tok, "s-maxage=") || strings.HasPrefix(tok, "max-age=") {
+				t.Errorf("[%s] Cache-Control = %q lets a shared cache store the response", basis, r.Header.Values("Cache-Control"))
+				return
+			}
+		}
+	}
+}
+
 func cBody(want string) cWant {
 	return func(t testing.TB, basis string, r *cResp) {
 		t.Helper()
@@ -433,7 +456,7 @@ func conformanceCases() []conformanceCase {
 			want: cAll(cStatus(200), cBody("post"))},
 		{name: "OPTIONS answers 2xx", basis: h937, fixture: "main", method: opts, path: "/only",
 			want: cStatus(200, 204)},
-		{name: "OPTIONS advertises Allow (SHOULD)", basis: h937 + " (NC-3)", knownBug: "NC-3", fixture: "main", method: opts, path: "/only",
+		{name: "OPTIONS advertises Allow (SHOULD)", basis: h937 + " (NA-1)", knownBug: "NA-1", fixture: "main", method: opts, path: "/only",
 			want: cAll(cHasToken("Allow", "GET"), cHasToken("Allow", "OPTIONS"))},
 
 		// ---- SendFile: Range (RFC 9110 §14) ---------------------------------------
@@ -521,7 +544,7 @@ func conformanceCases() []conformanceCase {
 			want: cAll(cStatus(304), cBody(""))},
 		{name: "LastModified: If-Modified-Since older is 200", basis: h1313, fixture: "main", method: get, path: "/lm", hdr: hd("If-Modified-Since", "{lm-1h}"),
 			want: cAll(cStatus(200), cBody("lm-body"))},
-		{name: "LastModified+WeakEtag: INM mismatch beats IMS match", basis: h1322 + " (NC-1)", knownBug: "NC-1", fixture: "main", method: get, path: "/lmetag", hdr: map[string]string{"If-None-Match": `W/"other"`, "If-Modified-Since": "{lm+1h}"},
+		{name: "LastModified+WeakEtag: INM mismatch beats IMS match", basis: h1322 + " (NB-3)", knownBug: "NB-3", fixture: "main", method: get, path: "/lmetag", hdr: map[string]string{"If-None-Match": `W/"other"`, "If-Modified-Since": "{lm+1h}"},
 			want: cAll(cStatus(200), cBody("lmetag-body"))},
 
 		// ---- Vary (§12.5.5) -------------------------------------------------------
@@ -554,10 +577,10 @@ func conformanceCases() []conformanceCase {
 			want: cAll(cStatus(404), cHasToken("Cache-Control", "max-age=60"))},
 		{name: "ErrorCache leaves 2xx alone", basis: "ErrorCache contract", fixture: "main", method: get, path: "/ok-errcache",
 			want: cAll(cStatus(200), cNoHdr("Cache-Control"))},
-		{name: "ErrorCache does not cache 401", basis: "RFC 9111 §3.5 + S10c", knownBug: "S10", fixture: "main", method: get, path: "/err401",
-			want: cAll(cStatus(401), cLacksToken("Cache-Control", "public"), cNoHdr("Cache-Control"))},
-		{name: "ErrorCache does not cache 429", basis: "RFC 9111 §3.5 + S10c", knownBug: "S10", fixture: "main", method: get, path: "/err429",
-			want: cAll(cStatus(429), cNoHdr("Cache-Control"))},
+		{name: "ErrorCache does not let a shared cache store 401", basis: "RFC 9111 §3 + §5.2.2.5 (S10c)", knownBug: "S10", fixture: "main", method: get, path: "/err401",
+			want: cAll(cStatus(401), cNotSharedCacheable())},
+		{name: "ErrorCache does not let a shared cache store 429", basis: "RFC 9111 §3 + §5.2.2.5, client-dependent response (S10c)", knownBug: "S10", fixture: "main", method: get, path: "/err429",
+			want: cAll(cStatus(429), cNotSharedCacheable())},
 
 		// ---- CORS (Fetch Standard) ------------------------------------------------
 		{name: "CORS list: allowed origin is echoed", basis: fetch, fixture: "cors-list", method: get, path: "/api", hdr: cors(fixtures.OriginA),
@@ -588,7 +611,7 @@ func conformanceCases() []conformanceCase {
 			want: cAll(cHdr("Access-Control-Allow-Origin", fixtures.OriginA), cHdr("Access-Control-Allow-Credentials", "true"))},
 		{name: "CORS preflight: allowed origin and method", basis: "Fetch §4.8 CORS-preflight fetch (ok status)", fixture: "cors-list", method: opts, path: "/api", hdr: preflight(fixtures.OriginA, "GET"),
 			want: cAll(cStatus(200, 204), cHdr("Access-Control-Allow-Origin", fixtures.OriginA), cHasHdr("Access-Control-Allow-Methods"))},
-		{name: "CORS preflight: listed origin without Sec-Fetch-Site", basis: "Fetch §3.2.2 + allowlist (NC-4)", knownBug: "NC-4", fixture: "cors-list", method: opts, path: "/api",
+		{name: "CORS preflight: listed origin without Sec-Fetch-Site", basis: "Fetch §3.2.2 + allowlist (S3, was NC-4/ND-1)", knownBug: "S3", fixture: "cors-list", method: opts, path: "/api",
 			hdr:  map[string]string{"Origin": fixtures.OriginA, "Access-Control-Request-Method": "GET"},
 			want: cStatus(200, 204)},
 		{name: "CORS preflight: Vary lists request-dependent headers", basis: fcach, fixture: "cors-list", method: opts, path: "/api", hdr: preflight(fixtures.OriginA, "GET"),

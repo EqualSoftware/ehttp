@@ -69,28 +69,60 @@ func TestRequestId(t *testing.T) {
 	})
 }
 
-// C11: an id from the client is echoed back, so it must be bounded and
-// limited to a safe charset. A rejected id is replaced by a generated one.
+// bValidID is the C11 rule (author decision): an incoming id is kept only when
+// it has 1 to 128 characters, all in [A-Za-z0-9._-].
+var bValidID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+// C11: an id from the client is echoed back, so its length and charset are
+// limited. An id that breaks the rule is replaced by a generated one that
+// follows the same rule.
 func TestRequestIdUntrustedInput(t *testing.T) {
 	t.Parallel()
 
+	h := fixtures.Handler(fixtures.OK, middleware.RequestId())
+
+	t.Run("a valid 128-character id is kept", func(t *testing.T) {
+		t.Parallel()
+
+		id := strings.Repeat("aZ09._-", 19)[:128]
+		rec := ehttptest.Do(h, fixtures.Req("GET", "/x", "X-Request-Id", id))
+
+		ehttptest.Eq(t, "C11 (1 to 128 characters of [A-Za-z0-9._-])", rec.Header().Get("X-Request-Id"), id)
+	})
+
+	t.Run("replaces an empty id", func(t *testing.T) {
+		t.Parallel()
+
+		rec := ehttptest.Do(h, fixtures.Req("GET", "/x", "X-Request-Id", ""))
+		got := rec.Header().Get("X-Request-Id")
+
+		ehttptest.True(t, "C11 (1 to 128 characters)", bValidID.MatchString(got), "response id %q breaks the rule", got)
+	})
+
 	tests := []struct{ name, id string }{
+		{"129 characters", strings.Repeat("a", 129)},
 		{"1000 characters", strings.Repeat("a", 1000)},
 		{"100000 characters", strings.Repeat("a", 100_000)},
+		{"space", "a b"},
+		{"slash", "a/b"},
+		{"colon", "a:b"},
+		{"percent", "a%20b"},
 		{"markup", "<script>alert(1)</script>"},
-		{"spaces and punctuation", "a b;c=d"},
+		{"carriage return", "a\rb"},
+		{"line feed", "a\nb"},
 		{"non-ASCII", "id-é世"},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run("replaces "+tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			ehttptest.KnownBug(t, "C11", func(t testing.TB) {
-				rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.RequestId()), fixtures.Req("GET", "/x", "X-Request-Id", tt.id))
+				rec := ehttptest.Do(h, fixtures.Req("GET", "/x", "X-Request-Id", tt.id))
 				got := rec.Header().Get("X-Request-Id")
 
 				ehttptest.True(t, "C11", got != tt.id, "untrusted id echoed back unchanged (len %d)", len(got))
+				ehttptest.True(t, "C11 (the new id follows the same rule)", bValidID.MatchString(got), "response id %q breaks the rule", got)
 			})
 		})
 	}

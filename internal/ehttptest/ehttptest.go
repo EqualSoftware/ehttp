@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -38,10 +39,49 @@ func True(t testing.TB, basis string, cond bool, format string, args ...any) {
 	}
 }
 
-// KnownBug runs check as a strict expected failure for bug id.
-// The test is skipped while check fails, and fails once check passes,
-// so a fixed bug forces its marker to be removed.
+// PendingEnv selects the pending mode of KnownBug when it is not empty.
+const PendingEnv = "EHTTP_PENDING"
+
+// KnownBug runs check for bug id. The check asserts the correct behavior.
+//
+// Default mode: a failure of check fails the test with a message that starts
+// with "pending <id>:". A pass is a pass. This is the TDD view (red until the
+// bug is fixed).
+//
+// Pending mode (EHTTP_PENDING set): a failure skips the test with the same
+// "pending <id>:" prefix, so a gate can stay green and list the open work.
+// A pass fails the test, so a fixed bug forces its marker to be removed.
+//
+// Keep setup (ports, fixtures, servers) outside check: in pending mode a
+// Fatal inside check is reported as pending, not as a setup failure.
 func KnownBug(t *testing.T, id string, check func(t testing.TB)) {
+	t.Helper()
+
+	v := decide(t, id, check, os.Getenv(PendingEnv) != "")
+
+	switch v.kind {
+	case verdictFail:
+		t.Error(v.msg)
+	case verdictSkip:
+		t.Skip(v.msg)
+	}
+}
+
+type verdictKind int
+
+const (
+	verdictPass verdictKind = iota
+	verdictFail
+	verdictSkip
+)
+
+type verdict struct {
+	kind verdictKind
+	msg  string
+}
+
+// decide runs check and maps its result to a verdict for the given mode.
+func decide(t testing.TB, id string, check func(t testing.TB), pending bool) verdict {
 	t.Helper()
 
 	x := &xfail{TB: t}
@@ -58,17 +98,41 @@ func KnownBug(t *testing.T, id string, check func(t testing.TB)) {
 	}()
 	<-done
 
-	if x.failed {
-		t.Skipf("known bug %s: %s", id, strings.Join(x.msgs, "; "))
+	if !pending {
+		if x.failed {
+			return verdict{verdictFail, fmt.Sprintf("pending %s: %s", id, x.summary())}
+		}
+
+		return verdict{}
 	}
 
-	t.Errorf("known bug %s no longer reproduces: remove the KnownBug marker", id)
+	if x.failed {
+		return verdict{verdictSkip, fmt.Sprintf("pending %s: %s", id, x.first())}
+	}
+
+	return verdict{verdictFail, fmt.Sprintf("known bug %s no longer reproduces: remove the KnownBug marker", id)}
 }
 
 type xfail struct {
 	testing.TB
 	failed bool
 	msgs   []string
+}
+
+func (x *xfail) summary() string {
+	if len(x.msgs) == 0 {
+		return "failed"
+	}
+
+	return strings.Join(x.msgs, "; ")
+}
+
+func (x *xfail) first() string {
+	if len(x.msgs) == 0 {
+		return "failed"
+	}
+
+	return x.msgs[0]
 }
 
 func (x *xfail) fail(msg string) {

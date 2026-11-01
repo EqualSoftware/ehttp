@@ -2,12 +2,14 @@ package ehttp_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -157,7 +159,7 @@ func TestClientExecute(t *testing.T) {
 
 		_, err := ehttp.NewClient().Execute(ehttp.WithSource("GET", srv.URL), ehttp.WithContext(ctx))
 
-		ehttptest.True(t, "context contract", err != nil, "no error with a cancelled context")
+		ehttptest.True(t, "context contract", errors.Is(err, context.Canceled), "err = %v, want context.Canceled", err)
 	})
 
 	t.Run("invalid method becomes an error", func(t *testing.T) {
@@ -179,7 +181,9 @@ func TestClientExecute(t *testing.T) {
 
 		_, err := ehttp.NewClient(ehttp.WithTimeout(50 * time.Millisecond)).Execute(ehttp.WithSource("GET", srv.URL))
 
-		ehttptest.True(t, "http.Client.Timeout contract", err != nil, "request to a blocked server did not time out")
+		var ne net.Error
+
+		ehttptest.True(t, "http.Client.Timeout contract (net.Error.Timeout)", errors.As(err, &ne) && ne.Timeout(), "err = %v, want a timeout error", err)
 	})
 }
 
@@ -188,11 +192,11 @@ func TestClientExecute(t *testing.T) {
 func TestClientJSONPayloadContentType(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "NB-7", func(t testing.TB) {
-		var ct atomic.Value
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { ct.Store(r.Header.Get("Content-Type")) }))
-		defer srv.Close()
+	var ct atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { ct.Store(r.Header.Get("Content-Type")) }))
+	t.Cleanup(srv.Close)
 
+	ehttptest.KnownBug(t, "NB-7", func(t testing.TB) {
 		_, err := ehttp.NewClient().Execute(ehttp.WithSource("POST", srv.URL), ehttp.WithJsonPayload(map[string]int{"n": 1}))
 		if err != nil {
 			t.Fatal(err)
@@ -205,9 +209,9 @@ func TestClientJSONPayloadContentType(t *testing.T) {
 // bDeadlineSeen runs one request and returns the time left on the request
 // context seen by the transport (via its Proxy hook). http.Client.Timeout shows up there as a deadline,
 // so the default can be read without waiting for it to expire.
-func bDeadlineSeen(t testing.TB, mk func(tr *http.Transport) *ehttp.Client) (time.Duration, bool) {
+func bDeadlineSeen(t *testing.T, mk func(tr *http.Transport) *ehttp.Client) (time.Duration, bool) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	var left atomic.Int64
 	var has atomic.Bool
@@ -248,11 +252,11 @@ func TestClientDefaultTimeout(t *testing.T) {
 	t.Run("default client has a bounded timeout", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "C7", func(t testing.TB) {
-			left, has := bDeadlineSeen(t, func(tr *http.Transport) *ehttp.Client {
-				return ehttp.NewClient(ehttp.WithTransport(tr))
-			})
+		left, has := bDeadlineSeen(t, func(tr *http.Transport) *ehttp.Client {
+			return ehttp.NewClient(ehttp.WithTransport(tr))
+		})
 
+		ehttptest.KnownBug(t, "C7", func(t testing.TB) {
 			ehttptest.True(t, "C7", has, "no deadline: a silent server blocks the caller forever")
 			ehttptest.True(t, "C7", has && left <= 5*time.Minute, "deadline %v is not bounded", left)
 		})
@@ -264,11 +268,11 @@ func TestClientDefaultTimeout(t *testing.T) {
 func TestClientErrorReturnsNilResponse(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "C7", func(t testing.TB) {
-		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-		addr := srv.URL
-		srv.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	addr := srv.URL
+	srv.Close()
 
+	ehttptest.KnownBug(t, "C7", func(t testing.TB) {
 		res, err := ehttp.NewClient().Execute(ehttp.WithSource("GET", addr))
 
 		ehttptest.True(t, "net/http Client.Do contract", err != nil, "no error from a closed server")
@@ -354,19 +358,19 @@ func TestResponseHelpersCloseBody(t *testing.T) {
 func TestClientReusesConnection(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "C7", func(t testing.TB) {
-		var conns atomic.Int32
-		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, _ = io.WriteString(w, `{"a":1}`+strings.Repeat(" ", 200_000))
-		}))
-		srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
-			if s == http.StateNew {
-				conns.Add(1)
-			}
+	var conns atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"a":1}`+strings.Repeat(" ", 200_000))
+	}))
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			conns.Add(1)
 		}
-		srv.Start()
-		defer srv.Close()
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
 
+	ehttptest.KnownBug(t, "C7", func(t testing.TB) {
 		c := ehttp.NewClient(ehttp.WithTransport(&http.Transport{}))
 
 		for range 3 {
@@ -388,17 +392,17 @@ func TestClientReusesConnection(t *testing.T) {
 // C7: tokens often travel in the query string; they must not reach the log.
 func TestClientDoesNotLogQuery(t *testing.T) {
 	logQueryTest := func(t *testing.T, target func(srvURL string) string, closeServer bool) {
+		logs := fixtures.CaptureLogs(t)
+		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		url := target(srv.URL)
+
+		if closeServer {
+			srv.Close()
+		} else {
+			t.Cleanup(srv.Close)
+		}
+
 		ehttptest.KnownBug(t, "C7", func(tb testing.TB) {
-			logs := fixtures.CaptureLogs(t)
-			srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-			url := target(srv.URL)
-
-			if closeServer {
-				srv.Close()
-			} else {
-				defer srv.Close()
-			}
-
 			res, _ := ehttp.NewClient().Execute(ehttp.WithSource("GET", url))
 			if res != nil && res.Response != nil {
 				res.Body.Close()
@@ -419,6 +423,100 @@ func TestClientDoesNotLogQuery(t *testing.T) {
 
 	t.Run("failure path", func(t *testing.T) {
 		logQueryTest(t, func(u string) string { return u + "/x?token=secret-123" }, true)
+	})
+}
+
+// S14: the base URL is a prefix. A request path must stay under it, keep its
+// percent-encoding, and keep repeated query keys.
+func TestClientBaseURLJoin(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var uris []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		uris = append(uris, r.RequestURI)
+		mu.Unlock()
+	}))
+	t.Cleanup(srv.Close)
+
+	// do sends one request and returns the request-target that the server saw
+	// (empty when the client refused to send it).
+	do := func(target string) (uri string, err error) {
+		mu.Lock()
+		uris = nil
+		mu.Unlock()
+
+		c := ehttp.NewClient(ehttp.WithBaseUrl(srv.URL + "/api/v1"))
+		res, err := c.Execute(ehttp.WithSource("GET", target))
+
+		if res != nil && res.Response != nil {
+			res.Body.Close()
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		if len(uris) > 0 {
+			uri = uris[0]
+		}
+
+		return uri, err
+	}
+
+	for _, target := range []string{"/../admin", "/x/%2e%2e/%2e%2e/admin"} {
+		t.Run("stays under the prefix "+target, func(t *testing.T) {
+			ehttptest.KnownBug(t, "S14", func(t testing.TB) {
+				uri, err := do(target)
+
+				// (a) the client refuses before it sends: no request seen and an
+				// error that is not a network failure. A dial or transport error
+				// is not a refusal.
+				if uri == "" {
+					var opErr *net.OpError
+
+					ehttptest.True(t, "RFC 3986 §5.2.4 (refuse before sending)", err != nil && !errors.As(err, &opErr),
+						"no request reached the server and err = %v", err)
+
+					return
+				}
+
+				// (b) the server saw a path that stays under the prefix.
+
+				p, _, _ := strings.Cut(uri, "?")
+				// a server resolves dot segments before routing (RFC 3986 §5.2.4).
+				resolved := path.Clean(strings.ReplaceAll(strings.ToLower(p), "%2e", "."))
+
+				ehttptest.True(t, "RFC 3986 §5.2.4 (a base URL is a prefix)", strings.HasPrefix(resolved, "/api/v1/"),
+					"server saw %q, which resolves to %q", uri, resolved)
+			})
+		})
+	}
+
+	t.Run("keeps an encoded slash", func(t *testing.T) {
+		ehttptest.KnownBug(t, "S14", func(t testing.TB) {
+			uri, err := do("/files/a%2Fb")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			ehttptest.Eq(t, "RFC 3986 §2.2 (%2F is data, not a separator)", uri, "/api/v1/files/a%2Fb")
+		})
+	})
+
+	t.Run("keeps repeated query keys", func(t *testing.T) {
+		ehttptest.KnownBug(t, "S14", func(t testing.TB) {
+			uri, err := do("/q?a=1&a=2")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, query, _ := strings.Cut(uri, "?")
+			vals, _ := url.ParseQuery(query)
+
+			ehttptest.Eq(t, "RFC 3986 §3.4 (the query is kept whole)", strings.Join(vals["a"], ","), "1,2")
+		})
 	})
 }
 

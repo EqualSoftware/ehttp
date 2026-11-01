@@ -68,10 +68,11 @@ func TestAcceptEncodingCallsNext(t *testing.T) {
 
 // Vary is a list of field names (RFC 9110 §12.5.5). A name that only
 // contains "Accept-Encoding" as a substring must not count as present.
+// NB-1 is the same bug as S11 (substring match in ResponseWriter.Vary).
 func TestAcceptEncodingVarySubstring(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "NB-1", func(t testing.TB) {
+	ehttptest.KnownBug(t, "S11", func(t testing.TB) {
 		outer := func(next ehttp.Handler) ehttp.HandlerFunc {
 			return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
 				res.Append("Vary", "X-Accept-Encoding-Hint")

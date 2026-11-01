@@ -201,7 +201,7 @@ func TestResponseWriterVary(t *testing.T) {
 		{"name is case-insensitive", "RFC 9110 §5.1", "", []string{"Origin", "origin"}, "Origin"},
 		{"preset without spaces is normalized", "RFC 9110 §5.6.1", "A,B", []string{"C"}, "A, B, C"},
 		{"preset already has the value", "RFC 9110 §12.5.5", "A, B", []string{"B"}, "A, B"},
-		{"shorter name after longer prefix-free name", "RFC 9110 §12.5.5", "Accept", []string{"Accept-Encoding"}, "Accept, Accept-Encoding"},
+		{"longer name added after its own prefix", "RFC 9110 §12.5.5", "Accept", []string{"Accept-Encoding"}, "Accept, Accept-Encoding"},
 	}
 
 	for _, tt := range tests {
@@ -326,13 +326,15 @@ func TestResponseWriterFinishedRequestIsInert(t *testing.T) {
 				s.GET("/", h)
 
 				req := httptest.NewRequestWithContext(ctx, "GET", "/", http.NoBody)
-				rec := ehttptest.Do(s, req)
+				spy := &aSpyWriter{header: http.Header{}}
+				s.ServeHTTP(spy, req)
 
+				// The recorder code is 200 by default, so count the calls instead.
 				basis := "ResponseWriter.finished (design 2.3: late writes are dropped)"
-				ehttptest.Eq(t, basis, rec.Code, 200)
-				ehttptest.Eq(t, basis, rec.Body.Len(), 0)
-				ehttptest.Eq(t, basis, rec.Header().Get("X-Late"), "")
-				ehttptest.Eq(t, basis, rec.Header().Get(HeaderContentType), "")
+				ehttptest.Eq(t, basis, spy.headerCalls, 0)
+				ehttptest.Eq(t, basis, spy.bodyBytes, 0)
+				ehttptest.Eq(t, basis, spy.header.Get("X-Late"), "")
+				ehttptest.Eq(t, basis, spy.header.Get(HeaderContentType), "")
 			})
 		}
 	}
@@ -350,6 +352,21 @@ func aTemplateServer(t *testing.T, files map[string]string, opts ...serverOption
 	}
 
 	return NewServer(append([]serverOption{WithTemplates(filepath.Join(dir, "*.html"))}, opts...)...)
+}
+
+// aSpyWriter counts what reaches the wire (WriteHeader and Write calls).
+type aSpyWriter struct {
+	header      http.Header
+	headerCalls int
+	bodyBytes   int
+}
+
+func (w *aSpyWriter) Header() http.Header { return w.header }
+func (w *aSpyWriter) WriteHeader(int)     { w.headerCalls++ }
+
+func (w *aSpyWriter) Write(b []byte) (int, error) {
+	w.bodyBytes += len(b)
+	return len(b), nil
 }
 
 func TestResponseWriterRender(t *testing.T) {

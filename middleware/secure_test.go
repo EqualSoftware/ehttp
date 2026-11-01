@@ -112,22 +112,24 @@ func TestSecureHSTS(t *testing.T) {
 func TestSecureHSTSOverDirectTLS(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "NB-6", func(t testing.TB) {
-		srv := httptest.NewTLSServer(fixtures.Handler(fixtures.OK, middleware.Secure(middleware.SecureOptions{HSTSMaxAge: 31536000})))
-		defer srv.Close()
+	// Setup stays outside KnownBug: a setup failure is a real FAIL.
+	srv := httptest.NewTLSServer(fixtures.Handler(fixtures.OK, middleware.Secure(middleware.SecureOptions{HSTSMaxAge: 31536000})))
+	defer srv.Close()
 
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/x", http.NoBody)
-		if err != nil {
-			t.Fatal(err)
-		}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/x", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-		res, err := srv.Client().Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer res.Body.Close()
+	res, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
 
-		ehttptest.Eq(t, "RFC 6797 §7.2", res.StatusCode, http.StatusOK)
+	// NB-6 is the same bug as S7 (Protocol() ignores r.TLS).
+	ehttptest.Eq(t, "RFC 9110 §15.3.1", res.StatusCode, http.StatusOK)
+	ehttptest.KnownBug(t, "S7", func(t testing.TB) {
 		ehttptest.True(t, "RFC 6797 §7.2", res.Header.Get("Strict-Transport-Security") != "",
 			"no Strict-Transport-Security on a direct TLS connection")
 	})
