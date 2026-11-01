@@ -327,9 +327,7 @@ func TestRequestProtocolAndHost(t *testing.T) {
 	t.Run("plain HTTP request has protocol http", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "S7", func(t testing.TB) {
-			ehttptest.Eq(t, "S7: Protocol() derives from r.TLS", aReq("GET", "/", nil).Protocol(), "http")
-		})
+		ehttptest.Eq(t, "S7: Protocol() derives from r.TLS", aReq("GET", "/", nil).Protocol(), "http")
 	})
 
 	t.Run("TLS request has protocol https", func(t *testing.T) {
@@ -338,9 +336,7 @@ func TestRequestProtocolAndHost(t *testing.T) {
 		req := aReq("GET", "/", nil)
 		req.Request.TLS = &tls.ConnectionState{}
 
-		ehttptest.KnownBug(t, "S7", func(t testing.TB) {
-			ehttptest.Eq(t, "S7: Protocol() derives from r.TLS", req.Protocol(), "https")
-		})
+		ehttptest.Eq(t, "S7: Protocol() derives from r.TLS", req.Protocol(), "https")
 	})
 
 	t.Run("Hostname is the Host header without the port", func(t *testing.T) {
@@ -349,9 +345,7 @@ func TestRequestProtocolAndHost(t *testing.T) {
 		req := aReq("GET", "/", nil)
 		req.Request.Host = "example.com:8080"
 
-		ehttptest.KnownBug(t, "S7", func(t testing.TB) {
-			ehttptest.Eq(t, "S7: Hostname() comes from r.Host without the port", req.Hostname(), "example.com")
-		})
+		ehttptest.Eq(t, "S7: Hostname() comes from r.Host without the port", req.Hostname(), "example.com")
 	})
 
 	for _, h := range []string{HeaderXForwardedProto, HeaderXForwardedProtocol} {
@@ -361,9 +355,7 @@ func TestRequestProtocolAndHost(t *testing.T) {
 			req := aReq("GET", "/", nil, h, "https")
 			req.Request.TLS = nil
 
-			ehttptest.KnownBug(t, "S7", func(t testing.TB) {
-				ehttptest.Eq(t, "S7: X-Forwarded-* only from trusted proxies (Express, Echo v5, Fiber v3)", req.Protocol(), "http")
-			})
+			ehttptest.Eq(t, "S7: X-Forwarded-* only from trusted proxies (Express, Echo v5, Fiber v3)", req.Protocol(), "http")
 		})
 	}
 
@@ -372,9 +364,7 @@ func TestRequestProtocolAndHost(t *testing.T) {
 
 		req := aReq("GET", "/", nil, HeaderXForwardedHost, "evil.example")
 
-		ehttptest.KnownBug(t, "S7", func(t testing.TB) {
-			ehttptest.Eq(t, "S7: X-Forwarded-* only from trusted proxies", req.Host(), "example.com")
-		})
+		ehttptest.Eq(t, "S7: X-Forwarded-* only from trusted proxies", req.Host(), "example.com")
 	})
 }
 
@@ -398,9 +388,7 @@ func TestRequestProtocolAndHostOverRealServer(t *testing.T) {
 		ts := aRealServer(t, handler())
 		_, body := aGetBody(t, ts.URL+"/")
 
-		ehttptest.KnownBug(t, "S7", func(t testing.TB) {
-			ehttptest.Eq(t, "S7: Protocol/Hostname work on a real server", body, "http|127.0.0.1")
-		})
+		ehttptest.Eq(t, "S7: Protocol/Hostname work on a real server", body, "http|127.0.0.1")
 	})
 
 	t.Run("https", func(t *testing.T) {
@@ -419,8 +407,6 @@ func TestRequestProtocolAndHostOverRealServer(t *testing.T) {
 
 		b, _ := io.ReadAll(resp.Body)
 
-		ehttptest.KnownBug(t, "S7", func(t testing.TB) {
-			ehttptest.Eq(t, "S7: Protocol() derives from r.TLS", string(b), "https|127.0.0.1")
-		})
+		ehttptest.Eq(t, "S7: Protocol() derives from r.TLS", string(b), "https|127.0.0.1")
 	})
 }

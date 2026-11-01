@@ -36,6 +36,7 @@ type Router struct {
 	middlewares []MiddlewareHandlerFunc
 	routes      []*route
 	cors        *CorsOptions
+	proxies     trustedProxies
 }
 
 type route struct {
@@ -158,6 +159,7 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	req := &Request{
 		Request: r,
+		proxies: router.proxies,
 	}
 
 	corsUpdateHeaders(res, req, router.cors)

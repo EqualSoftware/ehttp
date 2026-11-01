@@ -156,31 +156,23 @@ func TestCSecurityS7SpoofedForwardedHeaders(t *testing.T) {
 	spoof := http.Header{"X-Forwarded-Proto": {"https"}, "X-Forwarded-Host": {"evil.example"}, "X-Forwarded-For": {"6.6.6.6"}}
 
 	t.Run("Protocol ignores X-Forwarded-Proto", func(t *testing.T) {
-		ehttptest.KnownBug(t, "S7", func(t testing.TB) {
-			proto, _, _ := cWho(t, ts, spoof)
-			ehttptest.Eq(t, "S7: untrusted peer cannot claim https", proto, "http")
-		})
+		proto, _, _ := cWho(t, ts, spoof)
+		ehttptest.Eq(t, "S7: untrusted peer cannot claim https", proto, "http")
 	})
 
 	t.Run("Host ignores X-Forwarded-Host", func(t *testing.T) {
-		ehttptest.KnownBug(t, "S7", func(t testing.TB) {
-			_, host, _ := cWho(t, ts, spoof)
-			ehttptest.Eq(t, "S7: password-reset links must not use a forged host", host, cHost(ts))
-		})
+		_, host, _ := cWho(t, ts, spoof)
+		ehttptest.Eq(t, "S7: password-reset links must not use a forged host", host, cHost(ts))
 	})
 
 	t.Run("Hostname is the request host without port", func(t *testing.T) {
-		ehttptest.KnownBug(t, "S7", func(t testing.TB) {
-			_, _, hostname := cWho(t, ts, nil)
-			ehttptest.Eq(t, "S7 (Hostname() is empty on server requests)", hostname, "127.0.0.1")
-		})
+		_, _, hostname := cWho(t, ts, nil)
+		ehttptest.Eq(t, "S7 (Hostname() is empty on server requests)", hostname, "127.0.0.1")
 	})
 
 	t.Run("Protocol without proxy headers is http", func(t *testing.T) {
-		ehttptest.KnownBug(t, "S7", func(t testing.TB) {
-			proto, _, _ := cWho(t, ts, nil)
-			ehttptest.Eq(t, "S7 (Protocol() is empty on server requests)", proto, "http")
-		})
+		proto, _, _ := cWho(t, ts, nil)
+		ehttptest.Eq(t, "S7 (Protocol() is empty on server requests)", proto, "http")
 	})
 
 	t.Run("Host without proxy headers is the Host header", func(t *testing.T) {
@@ -196,9 +188,7 @@ func TestCSecurityS7SpoofedProtoTriggersHSTS(t *testing.T) {
 
 	resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/who", http.Header{"X-Forwarded-Proto": {"https"}})
 
-	ehttptest.KnownBug(t, "S7", func(t testing.TB) {
-		ehttptest.Eq(t, "RFC 6797 §7.2 + S7", resp.Header.Get("Strict-Transport-Security"), "")
-	})
+	ehttptest.Eq(t, "RFC 6797 §7.2 + S7", resp.Header.Get("Strict-Transport-Security"), "")
 
 	plain, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/who", nil)
 	ehttptest.Eq(t, "RFC 6797 §7.2: plain HTTP gets no HSTS", plain.Header.Get("Strict-Transport-Security"), "")
@@ -764,8 +754,8 @@ func TestCSecurityC5BodyLimit(t *testing.T) {
 // S8: slowloris (ReadHeaderTimeout)
 // ---------------------------------------------------------------------------
 
-// Listen builds its own http.Server and exposes no option, so the only probe is
-// a half-open connection. The proposal default is 10s, so the test needs ~12s:
+// The default ReadHeaderTimeout is 10s, and the probe is a half-open
+// connection that never ends its headers, so the test needs ~12s:
 // opt in with EHTTP_SLOW_TESTS=1 (nightly), skipped otherwise to keep the suite fast.
 func TestCSecurityS8Slowloris(t *testing.T) {
 	if os.Getenv("EHTTP_SLOW_TESTS") == "" {
@@ -794,8 +784,6 @@ func TestCSecurityS8Slowloris(t *testing.T) {
 
 	closedByServer := readErr != nil && (!errors.As(readErr, &nerr) || !nerr.Timeout())
 
-	ehttptest.KnownBug(t, "S8", func(t testing.TB) {
-		ehttptest.True(t, "S8 (gosec G112): server drops a connection that never finishes its headers",
-			closedByServer, "connection still open after 13s")
-	})
+	ehttptest.True(t, "S8 (gosec G112): server drops a connection that never finishes its headers",
+		closedByServer, "connection still open after 13s")
 }

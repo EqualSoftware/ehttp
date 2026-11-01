@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -42,6 +43,9 @@ func aWaitReady(t *testing.T, url string) {
 		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, url, http.NoBody)
 
 		if resp, err := http.DefaultClient.Do(req); err == nil {
+			// Read the body so the connection returns to the pool. An unused
+			// extra connection would make Shutdown wait (net/http: 5 s for a new conn).
+			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			return
 		}
@@ -292,9 +296,7 @@ func TestServerListenReturnsBindError(t *testing.T) {
 		t.Fatal("Listen hung on a busy port")
 	}
 
-	ehttptest.KnownBug(t, "S8", func(t testing.TB) {
-		ehttptest.True(t, "S8: Listen returns the real error", got != nil, "Listen returned nil for a busy port")
-	})
+	ehttptest.True(t, "S8: Listen returns the real error", got != nil, "Listen returned nil for a busy port")
 }
 
 func TestServerListenWaitsForInFlightRequests(t *testing.T) {
@@ -374,8 +376,6 @@ func TestServerListenWaitsForInFlightRequests(t *testing.T) {
 		t.Fatal("client never got its response")
 	}
 
-	ehttptest.KnownBug(t, "S8", func(t testing.TB) {
-		ehttptest.True(t, "S8: shutdown waits for in-flight requests (up to a deadline)", handlerFinishedBeforeListenReturned,
-			"Listen returned while the handler was still running")
-	})
+	ehttptest.True(t, "S8: shutdown waits for in-flight requests (up to a deadline)", handlerFinishedBeforeListenReturned,
+		"Listen returned while the handler was still running")
 }

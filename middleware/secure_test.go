@@ -99,7 +99,11 @@ func TestSecureHSTS(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Secure(tt.opt)), fixtures.Req("GET", "/x", "X-Forwarded-Proto", tt.proto))
+			// S7: X-Forwarded-Proto counts only from a trusted peer (httptest peer 192.0.2.1).
+			s := ehttp.NewServer(ehttp.WithTrustedProxies("192.0.2.1"))
+			s.GET("/x", fixtures.OK, middleware.Secure(tt.opt))
+
+			rec := ehttptest.Do(s, fixtures.Req("GET", "/x", "X-Forwarded-Proto", tt.proto))
 
 			ehttptest.Eq(t, "RFC 6797 §6.1", rec.Header().Get("Strict-Transport-Security"), tt.want)
 		})
@@ -129,10 +133,8 @@ func TestSecureHSTSOverDirectTLS(t *testing.T) {
 
 	// NB-6 is the same bug as S7 (Protocol() ignores r.TLS).
 	ehttptest.Eq(t, "RFC 9110 §15.3.1", res.StatusCode, http.StatusOK)
-	ehttptest.KnownBug(t, "S7", func(t testing.TB) {
-		ehttptest.True(t, "RFC 6797 §7.2", res.Header.Get("Strict-Transport-Security") != "",
-			"no Strict-Transport-Security on a direct TLS connection")
-	})
+	ehttptest.True(t, "RFC 6797 §7.2", res.Header.Get("Strict-Transport-Security") != "",
+		"no Strict-Transport-Security on a direct TLS connection")
 }
 
 func TestSecureAppliesToRouterErrors(t *testing.T) {

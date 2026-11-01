@@ -102,7 +102,7 @@ func Secure(o SecureOptions) ehttp.MiddlewareHandlerFunc {
 			res.Append(ehttp.HeaderXContentTypeOptions, o.ContentTypeNosniff)
 			res.Append(ehttp.HeaderXFrameOptions, o.XFrameOptions)
 
-			if (req.Protocol() == "https" || (req.Header(ehttp.HeaderXForwardedProto) == "https")) && o.HSTSMaxAge != 0 {
+			if req.Protocol() == "https" && o.HSTSMaxAge != 0 {
 				subdomains := ""
 
 				if !o.HSTSExcludeSubdomains {

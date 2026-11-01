@@ -3,6 +3,7 @@ package ehttp
 import (
 	"context"
 	"html/template"
+	"net"
 	"net/http"
 	"os/signal"
 	"slices"
@@ -23,9 +24,84 @@ type CorsOptions struct {
 
 type serverOption func(*Server)
 
+const (
+	defaultReadHeaderTimeout = 10 * time.Second
+	defaultShutdownTimeout   = 30 * time.Second
+)
+
 type Server struct {
 	router *Router
 	port   string
+
+	readHeaderTimeout time.Duration
+	readTimeout       time.Duration
+	writeTimeout      time.Duration
+	idleTimeout       time.Duration
+	maxHeaderBytes    int
+	shutdownTimeout   time.Duration
+}
+
+// mustBeNonNegative panics when a duration option is negative.
+func mustBeNonNegative(option string, d time.Duration) {
+	if d < 0 {
+		panic("ehttp: " + option + " cannot be negative")
+	}
+}
+
+// WithTrustedProxies sets the peers that can send X-Forwarded-* headers.
+// A value is a CIDR, a single IP, or loopback, linklocal or uniquelocal.
+// Without it, no peer is trusted. An invalid value panics.
+func WithTrustedProxies(cidrs ...string) serverOption {
+	list := parseTrustedProxies(cidrs)
+
+	return func(s *Server) {
+		s.router.proxies = list
+	}
+}
+
+// WithReadHeaderTimeout sets http.Server.ReadHeaderTimeout. The default is 10 s.
+func WithReadHeaderTimeout(d time.Duration) serverOption {
+	mustBeNonNegative("WithReadHeaderTimeout", d)
+
+	return func(s *Server) { s.readHeaderTimeout = d }
+}
+
+// WithReadTimeout sets http.Server.ReadTimeout.
+func WithReadTimeout(d time.Duration) serverOption {
+	mustBeNonNegative("WithReadTimeout", d)
+
+	return func(s *Server) { s.readTimeout = d }
+}
+
+// WithWriteTimeout sets http.Server.WriteTimeout.
+func WithWriteTimeout(d time.Duration) serverOption {
+	mustBeNonNegative("WithWriteTimeout", d)
+
+	return func(s *Server) { s.writeTimeout = d }
+}
+
+// WithIdleTimeout sets http.Server.IdleTimeout.
+func WithIdleTimeout(d time.Duration) serverOption {
+	mustBeNonNegative("WithIdleTimeout", d)
+
+	return func(s *Server) { s.idleTimeout = d }
+}
+
+// WithMaxHeaderBytes sets http.Server.MaxHeaderBytes.
+func WithMaxHeaderBytes(n int) serverOption {
+	if n < 0 {
+		panic("ehttp: WithMaxHeaderBytes cannot be negative")
+	}
+
+	return func(s *Server) { s.maxHeaderBytes = n }
+}
+
+// WithShutdownTimeout sets how long Listen waits for in-flight requests after
+// its context is done. The default is 30 s. Zero means no limit.
+func WithShutdownTimeout(d time.Duration) serverOption {
+	mustBeNonNegative("WithShutdownTimeout", d)
+
+	return func(s *Server) { s.shutdownTimeout = d }
 }
 
 func WithPort(v string) serverOption {
@@ -90,7 +166,9 @@ func (o *CorsOptions) clone() *CorsOptions {
 
 func NewServer(options ...serverOption) *Server {
 	server := &Server{
-		port: "3000",
+		port:              "3000",
+		readHeaderTimeout: defaultReadHeaderTimeout,
+		shutdownTimeout:   defaultShutdownTimeout,
 		router: &Router{
 			cors: DefaultCorsOptions.clone(),
 		},
@@ -148,35 +226,74 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.router.ServeHTTP(w, r)
 }
 
+// Listen serves until c is done, then shuts down gracefully.
+// It returns a bind or serve error. A clean shutdown returns nil.
 func (s *Server) Listen(c context.Context) error {
-	server := &http.Server{
-		Addr:                         ":" + s.port,
-		Handler:                      s.router,
-		DisableGeneralOptionsHandler: true,
-	}
-
-	zap.L().Info("server is running", zap.String("port", s.port))
+	server := s.httpServer()
 
 	ctx, quit := signal.NotifyContext(c, syscall.SIGINT, syscall.SIGTERM)
 	defer quit()
 
-	var exit_message error
-
-	go (func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			exit_message = err
-			quit()
-		}
-	})()
-
-	<-ctx.Done()
-	if exit_message == nil {
-		zap.L().Info("shutting down the server gracefully")
-	} else {
-		zap.L().Error("shutting down the server with error", zap.Error(exit_message))
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", server.Addr)
+	if err != nil {
+		return err
 	}
 
-	server.Shutdown(ctx)
+	zap.L().Info("server is running", zap.String("port", s.port))
 
-	return nil
+	serveErr := make(chan error, 1)
+
+	go func() { serveErr <- server.Serve(ln) }()
+
+	select {
+	case err := <-serveErr:
+		_ = server.Close()
+
+		zap.L().Error("shutting down the server with error", zap.Error(err))
+
+		return err
+	case <-ctx.Done():
+	}
+
+	// Release the signal handler: a second signal takes the Go default and
+	// ends the process while the shutdown waits.
+	quit()
+
+	zap.L().Info("shutting down the server gracefully")
+
+	return s.shutdown(context.WithoutCancel(ctx), server, serveErr)
+}
+
+// httpServer builds the http.Server from the options of s.
+func (s *Server) httpServer() *http.Server {
+	return &http.Server{
+		Addr:                         ":" + s.port,
+		Handler:                      s.router,
+		DisableGeneralOptionsHandler: true,
+		ReadHeaderTimeout:            s.readHeaderTimeout,
+		ReadTimeout:                  s.readTimeout,
+		WriteTimeout:                 s.writeTimeout,
+		IdleTimeout:                  s.idleTimeout,
+		MaxHeaderBytes:               s.maxHeaderBytes,
+	}
+}
+
+// shutdown gets a context without the cancel of the parent, which is done.
+// Its deadline is the shutdown timeout.
+func (s *Server) shutdown(ctx context.Context, server *http.Server, serveErr <-chan error) error {
+	if s.shutdownTimeout > 0 {
+		var cancel context.CancelFunc
+
+		ctx, cancel = context.WithTimeout(ctx, s.shutdownTimeout)
+		defer cancel()
+	}
+
+	err := server.Shutdown(ctx)
+	if err != nil {
+		_ = server.Close()
+	}
+
+	<-serveErr //nolint:errcheck // Serve returns ErrServerClosed after Shutdown
+
+	return err
 }

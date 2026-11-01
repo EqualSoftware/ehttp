@@ -18,6 +18,9 @@ var ErrRequestBodyTooLarge = errors.New("request body too large")
 
 type Request struct {
 	Request *http.Request
+
+	proxies trustedProxies
+	peer    uint8
 }
 
 func (req *Request) WithContext(ctx context.Context) *Request {
@@ -37,19 +40,18 @@ func (req *Request) RoutePath() string {
 	return req.Request.Pattern
 }
 
+// Protocol returns "https" for a TLS connection and "http" otherwise.
+// A trusted proxy can set it with X-Forwarded-Proto (see WithTrustedProxies).
 func (req *Request) Protocol() string {
-	value := req.Request.URL.Scheme
-
-	if h := req.Header(HeaderXForwardedProto); h != "" {
-		value = h
-	} else if h := req.Header(HeaderXForwardedProtocol); h != "" {
-		value = h
+	if v := req.forwardedProto(); v != "" {
+		return v
 	}
 
-	value = strings.TrimSuffix(value, "://")
-	value = strings.TrimSuffix(value, ":")
+	if req.Request.TLS != nil {
+		return "https"
+	}
 
-	return strings.ToLower(value)
+	return "http"
 }
 
 // Cookie returns the value of the cookie name, or "" if it is absent.
@@ -62,16 +64,19 @@ func (req *Request) Cookie(name string) string {
 	return c.Value
 }
 
+// Host returns the Host header. A trusted proxy can set it with
+// X-Forwarded-Host (see WithTrustedProxies).
 func (req *Request) Host() string {
-	if host := req.Header(HeaderXForwardedHost); host != "" {
+	if host := req.forwardedHost(); host != "" {
 		return host
 	}
 
 	return req.Request.Host
 }
 
+// Hostname returns Host without the port, in lowercase (RFC 3986 §3.2.2).
 func (req *Request) Hostname() string {
-	return req.Request.URL.Hostname()
+	return strings.ToLower(hostOnly(req.Host()))
 }
 
 func (req *Request) Path() string {

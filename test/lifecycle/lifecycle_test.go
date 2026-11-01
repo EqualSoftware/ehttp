@@ -302,10 +302,8 @@ func TestCLifecycleListenReturnsBindError(t *testing.T) {
 		t.Fatal("Listen hung on a busy port")
 	}
 
-	ehttptest.KnownBug(t, "S8", func(t testing.TB) {
-		ehttptest.True(t, "S8: bind failure must be returned, not swallowed",
-			listenErr != nil, "Listen returned nil on busy port %s", port)
-	})
+	ehttptest.True(t, "S8: bind failure must be returned, not swallowed",
+		listenErr != nil, "Listen returned nil on busy port %s", port)
 }
 
 func TestCLifecycleListenShutdownWaitsForInflight(t *testing.T) {
@@ -374,10 +372,8 @@ func TestCLifecycleListenShutdownWaitsForInflight(t *testing.T) {
 		t.Fatal("client never got its response")
 	}
 
-	ehttptest.KnownBug(t, "S8", func(t testing.TB) {
-		ehttptest.True(t, "S8: graceful shutdown waits for in-flight requests (net/http Server.Shutdown)",
-			!returnedBeforeHandler, "Listen returned while the handler was still running")
-	})
+	ehttptest.True(t, "S8: graceful shutdown waits for in-flight requests (net/http Server.Shutdown)",
+		!returnedBeforeHandler, "Listen returned while the handler was still running")
 }
 
 // ---------------------------------------------------------------------------
@@ -403,4 +399,64 @@ func TestCLifecycleHeadHasNoBodyOnTheWire(t *testing.T) {
 		strings.Contains(headHead, "Content-Length: 5") && strings.Contains(getHead, "Content-Length: 5"),
 		"HEAD headers: %q", headHead)
 	ehttptest.True(t, "RFC 9110 §9.3.2: HEAD status line is 200", strings.HasPrefix(head, "HTTP/1.1 200"), "%q", head)
+}
+
+// ---------------------------------------------------------------------------
+// S8 over a real Listen
+// ---------------------------------------------------------------------------
+
+func TestCLifecycleReadHeaderTimeoutDropsSlowClient(t *testing.T) {
+	l := fixtures.Listen(t, func(port string) *ehttp.Server {
+		return ehttp.NewServer(ehttp.WithPort(port), ehttp.WithReadHeaderTimeout(200*time.Millisecond))
+	})
+
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", "127.0.0.1:"+l.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	_, _ = conn.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\nX-Slow: "))
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+
+	_, readErr := conn.Read(make([]byte, 1))
+
+	var nerr net.Error
+
+	closed := readErr != nil && (!errors.As(readErr, &nerr) || !nerr.Timeout())
+	ehttptest.True(t, "S8 row: WithReadHeaderTimeout drops a connection that never ends its headers", closed, "connection still open: %v", readErr)
+}
+
+func TestCLifecycleShutdownTimeoutStopsWaiting(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+
+	l := fixtures.Listen(t, func(port string) *ehttp.Server {
+		srv := ehttp.NewServer(ehttp.WithPort(port), ehttp.WithShutdownTimeout(100*time.Millisecond))
+		srv.GET("/hang", func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+			started <- struct{}{}
+			<-release
+		})
+
+		return srv
+	})
+	defer close(release)
+
+	go func() {
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:"+l.Port+"/hang", http.NoBody)
+
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+
+	<-started
+	l.Cancel()
+
+	select {
+	case err := <-l.Result:
+		ehttptest.True(t, "S8 row: Listen returns the deadline error", errors.Is(err, context.DeadlineExceeded), "got %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Listen ignored WithShutdownTimeout")
+	}
 }
