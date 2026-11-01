@@ -88,24 +88,20 @@ func TestCachePublic(t *testing.T) {
 	t.Run("no public directive on the default path", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "S10", func(t testing.TB) {
-			rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Cache(time.Minute)), fixtures.Req("GET", "/x"))
-			cc := rec.Header().Get("Cache-Control")
+		rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Cache(time.Minute)), fixtures.Req("GET", "/x"))
+		cc := rec.Header().Get("Cache-Control")
 
-			ehttptest.True(t, "RFC 9111 §3.5", !strings.Contains(cc, "public"), "Cache-Control %q has public", cc)
-		})
+		ehttptest.True(t, "RFC 9111 §3.5", !strings.Contains(cc, "public"), "Cache-Control %q has public", cc)
 	})
 
 	t.Run("private when the request has Authorization", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "S10", func(t testing.TB) {
-			rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Cache(time.Minute)), fixtures.Req("GET", "/x", "Authorization", "Bearer t"))
-			cc := rec.Header().Get("Cache-Control")
+		rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Cache(time.Minute)), fixtures.Req("GET", "/x", "Authorization", "Bearer t"))
+		cc := rec.Header().Get("Cache-Control")
 
-			ehttptest.True(t, "S10(b)", strings.Contains(cc, "private"), "Cache-Control %q lacks private for an authenticated request", cc)
-			ehttptest.True(t, "S10(b)", !strings.Contains(cc, "public"), "Cache-Control %q has public for an authenticated request", cc)
-		})
+		ehttptest.True(t, "S10(b)", strings.Contains(cc, "private"), "Cache-Control %q lacks private for an authenticated request", cc)
+		ehttptest.True(t, "S10(b)", !strings.Contains(cc, "public"), "Cache-Control %q has public for an authenticated request", cc)
 	})
 }
 
