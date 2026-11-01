@@ -587,13 +587,13 @@ func conformanceCases() []conformanceCase {
 			want: cAll(cStatus(200), cHdr("Access-Control-Allow-Origin", fixtures.OriginA))},
 		{name: "CORS list: second allowed origin is echoed", basis: fetch, fixture: "cors-list", method: get, path: "/api", hdr: cors(fixtures.OriginB),
 			want: cHdr("Access-Control-Allow-Origin", fixtures.OriginB)},
-		{name: "CORS list: Vary: Origin on CORS response", basis: fcach + " (S3)", knownBug: "S3", fixture: "cors-list", method: get, path: "/api", hdr: cors(fixtures.OriginA),
+		{name: "CORS list: Vary: Origin on CORS response", basis: fcach + " (S3)", fixture: "cors-list", method: get, path: "/api", hdr: cors(fixtures.OriginA),
 			want: cHasToken("Vary", "Origin")},
-		{name: "CORS list: Vary: Origin even without Origin header", basis: fcach + " (S3)", knownBug: "S3", fixture: "cors-list", method: get, path: "/api",
+		{name: "CORS list: Vary: Origin even without Origin header", basis: fcach + " (S3)", fixture: "cors-list", method: get, path: "/api",
 			want: cHasToken("Vary", "Origin")},
-		{name: "CORS list: origin outside the list gets no ACAO", basis: fetch + " (S3)", knownBug: "S3", fixture: "cors-list", method: get, path: "/api", hdr: cors(fixtures.OriginEvil),
+		{name: "CORS list: origin outside the list gets no ACAO", basis: fetch + " (S3)", fixture: "cors-list", method: get, path: "/api", hdr: cors(fixtures.OriginEvil),
 			want: cNoHdr("Access-Control-Allow-Origin")},
-		{name: "CORS star: static * or echo+Vary", basis: fcach + " (S3)", knownBug: "S3", fixture: "cors-star", method: get, path: "/api", hdr: cors(fixtures.OriginA),
+		{name: "CORS star: static * or echo+Vary", basis: fcach + " (S3)", fixture: "cors-star", method: get, path: "/api", hdr: cors(fixtures.OriginA),
 			want: func(t testing.TB, b string, r *cResp) {
 				acao := r.Header.Get("Access-Control-Allow-Origin")
 				if acao == "*" {
@@ -611,7 +611,7 @@ func conformanceCases() []conformanceCase {
 			want: cAll(cHdr("Access-Control-Allow-Origin", fixtures.OriginA), cHdr("Access-Control-Allow-Credentials", "true"))},
 		{name: "CORS preflight: allowed origin and method", basis: "Fetch §4.8 CORS-preflight fetch (ok status)", fixture: "cors-list", method: opts, path: "/api", hdr: preflight(fixtures.OriginA, "GET"),
 			want: cAll(cStatus(200, 204), cHdr("Access-Control-Allow-Origin", fixtures.OriginA), cHasHdr("Access-Control-Allow-Methods"))},
-		{name: "CORS preflight: listed origin without Sec-Fetch-Site", basis: "Fetch §3.2.2 + allowlist (S3, was NC-4/ND-1)", knownBug: "S3", fixture: "cors-list", method: opts, path: "/api",
+		{name: "CORS preflight: listed origin without Sec-Fetch-Site", basis: "Fetch §3.2.2 + allowlist (S3, was NC-4/ND-1)", fixture: "cors-list", method: opts, path: "/api",
 			hdr:  map[string]string{"Origin": fixtures.OriginA, "Access-Control-Request-Method": "GET"},
 			want: cStatus(200, 204)},
 		{name: "CORS preflight: Vary lists request-dependent headers", basis: fcach, fixture: "cors-list", method: opts, path: "/api", hdr: preflight(fixtures.OriginA, "GET"),
@@ -626,7 +626,7 @@ func conformanceCases() []conformanceCase {
 		{name: "CORS preflight: disallowed request header rejected", basis: "Fetch §4.8 CORS-preflight fetch", fixture: "cors-restricted", method: opts, path: "/api",
 			hdr:  map[string]string{"Origin": fixtures.OriginA, "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "x-evil", "Sec-Fetch-Site": "cross-site"},
 			want: cStatus(403)},
-		{name: "CORS preflight: Max-Age from CacheDuration", basis: fetch + " Access-Control-Max-Age (S3)", knownBug: "S3", fixture: "cors-maxage", method: opts, path: "/api", hdr: preflight(fixtures.OriginA, "GET"),
+		{name: "CORS preflight: Max-Age from CacheDuration", basis: fetch + " Access-Control-Max-Age (S3)", fixture: "cors-maxage", method: opts, path: "/api", hdr: preflight(fixtures.OriginA, "GET"),
 			want: cHdr("Access-Control-Max-Age", fmt.Sprint(int((10 * time.Minute).Seconds())))},
 	}
 }

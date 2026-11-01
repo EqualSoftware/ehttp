@@ -429,41 +429,30 @@ func FuzzVary(f *testing.F) {
 // ---------------------------------------------------------------- cors
 
 func FuzzCorsOrigin(f *testing.F) {
-	for _, s := range [][4]string{
-		{"http://a.com", "", "a.com", "http://a.com"},
-		{"http://a.com", "cross-site", "a.com", "http://a.com"},
-		{"http://evil.com", "cross-site", "a.com", "http://a.com"},
-		{"null", "cross-site", "a.com", "null"},
-		{"", "cross-site", "a.com", "http://a.com"},
-		{"http://a.com", "same-origin", "b.com", "http://a.com"},
-		{"http://a.com", "same-site", "b.com", "*"},
-		{"%zz", "", "a.com", "http://a.com"},
-		{"http://a.com", "", "a.com", ""},
+	for _, s := range [][2]string{
+		{"http://a.com", "http://a.com"},
+		{"http://evil.com", "http://a.com"},
+		{"null", "null"},
+		{"", "http://a.com"},
+		{"http://a.com", "*"},
+		{"%zz", "http://a.com"},
+		{"http://a.com", ""},
 	} {
-		f.Add(s[0], s[1], s[2], s[3])
+		f.Add(s[0], s[1])
 	}
 
-	f.Fuzz(func(t *testing.T, origin, site, host, allowed string) {
-		req := &Request{Request: &http.Request{Header: http.Header{}, Host: host}}
+	f.Fuzz(func(t *testing.T, origin, allowed string) {
+		req := &Request{Request: &http.Request{Header: http.Header{}}}
 		req.Request.Header.Set(HeaderOrigin, origin)
-		req.Request.Header.Set(HeaderSecFetchSite, site)
 		opts := &CorsOptions{Origin: []string{allowed}}
 
 		got := corsAcceptOrigin(req, opts) // invariant 1: no panic
 
-		// With an empty Sec-Fetch-Site production fails open (S3), so that
-		// domain has no oracle here; the KnownBug rows below cover it.
-		switch {
-		case allowed == "*":
-			ehttptest.True(t, "Fetch §3.2.3", got, "* allowlist must accept %q", origin)
-		case site == "same-origin" || site == "none":
-			ehttptest.True(t, "Fetch Metadata §2.1", got, "Sec-Fetch-Site %q is not a cross-origin request", site)
-		case site == "cross-site" || site == "same-site" || (site != "" && site != "same-origin" && site != "none"):
-			// invariant: a cross-origin request passes iff its origin equals the
-			// allowlist entry exactly (case-sensitive, no normalisation). The
-			// oracle is a plain string compare, not production's corsMatch.
-			ehttptest.Eq(t, "Fetch §3.2.5", got, origin != "" && origin == allowed)
-		}
+		// Oracle: acceptance depends only on the origin (Fetch §3.2.5). A "*"
+		// allowlist accepts all. Else the origin must equal the entry exactly
+		// (case-sensitive, no normalisation) and must not be empty.
+		want := allowed == "*" || (origin != "" && origin == allowed)
+		ehttptest.Eq(t, "Fetch §3.2.5", got, want)
 	})
 }
 
@@ -637,23 +626,19 @@ func TestFuzzKnownBugs(t *testing.T) {
 
 	t.Run("S3 CORS foreign origin accepted without Sec-Fetch-Site", func(t *testing.T) {
 		t.Parallel()
-		ehttptest.KnownBug(t, "S3", func(t testing.TB) {
-			// The origin host equals the Host header, but the origin is not on
-			// the allowlist: S3 allows an origin iff it is in the allowlist.
-			req := &Request{Request: &http.Request{Header: http.Header{}, Host: "evil.example"}}
-			req.Request.Header.Set(HeaderOrigin, "http://evil.example")
-			opts := &CorsOptions{Origin: []string{"http://app.example"}}
-			ehttptest.Eq(t, "Fetch §3.2.5 + S3 (allowed iff in the allowlist)", corsAcceptOrigin(req, opts), false)
-		})
+		// The origin host equals the Host header, but the origin is not on
+		// the allowlist: S3 allows an origin iff it is in the allowlist.
+		req := &Request{Request: &http.Request{Header: http.Header{}, Host: "evil.example"}}
+		req.Request.Header.Set(HeaderOrigin, "http://evil.example")
+		opts := &CorsOptions{Origin: []string{"http://app.example"}}
+		ehttptest.Eq(t, "Fetch §3.2.5 + S3 (allowed iff in the allowlist)", corsAcceptOrigin(req, opts), false)
 	})
 
 	t.Run("S3 (ND-1) CORS allowlist ignored without Sec-Fetch-Site", func(t *testing.T) {
 		t.Parallel()
-		ehttptest.KnownBug(t, "S3", func(t testing.TB) {
-			req := &Request{Request: &http.Request{Header: http.Header{}, Host: "api.example"}}
-			req.Request.Header.Set(HeaderOrigin, "http://app.example")
-			opts := &CorsOptions{Origin: []string{"http://app.example"}}
-			ehttptest.Eq(t, "Fetch §3.2.5", corsAcceptOrigin(req, opts), true)
-		})
+		req := &Request{Request: &http.Request{Header: http.Header{}, Host: "api.example"}}
+		req.Request.Header.Set(HeaderOrigin, "http://app.example")
+		opts := &CorsOptions{Origin: []string{"http://app.example"}}
+		ehttptest.Eq(t, "Fetch §3.2.5", corsAcceptOrigin(req, opts), true)
 	})
 }

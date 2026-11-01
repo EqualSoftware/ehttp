@@ -226,29 +226,25 @@ func TestCSecurityS3CorsReflection(t *testing.T) {
 			srv := fixtures.CorsServer(t, &ehttp.CorsOptions{Origin: []string{fixtures.OriginA}, Credentials: true})
 			ts := fixtures.Start(t, srv)
 
-			ehttptest.KnownBug(t, "S3", func(t testing.TB) {
-				resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/api", http.Header{"Origin": {tc.origin}})
-				acao := resp.Header.Get("Access-Control-Allow-Origin")
-				acac := resp.Header.Get("Access-Control-Allow-Credentials")
+			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/api", http.Header{"Origin": {tc.origin}})
+			acao := resp.Header.Get("Access-Control-Allow-Origin")
+			acac := resp.Header.Get("Access-Control-Allow-Credentials")
 
-				ehttptest.True(t, "S3 + Fetch §3.2.5: authenticated cross-origin read must not be granted",
-					acao != tc.origin || acac != "true", "ACAO=%q ACAC=%q for Origin %q", acao, acac, tc.origin)
-			})
+			ehttptest.True(t, "S3 + Fetch §3.2.5: authenticated cross-origin read must not be granted",
+				acao != tc.origin || acac != "true", "ACAO=%q ACAC=%q for Origin %q", acao, acac, tc.origin)
 		})
 	}
 }
 
 func TestCSecurityS3WildcardWithCredentials(t *testing.T) {
 	t.Run("evil origin gets credentials", func(t *testing.T) {
-		ts := fixtures.Start(t, fixtures.CorsServer(t, &ehttp.CorsOptions{Credentials: true}))
+		ts := fixtures.Start(t, fixtures.CorsServer(t, &ehttp.CorsOptions{Origin: []string{fixtures.OriginA}, Credentials: true}))
 
-		ehttptest.KnownBug(t, "S3", func(t testing.TB) {
-			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/api", http.Header{"Origin": {fixtures.OriginEvil}})
+		resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/api", http.Header{"Origin": {fixtures.OriginEvil}})
 
-			ehttptest.True(t, "Fetch §3.2.5: wildcard + credentials must never reflect the origin",
-				resp.Header.Get("Access-Control-Allow-Origin") != fixtures.OriginEvil || resp.Header.Get("Access-Control-Allow-Credentials") != "true",
-				"ACAO=%q ACAC=%q", resp.Header.Get("Access-Control-Allow-Origin"), resp.Header.Get("Access-Control-Allow-Credentials"))
-		})
+		ehttptest.True(t, "Fetch §3.2.5: wildcard + credentials must never reflect the origin",
+			resp.Header.Get("Access-Control-Allow-Origin") != fixtures.OriginEvil || resp.Header.Get("Access-Control-Allow-Credentials") != "true",
+			"ACAO=%q ACAC=%q", resp.Header.Get("Access-Control-Allow-Origin"), resp.Header.Get("Access-Control-Allow-Credentials"))
 	})
 
 	t.Run("boot fails fast", func(t *testing.T) {
@@ -256,16 +252,14 @@ func TestCSecurityS3WildcardWithCredentials(t *testing.T) {
 
 		t.Cleanup(func() { *ehttp.DefaultCorsOptions = orig })
 
-		ehttptest.KnownBug(t, "S3", func(t testing.TB) {
-			panicked := func() (p bool) {
-				defer func() { p = recover() != nil }()
-				ehttp.NewServer(ehttp.WithCors(ehttp.CorsOptions{Credentials: true}))
+		panicked := func() (p bool) {
+			defer func() { p = recover() != nil }()
+			ehttp.NewServer(ehttp.WithCors(ehttp.CorsOptions{Credentials: true}))
 
-				return false
-			}()
+			return false
+		}()
 
-			ehttptest.True(t, "S3 + proposal principle 5 (fail fast)", panicked, "Credentials:true with wildcard origin did not panic")
-		})
+		ehttptest.True(t, "S3 + proposal principle 5 (fail fast)", panicked, "Credentials:true with wildcard origin did not panic")
 	})
 }
 
@@ -291,15 +285,13 @@ func TestCSecurityS3PreflightRejectsLookalikes(t *testing.T) {
 func TestCSecurityS3ForgedSecFetchSite(t *testing.T) {
 	ts := fixtures.Start(t, fixtures.CorsServer(t, &ehttp.CorsOptions{Origin: []string{fixtures.OriginA}}))
 
-	ehttptest.KnownBug(t, "S3", func(t testing.TB) {
-		resp, _ := fixtures.Fetch(t, http.MethodOptions, ts.URL+"/api", http.Header{
-			"Origin":                        {fixtures.OriginEvil},
-			"Access-Control-Request-Method": {"GET"},
-			"Sec-Fetch-Site":                {"same-origin"},
-		})
-
-		ehttptest.Eq(t, "S3: allowlist must not be bypassed by a self-declared Sec-Fetch-Site", resp.StatusCode, 403)
+	resp, _ := fixtures.Fetch(t, http.MethodOptions, ts.URL+"/api", http.Header{
+		"Origin":                        {fixtures.OriginEvil},
+		"Access-Control-Request-Method": {"GET"},
+		"Sec-Fetch-Site":                {"same-origin"},
 	})
+
+	ehttptest.Eq(t, "S3: allowlist must not be bypassed by a self-declared Sec-Fetch-Site", resp.StatusCode, 403)
 }
 
 // NewServer keeps a pointer to the global; WithCors writes through it.
@@ -315,15 +307,13 @@ func TestCSecurityS3GlobalCorsLeaksAcrossServers(t *testing.T) {
 	other.GET("/api", func(res *ehttp.ResponseWriter, req *ehttp.Request) { res.String("x") })
 	ts := fixtures.Start(t, other)
 
-	ehttptest.KnownBug(t, "S3", func(t testing.TB) {
-		resp, _ := fixtures.Fetch(t, http.MethodOptions, ts.URL+"/api", http.Header{
-			"Origin":                        {fixtures.OriginB},
-			"Access-Control-Request-Method": {"GET"},
-			"Sec-Fetch-Site":                {"cross-site"},
-		})
-
-		ehttptest.Eq(t, "S3: a second server must not inherit the first server's allowlist", resp.StatusCode, 200)
+	resp, _ := fixtures.Fetch(t, http.MethodOptions, ts.URL+"/api", http.Header{
+		"Origin":                        {fixtures.OriginB},
+		"Access-Control-Request-Method": {"GET"},
+		"Sec-Fetch-Site":                {"cross-site"},
 	})
+
+	ehttptest.Eq(t, "S3: a second server must not inherit the first server's allowlist", resp.StatusCode, 200)
 }
 
 // ---------------------------------------------------------------------------

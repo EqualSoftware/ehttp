@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"net/http"
 	"os/signal"
+	"slices"
 	"strconv"
 	"syscall"
 	"time"
@@ -54,18 +55,19 @@ func WithTemplates(v string) serverOption {
 func WithCors(v CorsOptions) serverOption {
 	return func(s *Server) {
 		if len(v.Methods) != 0 {
-			s.router.cors.Methods = v.Methods
+			s.router.cors.Methods = slices.Clone(v.Methods)
 		}
 
 		if len(v.Origin) != 0 {
-			s.router.cors.Origin = v.Origin
+			s.router.cors.Origin = slices.Clone(v.Origin)
 		}
 
 		if len(v.Headers) != 0 {
-			s.router.cors.Headers = v.Headers
+			s.router.cors.Headers = slices.Clone(v.Headers)
 		}
 
 		s.router.cors.Credentials = v.Credentials
+		s.router.cors.CacheDuration = v.CacheDuration
 	}
 }
 
@@ -76,16 +78,30 @@ var DefaultCorsOptions = &CorsOptions{
 	Credentials: false,
 }
 
+// clone returns a copy that shares no slice with o.
+func (o *CorsOptions) clone() *CorsOptions {
+	c := *o
+	c.Origin = slices.Clone(o.Origin)
+	c.Methods = slices.Clone(o.Methods)
+	c.Headers = slices.Clone(o.Headers)
+
+	return &c
+}
+
 func NewServer(options ...serverOption) *Server {
 	server := &Server{
 		port: "3000",
 		router: &Router{
-			cors: DefaultCorsOptions,
+			cors: DefaultCorsOptions.clone(),
 		},
 	}
 
 	for _, apply := range options {
 		apply(server)
+	}
+
+	if server.router.cors.Credentials && slices.Contains(server.router.cors.Origin, "*") {
+		panic("ehttp: CORS Credentials cannot be used with the * origin")
 	}
 
 	return server

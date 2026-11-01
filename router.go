@@ -3,7 +3,6 @@ package ehttp
 import (
 	"html/template"
 	"net/http"
-	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -268,13 +267,13 @@ func (r *Router) wrap(h HandlerFunc) HandlerFunc {
 }
 
 func (r *Router) optionsHandler(res *ResponseWriter, req *Request) {
-	SetCacheHeader(res, r.cors.CacheDuration)
-
-	res.Vary(HeaderOrigin)
 	res.Vary(HeaderAccessControlRequestMethod)
 	res.Vary(HeaderAccessControlRequestHeaders)
 
 	if corsAcceptOrigin(req, r.cors) && corsAcceptMethod(req, r.cors) && corsAcceptHeaders(req, r.cors) {
+		SetCacheHeader(res, 0)
+		corsPreflightHeaders(res, req, r.cors)
+
 		res.SendStatus(StatusOK)
 		return
 	}
@@ -345,54 +344,66 @@ func corsAcceptOrigin(req *Request, options *CorsOptions) bool {
 
 	origin := req.Origin()
 
-	switch req.Header(HeaderSecFetchSite) {
-	case "":
-		// No Sec-Fetch-Site header is present.
-		// Fallthrough to check the Origin header.
-	case "same-origin", "none":
-		return true
-	default:
-		return corsMatch(options.Origin, origin)
-	}
-
-	if origin == "" {
-		// Neither Sec-Fetch-Site nor Origin headers are present.
-		// Either the request is same-origin or not a browser request.
-		return true
-	}
-
-	o, err := url.Parse(origin)
-
-	if err != nil {
-		return corsMatch(options.Origin, origin)
-	}
-
-	// The Origin header matches the Host header. Note that the Host header
-	// doesn't include the scheme, so we don't know if this might be an
-	// HTTP→HTTPS cross-origin request. We fail open, since all modern
-	// browsers support Sec-Fetch-Site since 2023, and running an older
-	// browser makes a clear security trade-off already. Sites can mitigate
-	// this with HTTP Strict Transport Security (HSTS).
-	return o.Host == req.Host()
+	return origin != "" && slices.Contains(options.Origin, origin)
 }
 
-func corsMatch(list []string, value string) bool {
-	if value == "" {
-		value = "*"
-	}
-
-	return slices.Contains(list, value)
-}
-
+// corsUpdateHeaders sets the CORS headers of a response (Fetch §3.2).
+// Vary: Origin is set when the allowlist is specific, so a cache keeps one
+// response for each origin, also for requests without Origin.
 func corsUpdateHeaders(res *ResponseWriter, req *Request, options *CorsOptions) {
+	wildcard := slices.Contains(options.Origin, "*")
+
+	if !wildcard {
+		res.Vary(HeaderOrigin)
+	}
+
 	origin := req.Origin()
 
-	if origin == "" {
+	if origin == "" || !corsAcceptOrigin(req, options) {
+		return
+	}
+
+	if wildcard {
 		origin = "*"
 	}
 
 	res.Append(HeaderAccessControlAllowOrigin, origin)
-	res.Append(HeaderAccessControlAllowMethods, strings.Join(options.Methods, ", "))
-	res.Append(HeaderAccessControlAllowHeaders, strings.Join(options.Headers, ", "))
 	res.Append(HeaderAccessControlAllowCredentials, strconv.FormatBool(options.Credentials))
+}
+
+// corsPreflightHeaders sets the headers that a browser reads only from the
+// preflight response (Fetch §3.2.3). With credentials, a literal * has no
+// meaning, so the request values are echoed.
+func corsPreflightHeaders(res *ResponseWriter, req *Request, options *CorsOptions) {
+	methods := corsJoin(options.Methods)
+	headers := corsJoin(options.Headers)
+
+	if options.Credentials && slices.Contains(options.Methods, "*") {
+		methods = req.Header(HeaderAccessControlRequestMethod)
+	}
+
+	if options.Credentials && slices.Contains(options.Headers, "*") {
+		headers = req.Header(HeaderAccessControlRequestHeaders)
+	}
+
+	if methods != "" {
+		res.Append(HeaderAccessControlAllowMethods, methods)
+	}
+
+	if headers != "" {
+		res.Append(HeaderAccessControlAllowHeaders, headers)
+	}
+
+	if d := options.CacheDuration; d > 0 {
+		res.Append(HeaderAccessControlMaxAge, strconv.Itoa(int(d.Seconds())))
+	}
+}
+
+// corsJoin does not allocate for a list of one item.
+func corsJoin(list []string) string {
+	if len(list) == 1 {
+		return list[0]
+	}
+
+	return strings.Join(list, ", ")
 }

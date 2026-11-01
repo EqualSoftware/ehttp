@@ -73,9 +73,7 @@ func TestNewServerDefaults(t *testing.T) {
 	t.Run("server gets its own CORS options", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "S3", func(t testing.TB) {
-			ehttptest.True(t, "S3: NewServer must not share the DefaultCorsOptions pointer", s.router.cors != DefaultCorsOptions, "router.cors is the global")
-		})
+		ehttptest.True(t, "S3: NewServer must not share the DefaultCorsOptions pointer", s.router.cors != DefaultCorsOptions, "router.cors is the global")
 	})
 }
 
@@ -152,39 +150,44 @@ func TestServerWithCors(t *testing.T) {
 		aRestoreCors(t)
 
 		s := NewServer(WithCors(CorsOptions{Origin: []string{"https://a.example"}}))
-		rec := aDo(s, "GET", "/x", HeaderOrigin, "https://a.example")
+		rec := aDo(s, "OPTIONS", "/x", HeaderOrigin, "https://a.example", HeaderAccessControlRequestMethod, "GET")
 
-		ehttptest.Eq(t, "WithCors partial options", rec.Header().Get(HeaderAccessControlAllowMethods), "*")
-		ehttptest.Eq(t, "WithCors partial options", rec.Header().Get(HeaderAccessControlAllowHeaders), "*")
+		ehttptest.Eq(t, "Fetch §3.2.3 (preflight response)", rec.Header().Get(HeaderAccessControlAllowMethods), "*")
+		ehttptest.Eq(t, "Fetch §3.2.3 (preflight response)", rec.Header().Get(HeaderAccessControlAllowHeaders), "*")
 	})
 
 	t.Run("Credentials with the wildcard origin fails at boot", func(t *testing.T) {
 		aRestoreCors(t)
 
-		ehttptest.KnownBug(t, "S3", func(t testing.TB) {
-			panicked := func() (p bool) {
-				defer func() { p = recover() != nil }()
-				NewServer(WithCors(CorsOptions{Credentials: true}))
+		panicked := func() (p bool) {
+			defer func() { p = recover() != nil }()
+			NewServer(WithCors(CorsOptions{Credentials: true}))
 
-				return false
-			}()
+			return false
+		}()
 
-			ehttptest.True(t, "Fetch §3.2.5: credentials never go with the * origin", panicked,
-				"Credentials:true with the * origin did not panic at boot")
-		})
+		ehttptest.True(t, "Fetch §3.2.5: credentials never go with the * origin", panicked,
+			"Credentials:true with the * origin did not panic at boot")
 	})
 
 	t.Run("a second server does not inherit the first one's CORS options", func(t *testing.T) {
 		aRestoreCors(t)
 
-		NewServer(WithCors(CorsOptions{Methods: []string{"GET"}, Credentials: true}))
+		NewServer(WithCors(CorsOptions{Origin: []string{"https://a.example"}, Methods: []string{"GET"}, Credentials: true}))
 		second := NewServer()
-		rec := aDo(second, "GET", "/x")
+		rec := aDo(second, "OPTIONS", "/x", HeaderOrigin, "https://a.example", HeaderAccessControlRequestMethod, "GET")
 
-		ehttptest.KnownBug(t, "S3", func(t testing.TB) {
-			ehttptest.Eq(t, "S3: WithCors must not mutate DefaultCorsOptions", rec.Header().Get(HeaderAccessControlAllowMethods), "*")
-			ehttptest.Eq(t, "S3: WithCors must not mutate DefaultCorsOptions", rec.Header().Get(HeaderAccessControlAllowCredentials), "false")
-		})
+		ehttptest.Eq(t, "S3: WithCors must not mutate DefaultCorsOptions", rec.Header().Get(HeaderAccessControlAllowMethods), "*")
+		ehttptest.Eq(t, "S3: WithCors must not mutate DefaultCorsOptions", rec.Header().Get(HeaderAccessControlAllowCredentials), "false")
+	})
+
+	t.Run("NewServer copies the slices of the default options", func(t *testing.T) {
+		aRestoreCors(t)
+
+		s := NewServer()
+		s.router.cors.Origin[0] = "https://changed.example"
+
+		ehttptest.Eq(t, "S3: the server must not share the slices of DefaultCorsOptions", DefaultCorsOptions.Origin[0], "*")
 	})
 
 	// An OPTIONS response is not cacheable (RFC 9110 §9.3.7), so the preflight
@@ -195,9 +198,7 @@ func TestServerWithCors(t *testing.T) {
 		s := NewServer(WithCors(CorsOptions{CacheDuration: time.Hour}))
 		rec := aDo(s, "OPTIONS", "/x", HeaderOrigin, "https://a.example", HeaderAccessControlRequestMethod, "GET")
 
-		ehttptest.KnownBug(t, "S3", func(t testing.TB) {
-			ehttptest.Eq(t, "S3 / Fetch §3.2.2 (preflight cache)", rec.Header().Get(HeaderAccessControlMaxAge), "3600")
-		})
+		ehttptest.Eq(t, "S3 / Fetch §3.2.2 (preflight cache)", rec.Header().Get(HeaderAccessControlMaxAge), "3600")
 	})
 }
 
