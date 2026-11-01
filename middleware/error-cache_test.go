@@ -29,7 +29,7 @@ func TestErrorCache(t *testing.T) {
 		{400, true},
 		{404, true},
 		{500, true},
-		{503, true},
+		{503, false}, // author decision: 503 is temporary (RFC 9110 §15.6.4), never cached
 	}
 
 	for _, tt := range tests {
@@ -111,12 +111,10 @@ func TestErrorCacheClientDependentStatuses(t *testing.T) {
 		t.Run(bStatusName(code), func(t *testing.T) {
 			t.Parallel()
 
-			ehttptest.KnownBug(t, "S10", func(t testing.TB) {
-				rec := ehttptest.Do(fixtures.Handler(fixtures.Status(code, "x"), middleware.ErrorCache(time.Minute)), fixtures.Req("GET", "/x"))
-				cc := rec.Header().Get("Cache-Control")
+			rec := ehttptest.Do(fixtures.Handler(fixtures.Status(code, "x"), middleware.ErrorCache(time.Minute)), fixtures.Req("GET", "/x"))
+			cc := rec.Header().Get("Cache-Control")
 
-				ehttptest.True(t, "S10(c)", !strings.Contains(cc, "max-age=60"), "status %d is cached: %q", code, cc)
-			})
+			ehttptest.True(t, "S10(c)", !strings.Contains(cc, "max-age=60"), "status %d is cached: %q", code, cc)
 		})
 	}
 }

@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -36,36 +35,25 @@ func cTimeoutServer(t testing.TB, d time.Duration, h ehttp.HandlerFunc, outer ..
 	return fixtures.Start(t, srv)
 }
 
-// Trace for the Timeout tests (lessons.md, 2026-11-01):
-//   - Timeout derives ctx1 and hands req.WithContext(ctx1) to the handler goroutine;
-//   - ResponseWriter.finished() reads res.request, which is the ORIGINAL request r0;
-//   - net/http cancels r0.ctx right after ServeHTTP returns, before the client sees the response.
-//
-// So a late write is blocked, but only indirectly (by net/http).
-func TestCLifecycleTimeoutLateWriteIsBlocked(t *testing.T) {
-	release := make(chan struct{})
+// The timeout is cooperative (design 2.3 option A; Echo ContextTimeout and chi).
+// The handler runs in the request goroutine. Timeout only sets the deadline on
+// the context. A handler that ignores the context keeps its response, because
+// a header is sent before Timeout checks the deadline.
+func TestCLifecycleTimeoutNonCooperativeHandler(t *testing.T) {
+	const timeout = 30 * time.Millisecond
+
 	done := make(chan error, 1)
 
-	var releaseOnce sync.Once
-	unblock := func() { releaseOnce.Do(func() { close(release) }) }
-
-	ts := cTimeoutServer(t, 30*time.Millisecond, func(res *ehttp.ResponseWriter, req *ehttp.Request) {
-		<-release // ignores the context on purpose: non-cooperative handler
+	ts := cTimeoutServer(t, timeout, func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+		time.Sleep(3 * timeout) // ignores the context on purpose
 		done <- req.Context().Err()
 		res.String("late")
 	})
 
-	// Registered after the server, so it runs before the server closes and a
-	// failed Fetch cannot leave the handler blocked.
-	t.Cleanup(unblock)
-
 	resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/t", nil)
 
-	ehttptest.Eq(t, "S5 / lessons 2026-11-01: late write must not reach the client", body, "")
-	ehttptest.True(t, "RFC 9110 §15.5: a final status was sent before the handler finished",
-		resp.StatusCode >= 400, "status = %d", resp.StatusCode)
-
-	unblock()
+	ehttptest.Eq(t, "design 2.3 option A; Echo ContextTimeout and chi: the timeout is cooperative", resp.StatusCode, http.StatusOK)
+	ehttptest.Eq(t, "design 2.3 option A; Echo ContextTimeout and chi: the timeout is cooperative", body, "late")
 
 	select {
 	case err := <-done:
@@ -87,10 +75,8 @@ func TestCLifecycleTimeoutStatus(t *testing.T) {
 	ehttptest.True(t, "S5: answers at the deadline without waiting for the handler",
 		time.Since(start) < 2*time.Second, "took %v", time.Since(start))
 
-	ehttptest.KnownBug(t, "S5", func(t testing.TB) {
-		// 408 means the CLIENT was slow (RFC 9110 §15.5.9); a server timeout is 503 (§15.6.4).
-		ehttptest.Eq(t, "RFC 9110 §15.6.4 / http.TimeoutHandler", resp.StatusCode, http.StatusServiceUnavailable)
-	})
+	// 408 means the CLIENT was slow (RFC 9110 §15.5.9); a server timeout is 503 (§15.6.4).
+	ehttptest.Eq(t, "RFC 9110 §15.6.4 / http.TimeoutHandler", resp.StatusCode, http.StatusServiceUnavailable)
 }
 
 // The Timeout middleware overwrites req.Request in place; outer middlewares
@@ -115,10 +101,8 @@ func TestCLifecycleTimeoutRestoresOuterContext(t *testing.T) {
 
 	err := <-seen
 
-	ehttptest.KnownBug(t, "S5", func(t testing.TB) {
-		ehttptest.True(t, "S5: Timeout restores req.Request for outer middlewares",
-			err == nil, "outer middleware sees context error after Timeout: %v", err)
-	})
+	ehttptest.True(t, "S5: Timeout restores req.Request for outer middlewares",
+		err == nil, "outer middleware sees context error after Timeout: %v", err)
 }
 
 // A panic in the goroutine created by Timeout is outside Recover and outside
@@ -130,10 +114,8 @@ func TestCLifecycleTimeoutPanicKillsProcess(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	survived := strings.Contains(string(out), "CHILD-SURVIVED status=500")
 
-	ehttptest.KnownBug(t, "S5", func(t testing.TB) {
-		ehttptest.True(t, "S5 + S6: Recover outside Timeout catches the handler panic; process survives",
-			survived && err == nil, "child died (err=%v)", err)
-	})
+	ehttptest.True(t, "S5 + S6: Recover outside Timeout catches the handler panic; process survives",
+		survived && err == nil, "child died (err=%v)", err)
 }
 
 // TestCChildTimeoutPanic runs only inside the child process of the test above.

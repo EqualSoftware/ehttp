@@ -73,9 +73,7 @@ func TestTimeoutSlowHandler(t *testing.T) {
 
 			// 408 is for a slow request read (RFC 9110 §15.5.9), not for a slow handler.
 			// S5 decision (option A in todo.md): 503; 504 is also valid (§15.6.5).
-			ehttptest.KnownBug(t, "S5", func(t testing.TB) {
-				ehttptest.True(t, "RFC 9110 §15.6.4/§15.6.5 (not 408, §15.5.9)", rec.Code == 503 || rec.Code == 504, "status = %d", rec.Code)
-			})
+			ehttptest.True(t, "RFC 9110 §15.6.4/§15.6.5 (not 408, §15.5.9)", rec.Code == 503 || rec.Code == 504, "status = %d", rec.Code)
 		})
 	})
 
@@ -83,12 +81,10 @@ func TestTimeoutSlowHandler(t *testing.T) {
 		t.Parallel()
 
 		synctest.Test(t, func(t *testing.T) {
-			ehttptest.KnownBug(t, "S5", func(t testing.TB) {
-				seen := make(chan error, 1)
-				rec := ehttptest.Do(fixtures.Handler(slow(seen), middleware.Timeout(time.Second)), fixtures.Req("GET", "/x"))
+			seen := make(chan error, 1)
+			rec := ehttptest.Do(fixtures.Handler(slow(seen), middleware.Timeout(time.Second)), fixtures.Req("GET", "/x"))
 
-				ehttptest.Eq(t, "S5 / RFC 9110 §15.6.4 (408 is for slow request reads)", rec.Code, 503)
-			})
+			ehttptest.Eq(t, "S5 / RFC 9110 §15.6.4 (408 is for slow request reads)", rec.Code, 503)
 		})
 	})
 }
@@ -98,17 +94,15 @@ func TestTimeoutSlowHandler(t *testing.T) {
 func TestTimeoutRestoresRequestContext(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "S5", func(t testing.TB) {
-		var after error
-		outer := func(next ehttp.Handler) ehttp.HandlerFunc {
-			return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
-				next.ServeHTTP(res, req)
-				after = req.Context().Err()
-			}
+	var after error
+	outer := func(next ehttp.Handler) ehttp.HandlerFunc {
+		return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+			next.ServeHTTP(res, req)
+			after = req.Context().Err()
 		}
+	}
 
-		ehttptest.Do(fixtures.Handler(fixtures.OK, outer, middleware.Timeout(time.Second)), fixtures.Req("GET", "/x"))
+	ehttptest.Do(fixtures.Handler(fixtures.OK, outer, middleware.Timeout(time.Second)), fixtures.Req("GET", "/x"))
 
-		ehttptest.True(t, "S5", after == nil, "outer middleware sees ctx error %v after a successful request", after)
-	})
+	ehttptest.True(t, "S5", after == nil, "outer middleware sees ctx error %v after a successful request", after)
 }

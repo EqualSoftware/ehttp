@@ -77,11 +77,9 @@ func TestRecover(t *testing.T) {
 func TestRecoverDoesNotLeakPanicValue(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "S6", func(t testing.TB) {
-		rec := ehttptest.Do(fixtures.Handler(bPanic("db password=hunter2"), middleware.Recover()), fixtures.Req("GET", "/x"))
+	rec := ehttptest.Do(fixtures.Handler(bPanic("db password=hunter2"), middleware.Recover()), fixtures.Req("GET", "/x"))
 
-		ehttptest.True(t, "S6", !strings.Contains(rec.Body.String(), "hunter2"), "body leaks the panic value: %q", rec.Body.String())
-	})
+	ehttptest.True(t, "S6", !strings.Contains(rec.Body.String(), "hunter2"), "body leaks the panic value: %q", rec.Body.String())
 }
 
 // S6: http.ErrAbortHandler is net/http's way to abort a response; swallowing
@@ -89,16 +87,14 @@ func TestRecoverDoesNotLeakPanicValue(t *testing.T) {
 func TestRecoverRethrowsAbortHandler(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "S6", func(t testing.TB) {
-		var got any
+	var got any
 
-		func() {
-			defer func() { got = recover() }()
-			ehttptest.Do(fixtures.Handler(bPanic(http.ErrAbortHandler), middleware.Recover()), fixtures.Req("GET", "/x"))
-		}()
+	func() {
+		defer func() { got = recover() }()
+		ehttptest.Do(fixtures.Handler(bPanic(http.ErrAbortHandler), middleware.Recover()), fixtures.Req("GET", "/x"))
+	}()
 
-		ehttptest.True(t, "net/http ErrAbortHandler doc", got == http.ErrAbortHandler, "recovered value = %v, want http.ErrAbortHandler re-panicked", got) //nolint:errorlint // got is a recover() value (any); net/http compares it by identity
-	})
+	ehttptest.True(t, "net/http ErrAbortHandler doc", got == http.ErrAbortHandler, "recovered value = %v, want http.ErrAbortHandler re-panicked", got) //nolint:errorlint // got is a recover() value (any); net/http compares it by identity
 }
 
 // The "response already started" case (a 500 JSON glued to a chunked body,

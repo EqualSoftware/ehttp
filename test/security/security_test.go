@@ -491,24 +491,20 @@ func TestCSecurityS6PanicDoesNotLeakToClient(t *testing.T) {
 	resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/leak", nil)
 	ehttptest.Eq(t, "S6: panic becomes 500", resp.StatusCode, 500)
 
-	ehttptest.KnownBug(t, "S6", func(t testing.TB) {
-		ehttptest.True(t, "S6: panic value is internal data", !strings.Contains(body, "hunter2"), "body leaks panic value: %s", body)
-	})
+	ehttptest.True(t, "S6: panic value is internal data", !strings.Contains(body, "hunter2"), "body leaks panic value: %s", body)
 }
 
 func TestCSecurityS6AbortHandlerIsRethrown(t *testing.T) {
 	ts := cRecoverServer(t)
 
-	ehttptest.KnownBug(t, "S6", func(t testing.TB) {
-		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/abort", http.NoBody)
-		resp, err := fixtures.Client().Do(req)
-		if err == nil {
-			resp.Body.Close()
-		}
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/abort", http.NoBody)
+	resp, err := fixtures.Client().Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
 
-		ehttptest.True(t, "net/http ErrAbortHandler convention: the response is aborted", err != nil,
-			"client got status %d instead of an aborted connection", respStatus(resp))
-	})
+	ehttptest.True(t, "net/http ErrAbortHandler convention: the response is aborted", err != nil,
+		"client got status %d instead of an aborted connection", respStatus(resp))
 }
 
 func respStatus(r *http.Response) int {
@@ -547,13 +543,11 @@ func TestCSecurityS6PanicAfterHeadersSent(t *testing.T) {
 
 		b, readErr := io.ReadAll(resp.Body)
 
-		ehttptest.KnownBug(t, "S6", func(t testing.TB) {
-			incomplete := errors.Is(readErr, io.ErrUnexpectedEOF)
-			cleanWithoutJSON := readErr == nil && !strings.Contains(string(b), `"code"`)
+		incomplete := errors.Is(readErr, io.ErrUnexpectedEOF)
+		cleanWithoutJSON := readErr == nil && !strings.Contains(string(b), `"code"`)
 
-			ehttptest.True(t, "RFC 9112 §8 + S6: incomplete message (io.ErrUnexpectedEOF), or a complete one without the error JSON",
-				incomplete || cleanWithoutJSON, "body = %q, read error = %v", b, readErr)
-		})
+		ehttptest.True(t, "RFC 9112 §8 + S6: incomplete message (io.ErrUnexpectedEOF), or a complete one without the error JSON",
+			incomplete || cleanWithoutJSON, "body = %q, read error = %v", b, readErr)
 	})
 }
 
