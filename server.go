@@ -127,6 +127,11 @@ func (s *Server) TRACE(pattern string, h HandlerFunc, m ...MiddlewareHandlerFunc
 	s.router.TRACE(pattern, h, m...)
 }
 
+// ServeHTTP makes Server an http.Handler that serves requests through its router.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.router.ServeHTTP(w, r)
+}
+
 func (s *Server) Listen(c context.Context) error {
 	server := &http.Server{
 		Addr:                         ":" + s.port,

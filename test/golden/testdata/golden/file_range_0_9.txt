@@ -1,0 +1,20 @@
+status: 206
+header Accept-Ranges: bytes
+header Access-Control-Allow-Credentials: true
+header Access-Control-Allow-Headers: *
+header Access-Control-Allow-Methods: GET, HEAD, OPTIONS, POST
+header Access-Control-Allow-Origin: *
+header Cache-Control: public, max-age=300, stale-while-revalidate=300, stale-if-error=300
+header Content-Length: 10
+header Content-Range: bytes 0-9/332549
+header Content-Type: image/png
+header Date: <volatile>
+header Etag: W/"332549-32658cc8"
+header Last-Modified: Tue, 02 Jan 2024 03:04:05 GMT
+header Vary: Accept-Encoding
+header X-Content-Type-Options: nosniff
+header X-Frame-Options: SAMEORIGIN
+header X-Request-Id: <uuid>
+header X-Xss-Protection: 1; mode=block
+body-len: 10
+body-sha256: 3d5ccb0cef4d3fd8b2474faf2038fbbb654c5c4e992aef8df4a48e8a3372d362

@@ -1,0 +1,748 @@
+package security_test
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/EqualSoftware/ehttp"
+	"github.com/EqualSoftware/ehttp/internal/ehttptest"
+	"github.com/EqualSoftware/ehttp/internal/fixtures"
+	"github.com/EqualSoftware/ehttp/middleware"
+)
+
+// One test per attack. The ID in the name is the proposal ID (S*, C*) or the
+// new finding (NC-*). A KnownBug test skips while the attack still works.
+
+const cSecret = "TOP-SECRET-OUTSIDE-ROOT"
+
+func cHost(ts *httptest.Server) string { return strings.TrimPrefix(ts.URL, "http://") }
+
+// ---------------------------------------------------------------------------
+// S9: path traversal in SendFile
+// ---------------------------------------------------------------------------
+
+func cStaticServer(t testing.TB) (ts *httptest.Server, root string) {
+	base := t.TempDir()
+	root = filepath.Join(base, "public")
+
+	for p, body := range map[string]string{
+		filepath.Join(root, "ok.txt"):     "public-file",
+		filepath.Join(base, "secret.txt"): cSecret,
+	} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Join(root, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := ehttp.NewServer()
+	// The usual user code: root + wildcard parameter.
+	srv.GET("/static/...", func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+		res.SendFile(root + "/" + req.Param("..."))
+	})
+
+	return fixtures.Start(t, srv), root
+}
+
+func TestCSecurityS9PathTraversal(t *testing.T) {
+	ts, _ := cStaticServer(t)
+
+	cases := []struct {
+		name     string
+		rawPath  string
+		knownBug string // set while the secret leaks
+		note     string
+	}{
+		{"dotdot", "/static/../secret.txt", "S9", "net/http does not clean the path for custom handlers"},
+		{"nested-dotdot", "/static/a/../../secret.txt", "S9", "dot segments in the middle"},
+		{"encoded-dots", "/static/%2e%2e/secret.txt", "", "stays encoded today; becomes ../ once C10 decodes params, so S9 must live inside SendFile"},
+		{"encoded-slash", "/static/..%2fsecret.txt", "", "same as above"},
+		{"fully-encoded", "/static/%2e%2e%2fsecret.txt", "", "same as above"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			check := func(t testing.TB) {
+				t.Helper()
+
+				resp := fixtures.Raw(t, cHost(ts), "GET "+tc.rawPath+" HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+				ehttptest.True(t, "S9 ("+tc.note+")", !strings.Contains(resp, cSecret),
+					"file outside the served root was returned for %s", tc.rawPath)
+			}
+
+			if tc.knownBug != "" {
+				ehttptest.KnownBug(t, tc.knownBug, check)
+				return
+			}
+
+			check(t)
+		})
+	}
+
+	t.Run("control: file inside root is served", func(t *testing.T) {
+		resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/static/ok.txt", nil)
+		ehttptest.Eq(t, "S9 control", resp.StatusCode, 200)
+		ehttptest.Eq(t, "S9 control", body, "public-file")
+	})
+}
+
+// A symlink inside the root pointing outside is NOT covered by the S9 fix
+// (reject ".."). The reference behavior (http.Dir) follows symlinks too.
+func TestCSecurityS9SymlinkMatchesHttpDir(t *testing.T) {
+	ts, root := cStaticServer(t)
+
+	if err := os.Symlink(filepath.Join(filepath.Dir(root), "secret.txt"), filepath.Join(root, "link.txt")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	ref := httptest.NewServer(http.StripPrefix("/static/", http.FileServer(http.Dir(root))))
+	t.Cleanup(ref.Close)
+
+	got, gotBody := fixtures.Fetch(t, http.MethodGet, ts.URL+"/static/link.txt", nil)
+	want, wantBody := fixtures.Fetch(t, http.MethodGet, ref.URL+"/static/link.txt", nil)
+
+	ehttptest.Eq(t, "net/http http.Dir reference (follows symlinks)", got.StatusCode, want.StatusCode)
+	ehttptest.Eq(t, "net/http http.Dir reference (follows symlinks)", gotBody, wantBody)
+}
+
+// ---------------------------------------------------------------------------
+// S7: X-Forwarded-* from a peer nobody declared trusted
+// ---------------------------------------------------------------------------
+
+func cForwardServer(t testing.TB, mw ...ehttp.MiddlewareHandlerFunc) *httptest.Server {
+	srv := ehttp.NewServer()
+	srv.Use(mw...)
+	srv.GET("/who", func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+		res.String(fmt.Sprintf("proto=%s|host=%s|hostname=%s", req.Protocol(), req.Host(), req.Hostname()))
+	})
+
+	return fixtures.Start(t, srv)
+}
+
+func cWho(t testing.TB, ts *httptest.Server, hdr http.Header) (proto, host, hostname string) {
+	t.Helper()
+
+	_, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/who", hdr)
+	parts := strings.Split(body, "|")
+
+	if len(parts) != 3 {
+		t.Fatalf("unexpected body %q", body)
+	}
+
+	return strings.TrimPrefix(parts[0], "proto="), strings.TrimPrefix(parts[1], "host="), strings.TrimPrefix(parts[2], "hostname=")
+}
+
+func TestCSecurityS7SpoofedForwardedHeaders(t *testing.T) {
+	ts := cForwardServer(t)
+	spoof := http.Header{"X-Forwarded-Proto": {"https"}, "X-Forwarded-Host": {"evil.example"}, "X-Forwarded-For": {"6.6.6.6"}}
+
+	t.Run("Protocol ignores X-Forwarded-Proto", func(t *testing.T) {
+		ehttptest.KnownBug(t, "S7", func(t testing.TB) {
+			proto, _, _ := cWho(t, ts, spoof)
+			ehttptest.Eq(t, "S7: untrusted peer cannot claim https", proto, "http")
+		})
+	})
+
+	t.Run("Host ignores X-Forwarded-Host", func(t *testing.T) {
+		ehttptest.KnownBug(t, "S7", func(t testing.TB) {
+			_, host, _ := cWho(t, ts, spoof)
+			ehttptest.Eq(t, "S7: password-reset links must not use a forged host", host, cHost(ts))
+		})
+	})
+
+	t.Run("Hostname is the request host without port", func(t *testing.T) {
+		ehttptest.KnownBug(t, "S7", func(t testing.TB) {
+			_, _, hostname := cWho(t, ts, nil)
+			ehttptest.Eq(t, "S7 (Hostname() is empty on server requests)", hostname, "127.0.0.1")
+		})
+	})
+
+	t.Run("Protocol without proxy headers is http", func(t *testing.T) {
+		ehttptest.KnownBug(t, "S7", func(t testing.TB) {
+			proto, _, _ := cWho(t, ts, nil)
+			ehttptest.Eq(t, "S7 (Protocol() is empty on server requests)", proto, "http")
+		})
+	})
+
+	t.Run("Host without proxy headers is the Host header", func(t *testing.T) {
+		_, host, _ := cWho(t, ts, nil)
+		ehttptest.Eq(t, "RFC 9110 §7.2 Host", host, cHost(ts))
+	})
+}
+
+// RFC 6797 §7.2: a server must not send HSTS over a non-secure transport.
+// (Severity is low: §8.1 makes user agents ignore it there.)
+func TestCSecurityS7SpoofedProtoTriggersHSTS(t *testing.T) {
+	ts := cForwardServer(t, middleware.Secure(middleware.SecureOptions{HSTSMaxAge: 3600}))
+
+	resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/who", http.Header{"X-Forwarded-Proto": {"https"}})
+
+	ehttptest.KnownBug(t, "S7", func(t testing.TB) {
+		ehttptest.Eq(t, "RFC 6797 §7.2 + S7", resp.Header.Get("Strict-Transport-Security"), "")
+	})
+
+	plain, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/who", nil)
+	ehttptest.Eq(t, "RFC 6797 §7.2: plain HTTP gets no HSTS", plain.Header.Get("Strict-Transport-Security"), "")
+}
+
+// ---------------------------------------------------------------------------
+// S3: CORS attacks (not parallel: WithCors mutates the global)
+// ---------------------------------------------------------------------------
+
+func TestCSecurityS3CorsReflection(t *testing.T) {
+	cases := []struct {
+		name   string
+		origin string
+	}{
+		{"unlisted origin", fixtures.OriginEvil},
+		{"null origin (sandboxed iframe)", "null"},
+		{"suffix lookalike", fixtures.OriginA + ".evil.com"},
+		{"prefix lookalike", "https://evil-app.example"},
+		{"different port", fixtures.OriginA + ":8443"},
+		{"different scheme", "http://app.example"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := fixtures.CorsServer(t, &ehttp.CorsOptions{Origin: []string{fixtures.OriginA}, Credentials: true})
+			ts := fixtures.Start(t, srv)
+
+			ehttptest.KnownBug(t, "S3", func(t testing.TB) {
+				resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/api", http.Header{"Origin": {tc.origin}})
+				acao := resp.Header.Get("Access-Control-Allow-Origin")
+				acac := resp.Header.Get("Access-Control-Allow-Credentials")
+
+				ehttptest.True(t, "S3 + Fetch §3.2.5: authenticated cross-origin read must not be granted",
+					acao != tc.origin || acac != "true", "ACAO=%q ACAC=%q for Origin %q", acao, acac, tc.origin)
+			})
+		})
+	}
+}
+
+func TestCSecurityS3WildcardWithCredentials(t *testing.T) {
+	t.Run("evil origin gets credentials", func(t *testing.T) {
+		ts := fixtures.Start(t, fixtures.CorsServer(t, &ehttp.CorsOptions{Credentials: true}))
+
+		ehttptest.KnownBug(t, "S3", func(t testing.TB) {
+			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/api", http.Header{"Origin": {fixtures.OriginEvil}})
+
+			ehttptest.True(t, "Fetch §3.2.5: wildcard + credentials must never reflect the origin",
+				resp.Header.Get("Access-Control-Allow-Origin") != fixtures.OriginEvil || resp.Header.Get("Access-Control-Allow-Credentials") != "true",
+				"ACAO=%q ACAC=%q", resp.Header.Get("Access-Control-Allow-Origin"), resp.Header.Get("Access-Control-Allow-Credentials"))
+		})
+	})
+
+	t.Run("boot fails fast", func(t *testing.T) {
+		ehttptest.KnownBug(t, "S3", func(t testing.TB) {
+			orig := *ehttp.DefaultCorsOptions
+			defer func() { *ehttp.DefaultCorsOptions = orig }()
+
+			panicked := func() (p bool) {
+				defer func() { p = recover() != nil }()
+				ehttp.NewServer(ehttp.WithCors(ehttp.CorsOptions{Credentials: true}))
+
+				return false
+			}()
+
+			ehttptest.True(t, "S3 + proposal principle 5 (fail fast)", panicked, "Credentials:true with wildcard origin did not panic")
+		})
+	})
+}
+
+func TestCSecurityS3PreflightRejectsLookalikes(t *testing.T) {
+	for _, origin := range []string{fixtures.OriginEvil, "null", fixtures.OriginA + ".evil.com", "https://evil-app.example"} {
+		t.Run(origin, func(t *testing.T) {
+			ts := fixtures.Start(t, fixtures.CorsServer(t, &ehttp.CorsOptions{Origin: []string{fixtures.OriginA}}))
+
+			resp, _ := fixtures.Fetch(t, http.MethodOptions, ts.URL+"/api", http.Header{
+				"Origin":                        {origin},
+				"Access-Control-Request-Method": {"GET"},
+				"Sec-Fetch-Site":                {"cross-site"}, // what a browser sends
+			})
+
+			ehttptest.Eq(t, "Fetch §4.8: preflight from a non-allowlisted origin fails", resp.StatusCode, 403)
+		})
+	}
+}
+
+// Sec-Fetch-Site is a forbidden header name for browsers (Fetch §2.2.1), so only
+// non-browser clients can forge it, and they do not need CORS. Reproduced, but
+// not exploitable cross-site: severity downgraded.
+func TestCSecurityS3ForgedSecFetchSite(t *testing.T) {
+	ts := fixtures.Start(t, fixtures.CorsServer(t, &ehttp.CorsOptions{Origin: []string{fixtures.OriginA}}))
+
+	ehttptest.KnownBug(t, "S3", func(t testing.TB) {
+		resp, _ := fixtures.Fetch(t, http.MethodOptions, ts.URL+"/api", http.Header{
+			"Origin":                        {fixtures.OriginEvil},
+			"Access-Control-Request-Method": {"GET"},
+			"Sec-Fetch-Site":                {"same-origin"},
+		})
+
+		ehttptest.Eq(t, "S3: allowlist must not be bypassed by a self-declared Sec-Fetch-Site", resp.StatusCode, 403)
+	})
+}
+
+// NewServer keeps a pointer to the global; WithCors writes through it.
+func TestCSecurityS3GlobalCorsLeaksAcrossServers(t *testing.T) {
+	orig := *ehttp.DefaultCorsOptions
+
+	t.Cleanup(func() { *ehttp.DefaultCorsOptions = orig })
+
+	*ehttp.DefaultCorsOptions = orig
+
+	_ = ehttp.NewServer(ehttp.WithCors(ehttp.CorsOptions{Origin: []string{fixtures.OriginA}}))
+	other := ehttp.NewServer() // default: any origin
+	other.GET("/api", func(res *ehttp.ResponseWriter, req *ehttp.Request) { res.String("x") })
+	ts := fixtures.Start(t, other)
+
+	ehttptest.KnownBug(t, "S3", func(t testing.TB) {
+		resp, _ := fixtures.Fetch(t, http.MethodOptions, ts.URL+"/api", http.Header{
+			"Origin":                        {fixtures.OriginB},
+			"Access-Control-Request-Method": {"GET"},
+			"Sec-Fetch-Site":                {"cross-site"},
+		})
+
+		ehttptest.Eq(t, "S3: a second server must not inherit the first server's allowlist", resp.StatusCode, 200)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// S1 / S2: group middleware
+// ---------------------------------------------------------------------------
+
+func cAuth() ehttp.MiddlewareHandlerFunc {
+	return func(next ehttp.Handler) ehttp.HandlerFunc {
+		return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+			if req.Header("Authorization") == "" {
+				res.SendStatus(401)
+				return
+			}
+
+			next.ServeHTTP(res, req)
+		}
+	}
+}
+
+func cMark(name string) ehttp.MiddlewareHandlerFunc {
+	return func(next ehttp.Handler) ehttp.HandlerFunc {
+		return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+			res.Header().Set(name, "1")
+			next.ServeHTTP(res, req)
+		}
+	}
+}
+
+func cSecretHandler(res *ehttp.ResponseWriter, req *ehttp.Request) { res.String("secret") }
+
+func TestCSecurityS1GroupAuthBypass(t *testing.T) {
+	t.Run("Route(prefix, auth) protects the group", func(t *testing.T) {
+		srv := ehttp.NewServer()
+		srv.Route("/admin", cAuth()).GET("/secret", cSecretHandler)
+		ts := fixtures.Start(t, srv)
+
+		ehttptest.KnownBug(t, "S1", func(t testing.TB) {
+			resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/admin/secret", nil)
+			ehttptest.Eq(t, "S1: group middleware must run", resp.StatusCode, 401)
+			ehttptest.True(t, "S1", !strings.Contains(body, "secret"), "secret body leaked: %q", body)
+		})
+	})
+
+	t.Run("nested Route keeps parent and own middleware", func(t *testing.T) {
+		srv := ehttp.NewServer()
+		admin := srv.Route("/admin", cAuth())
+		admin.Route("/users", cMark("X-Nested")).GET("/1", cSecretHandler)
+		ts := fixtures.Start(t, srv)
+
+		ehttptest.KnownBug(t, "S1", func(t testing.TB) {
+			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/admin/users/1", nil)
+			ehttptest.Eq(t, "S1: nested group inherits auth", resp.StatusCode, 401)
+		})
+
+		ehttptest.KnownBug(t, "S1", func(t testing.TB) {
+			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/admin/users/1", http.Header{"Authorization": {"x"}})
+			ehttptest.Eq(t, "S1: nested group's own middleware runs", resp.Header.Get("X-Nested"), "1")
+		})
+	})
+
+	t.Run("controls: server Use and per-route middleware do protect", func(t *testing.T) {
+		srv := ehttp.NewServer()
+		srv.Use(cAuth())
+		srv.GET("/a", cSecretHandler)
+		ts := fixtures.Start(t, srv)
+
+		resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/a", nil)
+		ehttptest.Eq(t, "control: server.Use", resp.StatusCode, 401)
+
+		srv2 := ehttp.NewServer()
+		srv2.GET("/b", cSecretHandler, cAuth())
+		ts2 := fixtures.Start(t, srv2)
+
+		resp, _ = fixtures.Fetch(t, http.MethodGet, ts2.URL+"/b", nil)
+		ehttptest.Eq(t, "control: per-route middleware", resp.StatusCode, 401)
+
+		resp, body := fixtures.Fetch(t, http.MethodGet, ts2.URL+"/b", http.Header{"Authorization": {"x"}})
+		ehttptest.Eq(t, "control: authorized request passes", resp.StatusCode, 200)
+		ehttptest.Eq(t, "control: authorized request passes", body, "secret")
+	})
+
+	// Express semantic (app.use only affects what is registered after it).
+	// Pinned so the S1/S2 fix does not change it by accident.
+	t.Run("Use after a route does not wrap that route (Express order)", func(t *testing.T) {
+		srv := ehttp.NewServer()
+		srv.GET("/early", cSecretHandler)
+		srv.Use(cAuth())
+		srv.GET("/late", cSecretHandler)
+		ts := fixtures.Start(t, srv)
+
+		resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/early", nil)
+		ehttptest.Eq(t, "Express app.use ordering", resp.StatusCode, 200)
+
+		resp, _ = fixtures.Fetch(t, http.MethodGet, ts.URL+"/late", nil)
+		ehttptest.Eq(t, "Express app.use ordering", resp.StatusCode, 401)
+	})
+}
+
+func TestCSecurityS2GroupUseLeaksToWholeServer(t *testing.T) {
+	srv := ehttp.NewServer()
+	srv.GET("/public", cSecretHandler)
+
+	api := srv.Route("/api")
+	api.Use(cMark("X-Group"))
+	api.GET("/x", cSecretHandler)
+
+	ts := fixtures.Start(t, srv)
+
+	t.Run("control: group route gets the middleware", func(t *testing.T) {
+		resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/api/x", nil)
+		ehttptest.Eq(t, "control", resp.Header.Get("X-Group"), "1")
+	})
+
+	t.Run("route outside the group", func(t *testing.T) {
+		// public was registered before api.Use, so only 404/405/OPTIONS expose the leak.
+		ehttptest.KnownBug(t, "S2", func(t testing.TB) {
+			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/missing", nil)
+			ehttptest.Eq(t, "S2: group middleware must not run on unrelated 404s", resp.Header.Get("X-Group"), "")
+		})
+	})
+
+	t.Run("route registered after Use outside the group", func(t *testing.T) {
+		srv := ehttp.NewServer()
+		api := srv.Route("/api")
+		api.Use(cMark("X-Group"))
+		srv.GET("/later", cSecretHandler)
+		ts := fixtures.Start(t, srv)
+
+		ehttptest.KnownBug(t, "S2", func(t testing.TB) {
+			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/later", nil)
+			ehttptest.Eq(t, "S2: sub.Use is scoped to the group", resp.Header.Get("X-Group"), "")
+		})
+	})
+}
+
+// ---------------------------------------------------------------------------
+// S6: Recover
+// ---------------------------------------------------------------------------
+
+func cRecoverServer(t testing.TB) *httptest.Server {
+	srv := ehttp.NewServer()
+	srv.Use(middleware.Recover())
+	srv.GET("/leak", func(res *ehttp.ResponseWriter, req *ehttp.Request) { panic("db password=hunter2") })
+	srv.GET("/abort", func(res *ehttp.ResponseWriter, req *ehttp.Request) { panic(http.ErrAbortHandler) })
+	srv.GET("/partial", func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+		res.String("partial")
+		panic("late failure")
+	})
+	srv.GET("/stream", func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+		_, _ = res.Writer.Write([]byte("chunk-1;")) // no Content-Length: chunked
+		res.Writer.(http.Flusher).Flush()
+		panic("late failure")
+	})
+
+	return fixtures.Start(t, srv)
+}
+
+func TestCSecurityS6PanicDoesNotLeakToClient(t *testing.T) {
+	ts := cRecoverServer(t)
+
+	resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/leak", nil)
+	ehttptest.Eq(t, "S6: panic becomes 500", resp.StatusCode, 500)
+
+	ehttptest.KnownBug(t, "S6", func(t testing.TB) {
+		ehttptest.True(t, "S6: panic value is internal data", !strings.Contains(body, "hunter2"), "body leaks panic value: %s", body)
+	})
+}
+
+func TestCSecurityS6AbortHandlerIsRethrown(t *testing.T) {
+	ts := cRecoverServer(t)
+
+	ehttptest.KnownBug(t, "S6", func(t testing.TB) {
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/abort", http.NoBody)
+		resp, err := fixtures.Client().Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+
+		ehttptest.True(t, "net/http ErrAbortHandler convention: the response is aborted", err != nil,
+			"client got status %d instead of an aborted connection", respStatus(resp))
+	})
+}
+
+func respStatus(r *http.Response) int {
+	if r == nil {
+		return 0
+	}
+
+	return r.StatusCode
+}
+
+func TestCSecurityS6PanicAfterHeadersSent(t *testing.T) {
+	ts := cRecoverServer(t)
+
+	t.Run("sized body: net/http Content-Length protects the client", func(t *testing.T) {
+		resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/partial", nil)
+		ehttptest.Eq(t, "premise check S6", resp.StatusCode, 200)
+		ehttptest.Eq(t, "premise check S6: only what was sent before the panic", body, "partial")
+	})
+
+	t.Run("chunked body gets the error JSON appended", func(t *testing.T) {
+		ehttptest.KnownBug(t, "S6", func(t testing.TB) {
+			_, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/stream", nil)
+			ehttptest.Eq(t, "S6: no 500 JSON glued to a response already in flight", body, "chunk-1;")
+		})
+	})
+}
+
+// ---------------------------------------------------------------------------
+// C11: X-Request-Id
+// ---------------------------------------------------------------------------
+
+func TestCSecurityC11RequestId(t *testing.T) {
+	srv := ehttp.NewServer()
+	srv.Use(middleware.RequestId())
+	srv.GET("/", func(res *ehttp.ResponseWriter, req *ehttp.Request) { res.String("ok") })
+	ts := fixtures.Start(t, srv)
+
+	t.Run("giant id is not echoed back", func(t *testing.T) {
+		huge := strings.Repeat("a", 64*1024)
+
+		ehttptest.KnownBug(t, "C11", func(t testing.TB) {
+			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL, http.Header{"X-Request-Id": {huge}})
+			ehttptest.True(t, "C11: bounded id (<=256 bytes)", len(resp.Header.Get("X-Request-Id")) <= 256,
+				"echoed %d bytes", len(resp.Header.Get("X-Request-Id")))
+		})
+	})
+
+	t.Run("missing id gets a generated one", func(t *testing.T) {
+		resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL, nil)
+		ehttptest.True(t, "RequestId contract", len(resp.Header.Get("X-Request-Id")) == 36, "id = %q", resp.Header.Get("X-Request-Id"))
+	})
+
+	t.Run("sane id is kept", func(t *testing.T) {
+		resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL, http.Header{"X-Request-Id": {"abc-123"}})
+		ehttptest.Eq(t, "RequestId contract", resp.Header.Get("X-Request-Id"), "abc-123")
+	})
+
+	// Premise review: net/http parses CR/LF as a header boundary and rejects control bytes.
+	t.Run("CRLF injection cannot split the response", func(t *testing.T) {
+		raw := fixtures.Raw(t, cHost(ts), "GET / HTTP/1.1\r\nHost: x\r\nX-Request-Id: abc\r\nSet-Cookie: pwn=1\r\nConnection: close\r\n\r\n")
+		head, _, _ := strings.Cut(raw, "\r\n\r\n")
+
+		ehttptest.True(t, "C11 premise: no injection (ids are single header values)", !strings.Contains(head, "pwn=1"), "response head: %q", head)
+	})
+
+	t.Run("control byte in id never reaches the response", func(t *testing.T) {
+		raw := fixtures.Raw(t, cHost(ts), "GET / HTTP/1.1\r\nHost: x\r\nX-Request-Id: a\x01b\r\nConnection: close\r\n\r\n")
+
+		ehttptest.True(t, "C11 premise: net/http rejects control bytes (400) or the id is dropped",
+			strings.HasPrefix(raw, "HTTP/1.1 400") || !strings.Contains(raw, "\x01"), "response: %q", raw)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// S12: route regex
+// ---------------------------------------------------------------------------
+
+func TestCSecurityS12UnanchoredRouteRegex(t *testing.T) {
+	srv := ehttp.NewServer()
+	srv.GET("/items/:id|[0-9]+", func(res *ehttp.ResponseWriter, req *ehttp.Request) { res.String("id=" + req.Param("id")) })
+	ts := fixtures.Start(t, srv)
+
+	resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/items/42", nil)
+	ehttptest.Eq(t, "S12 control", resp.StatusCode, 200)
+	ehttptest.Eq(t, "S12 control", body, "id=42")
+
+	for _, bad := range []string{"abc1x", "5;drop", "x9", "9x"} {
+		t.Run("rejects "+bad, func(t *testing.T) {
+			ehttptest.KnownBug(t, "S12", func(t testing.TB) {
+				resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/items/"+bad, nil)
+				ehttptest.Eq(t, "S12: regex param must match the whole segment ("+body+")", resp.StatusCode, 404)
+			})
+		})
+	}
+
+	t.Run("invalid regex fails at registration", func(t *testing.T) {
+		ehttptest.KnownBug(t, "S12", func(t testing.TB) {
+			panicked := func() (p bool) {
+				defer func() { p = recover() != nil }()
+				ehttp.NewServer().GET("/x/:id|[0-9", func(res *ehttp.ResponseWriter, req *ehttp.Request) {})
+
+				return false
+			}()
+
+			ehttptest.True(t, "S12 + principle 5 (fail fast at boot)", panicked, "invalid regexp registered without panic")
+		})
+	})
+}
+
+// ---------------------------------------------------------------------------
+// C5: BodyLimit
+// ---------------------------------------------------------------------------
+
+func cBodyServer(t testing.TB, limit string) (*httptest.Server, *atomic.Int32) {
+	called := new(atomic.Int32)
+
+	srv := ehttp.NewServer()
+	srv.POST("/up", func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+		called.Add(1)
+
+		b, err := req.Body()
+		if errors.Is(err, ehttp.ErrRequestBodyTooLarge) {
+			res.SendStatus(413)
+			return
+		}
+
+		res.String(fmt.Sprint(len(b)))
+	}, middleware.BodyLimit(limit))
+
+	return fixtures.Start(t, srv), called
+}
+
+func cPost(t testing.TB, url string, body io.Reader, length int64) (resp *http.Response, respBody string) {
+	t.Helper()
+
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, url, body)
+	req.ContentLength = length
+
+	resp, err := fixtures.Client().Do(req)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+
+	return resp, string(b)
+}
+
+func TestCSecurityC5BodyLimit(t *testing.T) {
+	ts, called := cBodyServer(t, "1KB")
+
+	t.Run("declared length above limit is 413 without running the handler", func(t *testing.T) {
+		resp, _ := cPost(t, ts.URL+"/up", strings.NewReader(strings.Repeat("a", 2048)), 2048)
+		ehttptest.Eq(t, "RFC 9110 §15.5.14 413", resp.StatusCode, 413)
+		ehttptest.Eq(t, "C5: handler not reached", called.Load(), int32(0))
+	})
+
+	t.Run("chunked body above limit is 413", func(t *testing.T) {
+		resp, _ := cPost(t, ts.URL+"/up", io.NopCloser(strings.NewReader(strings.Repeat("a", 64*1024))), -1)
+		ehttptest.Eq(t, "RFC 9110 §15.5.14 + http.MaxBytesReader", resp.StatusCode, 413)
+	})
+
+	t.Run("body at the limit passes", func(t *testing.T) {
+		resp, body := cPost(t, ts.URL+"/up", strings.NewReader(strings.Repeat("a", 1024)), 1024)
+		ehttptest.Eq(t, "C5 boundary", resp.StatusCode, 200)
+		ehttptest.Eq(t, "C5 boundary", body, "1024")
+	})
+
+	t.Run("limit with a space silently becomes 4 bytes", func(t *testing.T) {
+		ehttptest.KnownBug(t, "C5", func(t testing.TB) {
+			panicked := func() (p bool) {
+				defer func() { p = recover() != nil }()
+				middleware.BodyLimit("4 KB")
+
+				return false
+			}()
+
+			ehttptest.True(t, "C5: invalid limit must fail at boot", panicked, `BodyLimit("4 KB") accepted`)
+		})
+	})
+
+	t.Run("limit with a space rejects a 100-byte body", func(t *testing.T) {
+		spaced, _ := cBodyServer(t, "4 KB")
+
+		ehttptest.KnownBug(t, "C5", func(t testing.TB) {
+			resp, _ := cPost(t, spaced.URL+"/up", strings.NewReader(strings.Repeat("a", 100)), 100)
+			ehttptest.Eq(t, "C5: \"4 KB\" must not mean 4 bytes", resp.StatusCode, 200)
+		})
+	})
+
+	t.Run("unparsable limit fails at boot", func(t *testing.T) {
+		ehttptest.KnownBug(t, "C5", func(t testing.TB) {
+			panicked := func() (p bool) {
+				defer func() { p = recover() != nil }()
+				middleware.BodyLimit("lots")
+
+				return false
+			}()
+
+			ehttptest.True(t, "C5: invalid limit must fail at boot", panicked, `BodyLimit("lots") accepted`)
+		})
+	})
+}
+
+// ---------------------------------------------------------------------------
+// S8: slowloris (ReadHeaderTimeout)
+// ---------------------------------------------------------------------------
+
+// Listen builds its own http.Server and exposes no option, so the only probe is
+// a half-open connection. The proposal default is 10s, so the test needs ~12s:
+// opt in with EHTTP_SLOW_TESTS=1 (nightly), skipped otherwise to keep the suite fast.
+func TestCSecurityS8Slowloris(t *testing.T) {
+	if os.Getenv("EHTTP_SLOW_TESTS") == "" {
+		t.Skip("testability: needs >10s (proposed ReadHeaderTimeout default); set EHTTP_SLOW_TESTS=1")
+	}
+
+	l := fixtures.Listen(t, func(port string) *ehttp.Server {
+		srv := ehttp.NewServer(ehttp.WithPort(port))
+		srv.GET("/", func(res *ehttp.ResponseWriter, req *ehttp.Request) { res.String("ok") })
+
+		return srv
+	})
+
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", "127.0.0.1:"+l.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	_, _ = conn.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\nX-Slow: "))
+
+	_ = conn.SetReadDeadline(time.Now().Add(13 * time.Second))
+	_, readErr := conn.Read(make([]byte, 1))
+
+	var nerr net.Error
+
+	closedByServer := readErr != nil && (!errors.As(readErr, &nerr) || !nerr.Timeout())
+
+	ehttptest.KnownBug(t, "S8", func(t testing.TB) {
+		ehttptest.True(t, "S8 (gosec G112): server drops a connection that never finishes its headers",
+			closedByServer, "connection still open after 13s")
+	})
+}

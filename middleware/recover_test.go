@@ -1,0 +1,118 @@
+package middleware_test
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/EqualSoftware/ehttp"
+	"github.com/EqualSoftware/ehttp/internal/ehttptest"
+	"github.com/EqualSoftware/ehttp/internal/fixtures"
+	"github.com/EqualSoftware/ehttp/middleware"
+)
+
+func bPanic(v any) ehttp.HandlerFunc {
+	return func(*ehttp.ResponseWriter, *ehttp.Request) { panic(v) }
+}
+
+func TestRecover(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no panic passes through untouched", func(t *testing.T) {
+		t.Parallel()
+
+		rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Recover()), fixtures.Req("GET", "/x"))
+
+		ehttptest.Eq(t, "middleware contract", rec.Code, 200)
+		ehttptest.Eq(t, "middleware contract", rec.Body.String(), "ok")
+	})
+
+	for name, v := range map[string]any{
+		"string panic": "boom",
+		"error panic":  errors.New("boom"),
+		"int panic":    42,
+	} {
+		t.Run(name+" becomes a JSON 500", func(t *testing.T) {
+			t.Parallel()
+
+			rec := ehttptest.Do(fixtures.Handler(bPanic(v), middleware.Recover()), fixtures.Req("GET", "/x"))
+
+			var body struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			}
+			err := json.Unmarshal(rec.Body.Bytes(), &body)
+
+			ehttptest.Eq(t, "RFC 9110 §15.6.1", rec.Code, 500)
+			ehttptest.Eq(t, "middleware contract", rec.Header().Get("Content-Type"), ehttp.MIMEApplicationJSONCharsetUTF8) //nolint:staticcheck // the test asserts this exact (deprecated) value the framework emits
+			ehttptest.True(t, "middleware contract", err == nil, "body is not JSON: %q (%v)", rec.Body.String(), err)
+			ehttptest.Eq(t, "middleware contract", body.Code, 500)
+			ehttptest.Eq(t, "middleware contract", body.Message, "Internal Server Error")
+		})
+	}
+
+	t.Run("headers set by outer middlewares survive the 500", func(t *testing.T) {
+		t.Parallel()
+
+		h := fixtures.Handler(bPanic("boom"), middleware.RequestId(), middleware.Recover())
+		rec := ehttptest.Do(h, fixtures.Req("GET", "/x", "X-Request-Id", "abc"))
+
+		ehttptest.Eq(t, "composition", rec.Code, 500)
+		ehttptest.Eq(t, "composition", rec.Header().Get("X-Request-Id"), "abc")
+	})
+
+	t.Run("a panic in a later middleware is also recovered", func(t *testing.T) {
+		t.Parallel()
+
+		bad := func(next ehttp.Handler) ehttp.HandlerFunc { return bPanic("mw") }
+		rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Recover(), bad), fixtures.Req("GET", "/x"))
+
+		ehttptest.Eq(t, "middleware contract", rec.Code, 500)
+	})
+}
+
+// S6: the panic value is internal and must not reach the client.
+func TestRecoverDoesNotLeakPanicValue(t *testing.T) {
+	t.Parallel()
+
+	ehttptest.KnownBug(t, "S6", func(t testing.TB) {
+		rec := ehttptest.Do(fixtures.Handler(bPanic("db password=hunter2"), middleware.Recover()), fixtures.Req("GET", "/x"))
+
+		ehttptest.True(t, "S6", !strings.Contains(rec.Body.String(), "hunter2"), "body leaks the panic value: %q", rec.Body.String())
+	})
+}
+
+// S6: http.ErrAbortHandler is net/http's way to abort a response; swallowing
+// it hides the abort from the server.
+func TestRecoverRethrowsAbortHandler(t *testing.T) {
+	t.Parallel()
+
+	ehttptest.KnownBug(t, "S6", func(t testing.TB) {
+		var got any
+
+		func() {
+			defer func() { got = recover() }()
+			ehttptest.Do(fixtures.Handler(bPanic(http.ErrAbortHandler), middleware.Recover()), fixtures.Req("GET", "/x"))
+		}()
+
+		ehttptest.True(t, "net/http ErrAbortHandler doc", got == http.ErrAbortHandler, "recovered value = %v, want http.ErrAbortHandler re-panicked", got) //nolint:errorlint // got is a recover() value (any); net/http compares it by identity
+	})
+}
+
+// S6: once the response started, a 500 JSON must not be appended to it.
+func TestRecoverAfterResponseStarted(t *testing.T) {
+	t.Parallel()
+
+	ehttptest.KnownBug(t, "S6", func(t testing.TB) {
+		h := fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+			res.String("partial")
+			panic("late")
+		}, middleware.Recover())
+
+		rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
+
+		ehttptest.Eq(t, "S6 (no 500 body after headers sent)", rec.Body.String(), "partial")
+	})
+}

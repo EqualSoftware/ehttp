@@ -1,0 +1,195 @@
+# C8 - static analysis. golangci-lint v2 format. `make lint` is part of
+# `make check`, the gate of the push hook: it must report 0 issues.
+#
+# Production findings that existed on 2026-11-01 are an explicit baseline in
+# linters.exclusions.rules below. See .tasks/baseline/lint.md for the table.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+issues:
+  # report every finding: the default caps hide repeats of the same message
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - gosec
+    - bodyclose
+    - noctx
+    - errorlint
+    - contextcheck
+    - unused
+    - gocritic
+  settings:
+    govet:
+      enable-all: false
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      # tests may use weak randomness, fixed file modes, etc.
+      - path: _test\.go
+        linters:
+          - gosec
+
+      # bodyclose cannot see that test helpers (fixtures.Fetch, aGetBody)
+      # read and close the body before they return the *http.Response.
+      - path: _test\.go
+        linters:
+          - bodyclose
+
+      # ---- Baseline of production findings (2026-11-01) ----
+      # These findings exist in framework code. To fix one: fix the code and
+      # remove its rule. Do not add a rule without review. Each rule matches
+      # path + linter + message + source line, so a new finding of the same
+      # kind in the same file is still reported.
+
+      # baseline 2026-11-01: errcheck+gosec G104 response-writer.go:75 (C2)
+      - path: '^response-writer\.go$'
+        linters:
+          - errcheck
+          - gosec
+        text: '(Error return value of `i\.ResponseWriter\.Write` is not checked|G104: Errors unhandled)'
+        source: 'i\.ResponseWriter\.Write\(i\.Buffer\.Bytes\(\)\)'
+
+      # baseline 2026-11-01: errcheck+gosec G104 response-writer.go:195 (C2)
+      - path: '^response-writer\.go$'
+        linters:
+          - errcheck
+          - gosec
+        text: '(Error return value of `res\.Writer\.Write` is not checked|G104: Errors unhandled)'
+        source: 'res\.Writer\.Write\(v\)'
+
+      # baseline 2026-11-01: errcheck+gosec G104 response-writer.go:217 (C2)
+      - path: '^response-writer\.go$'
+        linters:
+          - errcheck
+          - gosec
+        text: '(Error return value of `buf\.WriteTo` is not checked|G104: Errors unhandled)'
+        source: 'buf\.WriteTo\(res\.Writer\)'
+
+      # baseline 2026-11-01: errcheck+gosec G104 response-writer.go:235, 292 (two identical calls; C2)
+      - path: '^response-writer\.go$'
+        linters:
+          - errcheck
+          - gosec
+        text: '(Error return value of `res\.Writer\.Write` is not checked|G104: Errors unhandled)'
+        source: 'res\.Writer\.Write\(bytes\)'
+
+      # baseline 2026-11-01: errcheck+gosec G104 response-writer.go:270 (C2)
+      - path: '^response-writer\.go$'
+        linters:
+          - errcheck
+          - gosec
+        text: '(Error return value of `res\.Writer\.Write` is not checked|G104: Errors unhandled)'
+        source: 'res\.Writer\.Write\(b\)'
+
+      # baseline 2026-11-01: errcheck+gosec G104 response-writer.go:388 (C2)
+      - path: '^response-writer\.go$'
+        linters:
+          - errcheck
+          - gosec
+        text: '(Error return value of `file\.Seek` is not checked|G104: Errors unhandled)'
+        source: 'file\.Seek\(start, io\.SeekStart\)'
+
+      # baseline 2026-11-01: errcheck+gosec G104 response-writer.go:389 (C2)
+      - path: '^response-writer\.go$'
+        linters:
+          - errcheck
+          - gosec
+        text: '(Error return value of `io\.CopyN` is not checked|G104: Errors unhandled)'
+        source: 'io\.CopyN\(res\.Writer, file'
+
+      # baseline 2026-11-01: errcheck+gosec G104 response-writer.go:396 (C2)
+      - path: '^response-writer\.go$'
+        linters:
+          - errcheck
+          - gosec
+        text: '(Error return value of `file\.WriteTo` is not checked|G104: Errors unhandled)'
+        source: 'file\.WriteTo\(res\.Writer\)'
+
+      # baseline 2026-11-01: errcheck+gosec G104 server.go:163 (S8)
+      - path: '^server\.go$'
+        linters:
+          - errcheck
+          - gosec
+        text: '(Error return value of `server\.Shutdown` is not checked|G104: Errors unhandled)'
+        source: 'server\.Shutdown\(ctx\)'
+
+      # baseline 2026-11-01: gocritic client.go:43
+      - path: '^client\.go$'
+        linters:
+          - gocritic
+        text: 'importShadow: shadow of imported package ''url'''
+        source: 'url, err := url\.Parse'
+
+      # baseline 2026-11-01: gocritic response-writer.go:229
+      - path: '^response-writer\.go$'
+        linters:
+          - gocritic
+        text: 'importShadow: shadow of imported package ''bytes'''
+        source: 'bytes := \[\]byte\(e\.Error\(\)\)'
+
+      # baseline 2026-11-01: gocritic response-writer.go:278
+      - path: '^response-writer\.go$'
+        linters:
+          - gocritic
+        text: 'importShadow: shadow of imported package ''bytes'''
+        source: 'bytes, err := json\.Marshal'
+
+      # baseline 2026-11-01: gocritic router.go:151
+      - path: '^router\.go$'
+        linters:
+          - gocritic
+        text: 'importShadow: shadow of imported package ''url'''
+        source: 'url := req\.Path\(\)'
+
+      # baseline 2026-11-01: gosec constants.go:84 (false positive: header name, not a credential)
+      - path: '^constants\.go$'
+        linters:
+          - gosec
+        text: 'G101'
+        source: 'HeaderXCSRFToken '
+
+      # baseline 2026-11-01: gosec response-writer.go:304 (S9)
+      - path: '^response-writer\.go$'
+        linters:
+          - gosec
+        text: 'G304'
+        source: 'os\.Open\(name\)'
+
+      # baseline 2026-11-01: gosec server.go:136 (S8)
+      - path: '^server\.go$'
+        linters:
+          - gosec
+        text: 'G112'
+        source: 'server := &http\.Server\{'
+
+      # baseline 2026-11-01: noctx client.go:202 (C7)
+      - path: '^client\.go$'
+        linters:
+          - noctx
+        text: 'net/http\.NewRequest must not be called'
+        source: 'http\.NewRequest\(cfg\.method'
+
+      # baseline 2026-11-01: bodyclose client.go:229 (C7)
+      - path: '^client\.go$'
+        linters:
+          - bodyclose
+        text: 'response body must be closed'
+        source: 'client\.httpClient\.Do\(req\)'
+
+formatters:
+  enable:
+    - gofmt
