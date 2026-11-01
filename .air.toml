@@ -1,0 +1,13 @@
+root = "."
+tmp_dir = "bin"
+
+[build]
+  bin = "./bin/server"
+  cmd = "go build -o ./bin/server ./examples/server/main.go"
+
+[misc]
+  clean_on_exit = true
+
+[screen]
+  clear_on_rebuild = false
+  keep_scroll = false
