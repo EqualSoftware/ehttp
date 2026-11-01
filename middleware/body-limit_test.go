@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/EqualSoftware/ehttp"
 	"github.com/EqualSoftware/ehttp/internal/ehttptest"
@@ -160,4 +161,60 @@ func (c *bCountingReader) Read(p []byte) (int, error) {
 	c.n += n
 
 	return n, err
+}
+
+// F1: on overflow MaxBytesReader asks the real writer for "Connection: close".
+// BodyLimit must hand it the real writer, also under an interceptor.
+func TestBodyLimitClosesConnectionOnOverflow(t *testing.T) {
+	t.Parallel()
+
+	for name, mws := range map[string][]ehttp.MiddlewareHandlerFunc{
+		"plain":         {middleware.BodyLimit("10")},
+		"inside etag":   {middleware.WeakEtag(), middleware.BodyLimit("10")},
+		"inside errcch": {middleware.ErrorCache(time.Minute), middleware.BodyLimit("10")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := ehttp.NewServer()
+			srv.POST("/x", func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+				if _, err := io.ReadAll(req.Request.Body); err != nil {
+					res.SendStatus(http.StatusRequestEntityTooLarge)
+					return
+				}
+
+				res.SendStatus(http.StatusOK)
+			}, mws...)
+
+			ts := fixtures.Start(t, srv)
+			body := io.NopCloser(strings.NewReader(strings.Repeat("a", 100))) // chunked
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, ts.URL+"/x", body)
+			ehttptest.Eq(t, "request", err, nil)
+
+			resp, err := (&http.Client{Transport: &http.Transport{DisableKeepAlives: false}}).Do(req)
+			ehttptest.Eq(t, "request", err, nil)
+
+			defer resp.Body.Close()
+
+			ehttptest.Eq(t, "overflow status", resp.StatusCode, http.StatusRequestEntityTooLarge)
+			ehttptest.True(t, "net/http MaxBytesReader: Connection: close", resp.Close, "connection stays open")
+		})
+	}
+}
+
+// F6: an interceptor cannot flush. ResponseController must say so.
+func TestFlushInsideInterceptorIsNotSupported(t *testing.T) {
+	t.Parallel()
+
+	var got error
+
+	h := fixtures.Handler(func(res *ehttp.ResponseWriter, _ *ehttp.Request) {
+		got = http.NewResponseController(res).Flush()
+		res.String("x")
+	}, middleware.WeakEtag())
+
+	rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
+
+	ehttptest.True(t, "ResponseController.Flush", errors.Is(got, http.ErrNotSupported), "got %v", got)
+	ehttptest.Eq(t, "body still sent once", rec.Body.String(), "x")
 }

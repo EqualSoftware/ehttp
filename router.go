@@ -26,7 +26,7 @@ func (f HandlerFunc) ServeHTTP(res *ResponseWriter, req *Request) {
 
 func WrapHandler(h http.Handler) HandlerFunc {
 	return func(res *ResponseWriter, req *Request) {
-		h.ServeHTTP(res.Writer, req.Request)
+		h.ServeHTTP(res, req.Request)
 	}
 }
 
@@ -137,7 +137,7 @@ func (r *Router) TRACE(pattern string, h HandlerFunc, m ...MiddlewareHandlerFunc
 
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	res := &ResponseWriter{
-		Writer:   w,
+		w:        w,
 		request:  r,
 		template: router.template,
 	}

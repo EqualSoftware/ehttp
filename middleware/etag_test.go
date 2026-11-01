@@ -185,7 +185,7 @@ func TestWeakEtagLargeResponseIsNot413(t *testing.T) {
 	ehttptest.KnownBug(t, "C3", func(t testing.TB) {
 		h := fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
 			res.String("x")
-			res.Writer.(*ehttp.ResponseWriterInterceptor).Size = math.MaxUint32 + 1
+			res.Unwrap().(*ehttp.ResponseWriterInterceptor).Size = math.MaxUint32 + 1
 		}, middleware.WeakEtag())
 
 		rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
@@ -225,6 +225,30 @@ func TestWeakEtagWithErrorCache(t *testing.T) {
 			ehttptest.Eq(t, "composition", bad.Body.String(), "err")
 			ehttptest.Eq(t, "composition", bad.Header().Get("ETag"), "")
 			ehttptest.True(t, "composition", bad.Header().Get("Cache-Control") != "", "error response lost Cache-Control")
+		})
+	}
+}
+
+// A native handler behind WrapHandler is intercepted and sent one time.
+func TestWrapHandlerInsideInterceptors(t *testing.T) {
+	t.Parallel()
+
+	native := ehttp.WrapHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("nope"))
+	}))
+
+	for name, mw := range map[string]ehttp.MiddlewareHandlerFunc{
+		"ErrorCache": middleware.ErrorCache(time.Minute),
+		"WeakEtag":   middleware.WeakEtag(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := ehttptest.Do(fixtures.Handler(native, mw), fixtures.Req("GET", "/x"))
+
+			ehttptest.Eq(t, "intercepted status", rec.Code, 404)
+			ehttptest.Eq(t, "intercepted body, once", rec.Body.String(), "nope")
 		})
 	}
 }

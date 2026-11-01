@@ -21,10 +21,8 @@ func WeakEtag() ehttp.MiddlewareHandlerFunc {
 			}
 
 			skip_body := method == ehttp.MethodHead
-			ires := ehttp.WithResponseWriter(res)
+			ires, i := ehttp.WithResponseWriter(res)
 			next.ServeHTTP(ires, req)
-
-			i, _ := ires.Writer.(*ehttp.ResponseWriterInterceptor)
 
 			if skip_body {
 				res.Append(ehttp.HeaderContentLength, strconv.FormatInt(i.Size, 10))

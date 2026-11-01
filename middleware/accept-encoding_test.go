@@ -72,18 +72,16 @@ func TestAcceptEncodingCallsNext(t *testing.T) {
 func TestAcceptEncodingVarySubstring(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "S11", func(t testing.TB) {
-		outer := func(next ehttp.Handler) ehttp.HandlerFunc {
-			return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
-				res.Append("Vary", "X-Accept-Encoding-Hint")
-				next.ServeHTTP(res, req)
-			}
+	outer := func(next ehttp.Handler) ehttp.HandlerFunc {
+		return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+			res.Append("Vary", "X-Accept-Encoding-Hint")
+			next.ServeHTTP(res, req)
 		}
+	}
 
-		rec := ehttptest.Do(fixtures.Handler(fixtures.OK, outer, middleware.AcceptEncoding()), fixtures.Req("GET", "/x"))
-		vary := "," + strings.ReplaceAll(strings.ToLower(rec.Header().Get("Vary")), " ", "") + ","
+	rec := ehttptest.Do(fixtures.Handler(fixtures.OK, outer, middleware.AcceptEncoding()), fixtures.Req("GET", "/x"))
+	vary := "," + strings.ReplaceAll(strings.ToLower(rec.Header().Get("Vary")), " ", "") + ","
 
-		ehttptest.True(t, "RFC 9110 §12.5.5", strings.Contains(vary, ",accept-encoding,"),
-			"Vary %q has no exact Accept-Encoding member", rec.Header().Get("Vary"))
-	})
+	ehttptest.True(t, "RFC 9110 §12.5.5", strings.Contains(vary, ",accept-encoding,"),
+		"Vary %q has no exact Accept-Encoding member", rec.Header().Get("Vary"))
 }

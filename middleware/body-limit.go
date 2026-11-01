@@ -65,8 +65,21 @@ func BodyLimit(l string) ehttp.MiddlewareHandlerFunc {
 				return
 			}
 
-			req.Request.Body = http.MaxBytesReader(res.Writer, req.Request.Body, limit)
+			req.Request.Body = http.MaxBytesReader(rawWriter(res), req.Request.Body, limit)
 			next.ServeHTTP(res, req)
 		}
+	}
+}
+
+// rawWriter unwraps w down to the real writer. MaxBytesReader never writes. It
+// only needs the real writer to ask for "Connection: close" on overflow.
+func rawWriter(w http.ResponseWriter) http.ResponseWriter {
+	for {
+		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return w
+		}
+
+		w = u.Unwrap()
 	}
 }

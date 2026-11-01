@@ -386,12 +386,6 @@ func dVaryTokens(h string) []string {
 	return out
 }
 
-// dVaryKnown is the S11 domain: one name is a substring of the other.
-func dVaryKnown(a, b string) bool {
-	la, lb := strings.ToLower(a), strings.ToLower(b)
-	return la != lb && (strings.Contains(la, lb) || strings.Contains(lb, la))
-}
-
 func FuzzVary(f *testing.F) {
 	for _, s := range [][2]string{
 		{"Origin", "Accept"}, {"Accept", "Accept"}, {"Accept", "accept"},
@@ -401,12 +395,12 @@ func FuzzVary(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, a, b string) {
-		if a == "" || b == "" || strings.ContainsAny(a+b, ",") || strings.TrimSpace(a) != a || strings.TrimSpace(b) != b || dVaryKnown(a, b) {
+		if a == "" || b == "" || strings.ContainsAny(a+b, ",") || strings.TrimSpace(a) != a || strings.TrimSpace(b) != b {
 			t.Skip()
 		}
 
 		rec := httptest.NewRecorder()
-		res := &ResponseWriter{Writer: rec, request: httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)}
+		res := &ResponseWriter{w: rec, request: httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)}
 		res.Vary(a)
 		res.Vary(b)
 		res.Vary(a)
@@ -474,13 +468,11 @@ func FuzzCorsOrigin(f *testing.F) {
 func TestFuzzKnownBugs(t *testing.T) {
 	t.Run("S11 Vary compares by substring", func(t *testing.T) {
 		t.Parallel()
-		ehttptest.KnownBug(t, "S11", func(t testing.TB) {
-			rec := httptest.NewRecorder()
-			res := &ResponseWriter{Writer: rec, request: httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)}
-			res.Vary("Accept-Encoding")
-			res.Vary("Accept")
-			ehttptest.Eq(t, "RFC 9110 §12.5.5", rec.Header().Get(HeaderVary), "Accept-Encoding, Accept")
-		})
+		rec := httptest.NewRecorder()
+		res := &ResponseWriter{w: rec, request: httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)}
+		res.Vary("Accept-Encoding")
+		res.Vary("Accept")
+		ehttptest.Eq(t, "RFC 9110 §12.5.5", rec.Header().Get(HeaderVary), "Accept-Encoding, Accept")
 	})
 
 	t.Run("C8 Accepts matches substring of other type", func(t *testing.T) {

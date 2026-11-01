@@ -69,11 +69,11 @@ func TestCSecurityS9PathTraversal(t *testing.T) {
 	cases := []struct {
 		name     string
 		rawPath  string
-		knownBug string // set while the secret leaks
+		knownBug string // set while the secret leaks (none open)
 		note     string
 	}{
-		{"dotdot", "/static/../secret.txt", "S9", "net/http does not clean the path for custom handlers"},
-		{"nested-dotdot", "/static/a/../../secret.txt", "S9", "dot segments in the middle"},
+		{"dotdot", "/static/../secret.txt", "", "net/http does not clean the path for custom handlers"},
+		{"nested-dotdot", "/static/a/../../secret.txt", "", "dot segments in the middle"},
 		{"encoded-dots", "/static/%2e%2e/secret.txt", "", "stays encoded today; becomes ../ once C10 decodes params, so S9 must live inside SendFile"},
 		{"encoded-slash", "/static/..%2fsecret.txt", "", "same as above"},
 		{"fully-encoded", "/static/%2e%2e%2fsecret.txt", "", "same as above"},
@@ -477,8 +477,8 @@ func cRecoverServer(t testing.TB) *httptest.Server {
 		panic("late failure")
 	})
 	srv.GET("/stream", func(res *ehttp.ResponseWriter, req *ehttp.Request) {
-		_, _ = res.Writer.Write([]byte("chunk-1;")) // no Content-Length: chunked
-		res.Writer.(http.Flusher).Flush()
+		_, _ = res.Write([]byte("chunk-1;")) // no Content-Length: chunked
+		res.Flush()
 		panic("late failure")
 	})
 

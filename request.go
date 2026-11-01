@@ -52,6 +52,16 @@ func (req *Request) Protocol() string {
 	return strings.ToLower(value)
 }
 
+// Cookie returns the value of the cookie name, or "" if it is absent.
+func (req *Request) Cookie(name string) string {
+	c, err := req.Request.Cookie(name)
+	if err != nil {
+		return ""
+	}
+
+	return c.Value
+}
+
 func (req *Request) Host() string {
 	if host := req.Header(HeaderXForwardedHost); host != "" {
 		return host

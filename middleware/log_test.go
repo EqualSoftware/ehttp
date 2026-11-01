@@ -106,19 +106,17 @@ func TestLog(t *testing.T) {
 }
 
 // A handler that answers through net/http's implicit 200 (nothing written
-// via ehttp) is logged with code 0, while the client sees 200.
+// via ehttp) is logged with the sent code (NB-5).
 func TestLogImplicitStatus(t *testing.T) {
 	logs := fixtures.CaptureLogs(t)
 
 	rec := ehttptest.Do(fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
-		_, _ = res.Writer.Write([]byte("direct"))
+		_, _ = res.Write([]byte("direct"))
 	}, middleware.Log(middleware.LogOptions{})), fixtures.Req("GET", "/x"))
 	got := bAccessLogs(logs)
 
 	ehttptest.Eq(t, "net/http implicit 200", rec.Code, 200)
 	ehttptest.Eq(t, "one line per request", len(got), 1)
 
-	ehttptest.KnownBug(t, "NB-5", func(tb testing.TB) {
-		ehttptest.Eq(tb, "logged status must match the sent status", got[0]["code"], any(int64(200)))
-	})
+	ehttptest.Eq(t, "logged status must match the sent status", got[0]["code"], any(int64(200)))
 }

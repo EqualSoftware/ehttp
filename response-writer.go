@@ -1,6 +1,7 @@
 package ehttp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"html/template"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -31,7 +33,16 @@ type ResponseWriterInterceptor struct {
 	mu        sync.Mutex
 }
 
+// Unwrap returns the real writer under the interceptor.
+func (i *ResponseWriterInterceptor) Unwrap() http.ResponseWriter {
+	return i.ResponseWriter
+}
+
 func (i *ResponseWriterInterceptor) WriteHeader(code int) {
+	if isInformational(code) {
+		return
+	}
+
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
@@ -70,32 +81,166 @@ func (i *ResponseWriterInterceptor) SendResponse(res *ResponseWriter) {
 	}
 
 	res.code = i.Code
+	res.sent = true
 
 	i.ResponseWriter.WriteHeader(i.Code)
 	i.ResponseWriter.Write(i.Buffer.Bytes())
 }
 
-// create a new ResponseWriter with a Intercept as Writer
-// this help to capture the value and apply some process,
-// like etag, and proceed to dispatch the response
-func WithResponseWriter(res *ResponseWriter) *ResponseWriter {
+// WithResponseWriter creates a new ResponseWriter with an interceptor as
+// writer. The interceptor captures the response so a middleware can change it
+// (for example etag) and then send it with SendResponse.
+func WithResponseWriter(res *ResponseWriter) (*ResponseWriter, *ResponseWriterInterceptor) {
+	i := &ResponseWriterInterceptor{
+		ResponseWriter: res.w,
+		Buffer:         &bytes.Buffer{},
+		Code:           res.code,
+	}
+
 	return &ResponseWriter{
-		Writer: &ResponseWriterInterceptor{
-			ResponseWriter: res.Writer,
-			Buffer:         &bytes.Buffer{},
-			Code:           res.code,
-		},
+		w:        i,
 		request:  res.request,
 		code:     res.code,
 		template: res.template,
-	}
+	}, i
 }
 
+var _ http.ResponseWriter = (*ResponseWriter)(nil)
+
 type ResponseWriter struct {
-	Writer   http.ResponseWriter
+	w        http.ResponseWriter
 	request  *http.Request
 	code     int
 	template *template.Template
+	sent     bool
+}
+
+// HeadersSent reports that the header was sent through the ResponseWriter, by
+// a method or by a native handler (see WrapHandler), or, inside an
+// interceptor, that the response was committed to the buffer. It does not track
+// writes made through Unwrap.
+func (res *ResponseWriter) HeadersSent() bool {
+	return res.sent
+}
+
+// writeHeader writes the status line one time only.
+func (res *ResponseWriter) writeHeader(code int) {
+	if res.sent {
+		return
+	}
+
+	res.sent = true
+	res.w.WriteHeader(code)
+}
+
+// WriteHeader implements http.ResponseWriter. Only the first call counts.
+func (res *ResponseWriter) WriteHeader(code int) {
+	if res.finished() || res.sent {
+		return
+	}
+
+	if isInformational(code) {
+		res.w.WriteHeader(code)
+		return
+	}
+
+	res.code = code
+	res.writeHeader(code)
+}
+
+// isInformational reports a 1xx status that is not final (RFC 9110 §15.2).
+func isInformational(code int) bool {
+	return code >= 100 && code <= 199 && code != StatusSwitchingProtocols
+}
+
+// Write implements http.ResponseWriter. It sends the header first, with the
+// current status code.
+func (res *ResponseWriter) Write(b []byte) (int, error) {
+	if err := res.request.Context().Err(); err != nil {
+		return 0, err
+	}
+
+	if res.code == 0 {
+		res.code = StatusOK
+	}
+
+	res.writeHeader(res.code)
+
+	return res.w.Write(b)
+}
+
+// Flush implements http.Flusher. See FlushError.
+func (res *ResponseWriter) Flush() {
+	_ = res.FlushError()
+}
+
+// FlushError sends the header and flushes the inner writer. It returns
+// http.ErrNotSupported if the inner writer cannot flush (for example an
+// interceptor). http.ResponseController uses it.
+func (res *ResponseWriter) FlushError() error {
+	if err := res.request.Context().Err(); err != nil {
+		return err
+	}
+
+	var flush func() error
+
+	switch w := res.w.(type) {
+	case interface{ FlushError() error }:
+		flush = w.FlushError
+	case http.Flusher:
+		flush = func() error { w.Flush(); return nil }
+	default:
+		return http.ErrNotSupported
+	}
+
+	if res.code == 0 {
+		res.code = StatusOK
+	}
+
+	res.writeHeader(res.code)
+
+	return flush()
+}
+
+// ReadFrom implements io.ReaderFrom, so io.Copy keeps the fast path of the
+// inner writer.
+func (res *ResponseWriter) ReadFrom(r io.Reader) (int64, error) {
+	if err := res.request.Context().Err(); err != nil {
+		return 0, err
+	}
+
+	if res.code == 0 {
+		res.code = StatusOK
+	}
+
+	res.writeHeader(res.code)
+
+	if rf, ok := res.w.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+
+	return io.Copy(struct{ io.Writer }{res.w}, r)
+}
+
+// Hijack implements http.Hijacker.
+func (res *ResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := res.w.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+
+	conn, rw, err := h.Hijack()
+	if err == nil {
+		res.sent = true
+	}
+
+	return conn, rw, err
+}
+
+// Unwrap returns the inner writer, for http.ResponseController. A write
+// through it is not tracked by HeadersSent.
+func (res *ResponseWriter) Unwrap() http.ResponseWriter {
+	return res.w
 }
 
 func (res *ResponseWriter) finished() bool {
@@ -110,7 +255,7 @@ func (res *ResponseWriter) Header() http.Header {
 		return http.Header{}
 	}
 
-	return res.Writer.Header()
+	return res.w.Header()
 }
 
 func (res *ResponseWriter) StatusCode() int {
@@ -118,7 +263,7 @@ func (res *ResponseWriter) StatusCode() int {
 }
 
 func (res *ResponseWriter) Status(code int) {
-	if res.finished() {
+	if res.finished() || res.sent {
 		return
 	}
 
@@ -138,20 +283,99 @@ func (res *ResponseWriter) Vary(value string) {
 		return
 	}
 
-	vary := res.Header().Get(HeaderVary)
+	value = strings.TrimSpace(value)
 
-	if vary == "" {
-		vary = value
-	} else if !strings.Contains(strings.ToLower(vary), strings.ToLower(value)) {
-		vary = strings.ReplaceAll(vary, ", ", ",")
-
-		parts := strings.Split(vary, ",")
-		parts = append(parts, value)
-
-		vary = strings.Join(parts, ", ")
+	if value == "" {
+		return
 	}
 
-	res.Header().Set(HeaderVary, vary)
+	lines := res.Header().Values(HeaderVary)
+
+	if varyHas(lines, value) {
+		return
+	}
+
+	if len(lines) == 0 {
+		res.Header().Set(HeaderVary, value)
+		return
+	}
+
+	names := make([]string, 0, len(lines)+1)
+
+	for _, line := range lines {
+		for _, name := range strings.Split(line, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				names = append(names, name)
+			}
+		}
+	}
+
+	res.Header().Set(HeaderVary, strings.Join(append(names, value), ", "))
+}
+
+// equalASCIIFold compares two field names, ignoring ASCII case only.
+func equalASCIIFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	for i := 0; i < len(a); i++ {
+		if lowerASCII(a[i]) != lowerASCII(b[i]) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func lowerASCII(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + 'a' - 'A'
+	}
+
+	return c
+}
+
+// varyHas reports if a Vary field line lists name. It does not allocate.
+func varyHas(lines []string, name string) bool {
+	for _, line := range lines {
+		for line != "" {
+			var part string
+
+			part, line, _ = strings.Cut(line, ",")
+
+			if equalASCIIFold(strings.TrimSpace(part), name) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// Cookie adds a Set-Cookie field line. An invalid cookie is not sent.
+func (res *ResponseWriter) Cookie(cookie *http.Cookie) {
+	if res.finished() {
+		return
+	}
+
+	if cookie == nil {
+		zap.L().Error("nil cookie")
+		return
+	}
+
+	if err := cookie.Valid(); err != nil {
+		zap.L().Error("invalid cookie", zap.String("name", cookie.Name), zap.Error(err))
+		return
+	}
+
+	res.Header().Add(HeaderSetCookie, cookie.String())
+}
+
+// ClearCookie asks the client to delete the cookie name (Path "/").
+func (res *ResponseWriter) ClearCookie(name string) {
+	// The cookie is deleted, so it needs no Secure, HttpOnly or SameSite.
+	res.Cookie(&http.Cookie{Name: name, Path: "/", MaxAge: -1}) //nolint:gosec // G124
 }
 
 func (res *ResponseWriter) Location(value string) {
@@ -167,7 +391,7 @@ func (res *ResponseWriter) End() {
 		res.code = StatusOK
 	}
 
-	res.Writer.WriteHeader(res.code)
+	res.writeHeader(res.code)
 }
 
 func (res *ResponseWriter) SendStatus(code int) {
@@ -175,9 +399,11 @@ func (res *ResponseWriter) SendStatus(code int) {
 		return
 	}
 
-	res.code = code
+	if !res.sent {
+		res.code = code
+	}
 
-	res.Writer.WriteHeader(code)
+	res.writeHeader(code)
 }
 
 func (res *ResponseWriter) Send(v []byte) {
@@ -191,8 +417,8 @@ func (res *ResponseWriter) Send(v []byte) {
 
 	res.Header().Set(HeaderContentLength, strconv.Itoa(len(v)))
 
-	res.Writer.WriteHeader(res.code)
-	res.Writer.Write(v)
+	res.writeHeader(res.code)
+	_, _ = res.w.Write(v)
 }
 
 func (res *ResponseWriter) Render(name string, data interface{}) {
@@ -213,8 +439,8 @@ func (res *ResponseWriter) Render(name string, data interface{}) {
 	res.Header().Set(HeaderContentLength, strconv.Itoa(buf.Len()))
 	res.Header().Set(HeaderContentType, MIMETextHTMLCharsetUTF8)
 
-	res.Writer.WriteHeader(res.code)
-	buf.WriteTo(res.Writer)
+	res.writeHeader(res.code)
+	_, _ = buf.WriteTo(res.w)
 }
 
 func (res *ResponseWriter) Error(e error) {
@@ -231,8 +457,8 @@ func (res *ResponseWriter) Error(e error) {
 	res.Header().Set(HeaderContentLength, strconv.Itoa(len(bytes)))
 	res.Header().Set(HeaderContentType, MIMETextPlainCharsetUTF8)
 
-	res.Writer.WriteHeader(res.code)
-	res.Writer.Write(bytes)
+	res.writeHeader(res.code)
+	_, _ = res.w.Write(bytes)
 }
 
 func (res *ResponseWriter) Redirect(value string) {
@@ -249,7 +475,7 @@ func (res *ResponseWriter) Redirect(value string) {
 
 	res.Location(value)
 
-	res.Writer.WriteHeader(res.code)
+	res.writeHeader(res.code)
 }
 
 func (res *ResponseWriter) String(v string) {
@@ -266,8 +492,8 @@ func (res *ResponseWriter) String(v string) {
 	res.Header().Set(HeaderContentLength, strconv.Itoa(len(b)))
 	res.Header().Set(HeaderContentType, MIMETextPlainCharsetUTF8)
 
-	res.Writer.WriteHeader(res.code)
-	res.Writer.Write(b)
+	res.writeHeader(res.code)
+	_, _ = res.w.Write(b)
 }
 
 func (res *ResponseWriter) JSON(v interface{}) {
@@ -288,12 +514,18 @@ func (res *ResponseWriter) JSON(v interface{}) {
 	res.Header().Set(HeaderContentLength, strconv.Itoa(len(bytes)))
 	res.Header().Set(HeaderContentType, MIMEApplicationJSONCharsetUTF8)
 
-	res.Writer.WriteHeader(res.code)
-	res.Writer.Write(bytes)
+	res.writeHeader(res.code)
+	_, _ = res.w.Write(bytes)
 }
 
 func (res *ResponseWriter) SendFile(name string) {
 	if res.finished() {
+		return
+	}
+
+	if hasDotDot(name) {
+		zap.L().Error("path traversal refused", zap.String("filename", name))
+		res.SendStatus(StatusNotFound)
 		return
 	}
 
@@ -384,16 +616,27 @@ func (res *ResponseWriter) SendFile(name string) {
 
 		res.Status(http.StatusPartialContent)
 
-		res.Writer.WriteHeader(res.code)
+		res.writeHeader(res.code)
 		file.Seek(start, io.SeekStart)
-		io.CopyN(res.Writer, file, end-start+1)
+		_, _ = io.CopyN(res.w, file, end-start+1)
 		return
 	}
 
 	res.Header().Set(HeaderContentLength, strconv.FormatInt(file_size, 10))
 
-	res.Writer.WriteHeader(res.code)
-	file.WriteTo(res.Writer)
+	res.writeHeader(res.code)
+	_, _ = file.WriteTo(res.w)
+}
+
+// hasDotDot reports if any element of the path is "..".
+func hasDotDot(name string) bool {
+	for _, part := range strings.FieldsFunc(name, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if part == ".." {
+			return true
+		}
+	}
+
+	return false
 }
 
 func fileIsNotModified(res *ResponseWriter, etag string, modTime time.Time) bool {

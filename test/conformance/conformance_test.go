@@ -548,7 +548,7 @@ func conformanceCases() []conformanceCase {
 			want: cAll(cStatus(200), cBody("lmetag-body"))},
 
 		// ---- Vary (§12.5.5) -------------------------------------------------------
-		{name: "Vary keeps Accept next to Accept-Encoding", basis: h1255 + " (S11)", knownBug: "S11", fixture: "main", method: get, path: "/vary-ae-then-accept",
+		{name: "Vary keeps Accept next to Accept-Encoding", basis: h1255 + " (S11)", fixture: "main", method: get, path: "/vary-ae-then-accept",
 			want: cAll(cHasToken("Vary", "Accept-Encoding"), cHasToken("Vary", "Accept"))},
 		{name: "Vary: Accept then Accept-Encoding keeps both", basis: h1255, fixture: "main", method: get, path: "/vary-accept-then-ae",
 			want: cAll(cHasToken("Vary", "Accept"), cHasToken("Vary", "Accept-Encoding"))},
