@@ -275,6 +275,11 @@ func TestGolden(t *testing.T) {
 		{name: "body_over_limit_declared", method: "POST", path: "/body", body: strings.Repeat("a", 5000)},
 		{name: "param_route_encoded", method: "GET", path: "/api/v1/hello/John%20Doe"},
 		{name: "native_handler", method: "GET", path: "/native"},
+		{name: "admin_no_credentials", method: "GET", path: "/admin/me"},
+		{name: "admin_wrong_credentials", method: "GET", path: "/admin/me", headers: map[string]string{"Authorization": "Basic Zm9vOmJhcg=="}},
+		{name: "admin_valid_credentials", method: "GET", path: "/admin/me", headers: map[string]string{"Authorization": "Basic ZGVtbzpkZW1vLXBhc3N3b3Jk"}},
+		{name: "admin_options", method: "OPTIONS", path: "/admin/me", headers: map[string]string{"Authorization": "Basic ZGVtbzpkZW1vLXBhc3N3b3Jk"}},
+		{name: "admin_method_not_allowed", method: "POST", path: "/admin/me", headers: map[string]string{"Authorization": "Basic ZGVtbzpkZW1vLXBhc3N3b3Jk"}},
 		{name: "request_id_echo", method: "GET", path: "/healthcheck", headers: map[string]string{"X-Request-Id": "fixed-id-1"}},
 	}
 

@@ -1,0 +1,49 @@
+# Example server
+
+`main.go` runs the server on port 3000 (`go run ./examples/server`).
+It has a group `/admin` with HTTP Basic auth (`demo` / `demo-password`, for the
+demo only), a group `/api/v1`, CORS for `http://localhost:3000`, and trusted
+proxies (only the nginx address of the compose file).
+
+## Experiment stack
+
+Needs Docker. From the repository root:
+
+```
+docker compose -f examples/server/compose.yaml up --build -d
+docker compose -f examples/server/compose.yaml down        # stop and remove
+```
+
+| Service    | URL                      | Note |
+| :--------- | :----------------------- | :--- |
+| nginx      | http://localhost:8080    | Trusted proxy. Sets `X-Forwarded-For`, `-Proto` and `-Host`; the example uses them. |
+| example    | http://localhost:3000    | Direct. Not trusted: `X-Forwarded-*` from the client are ignored. |
+| Prometheus | http://localhost:9090    | Scrapes `example:3000/metrics` every 5 s. |
+| Grafana    | http://localhost:3001    | Login `admin` / `admin` (demo only). Dashboards "ehttp example" and "Containers (cAdvisor)" are provisioned. |
+| cAdvisor   | (internal)               | Container CPU and memory, scraped by Prometheus. |
+
+The app has limits (1 CPU, 256 MB) and nginx too (0.5 CPU, 64 MB); the Containers dashboard shows use against them.
+
+Load test with k6 through nginx (a compose profile, run on demand):
+
+```
+docker compose -f examples/server/compose.yaml --profile load run --rm k6
+K6_VUS=20 K6_DURATION=60s docker compose -f examples/server/compose.yaml --profile load run --rm k6
+```
+
+k6 only makes load; its summary is in the terminal. Watch the two dashboards while it runs to see the effect on the app and on the containers.
+
+To open the circuit breaker, send failures: `for i in $(seq 30); do curl -s -o /dev/null "localhost:8080/flaky?fail=1"; done`.
+
+## Metrics
+
+The library exposes one metric: the gauge of the circuit breaker
+(`BreakerOptions.PrometheusGauge`). It has no request metrics. For the
+dashboard, `app/metrics.go` adds a request counter and a latency histogram in
+the example only. `app.NewObserved` turns them on (and `/metrics`, `/flaky`);
+`app.New` does not, so the golden and perf suites are not affected.
+
+## macOS
+
+Docker runs in a Linux VM: cAdvisor sees the VM, not the Mac, and the CPU and memory numbers depend on the VM size. Do not compare load or benchmark numbers with runs
+from another environment.

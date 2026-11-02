@@ -3,6 +3,7 @@
 package app
 
 import (
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,17 +12,49 @@ import (
 
 	"github.com/EqualSoftware/ehttp"
 	"github.com/EqualSoftware/ehttp/middleware"
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+// nginxIP is the address of the nginx container in test/docker/compose.yaml.
+// Only this peer may send X-Forwarded-* headers. Do not trust the whole
+// network: Docker puts the gateway, and so a direct client, in it.
+const nginxIP = "172.28.0.10"
+
+// Demo credentials for the /admin group. They are for the demo only. A real
+// service reads its secrets from the environment or a secret store.
+const (
+	demoUser     = "demo"
+	demoPassword = "demo-password"
 )
 
 // New builds the example server. dir holds the templates/ and static/
 // folders, so the caller picks the path that is valid from its working
 // directory. modified is the Last-Modified time of "/".
 func New(dir string, modified time.Time) *ehttp.Server {
+	return build(dir, modified, nil)
+}
+
+// NewObserved is New plus Prometheus metrics at /metrics (see metrics.go).
+func NewObserved(dir string, modified time.Time) *ehttp.Server {
+	return build(dir, modified, prometheus.NewRegistry())
+}
+
+func build(dir string, modified time.Time, reg *prometheus.Registry) *ehttp.Server {
 	server := ehttp.NewServer(
 		ehttp.WithPortInt(3000),
+		ehttp.WithTrustedProxies(nginxIP),
 		ehttp.WithTemplates(filepath.Join(dir, "templates", "*.html")),
 	)
 
+	var observer []ehttp.MiddlewareHandlerFunc
+	var observerRoutes func(*ehttp.Server)
+	if reg != nil {
+		var mw ehttp.MiddlewareHandlerFunc
+		mw, observerRoutes = observe(reg)
+		observer = append(observer, mw)
+	}
+
+	server.Use(observer...)
 	server.Use(
 		middleware.Log(middleware.LogOptions{
 			IgnorePaths: []string{"/healthcheck"},
@@ -116,5 +149,35 @@ func New(dir string, modified time.Time) *ehttp.Server {
 		res.JSON(data)
 	}, middleware.Cache(5*time.Minute))
 
+	admin := server.Route("/admin", basicAuth(demoUser, demoPassword))
+	admin.GET("/me", func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+		res.String("Hello, " + demoUser + "\n")
+	})
+
+	if observerRoutes != nil {
+		observerRoutes(server)
+	}
+
 	return server
+}
+
+// basicAuth checks HTTP Basic credentials (RFC 7617). A missing or wrong
+// credential gets 401 with WWW-Authenticate (RFC 9110 section 11.6.1).
+func basicAuth(user, password string) ehttp.MiddlewareHandlerFunc {
+	return func(next ehttp.Handler) ehttp.HandlerFunc {
+		return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+			u, p, ok := req.Request.BasicAuth()
+			if ok && secureEqual(u, user) && secureEqual(p, password) {
+				next.ServeHTTP(res, req)
+				return
+			}
+
+			res.Own(ehttp.HeaderWWWAuthenticate, `Basic realm="demo", charset="UTF-8"`)
+			res.SendStatus(ehttp.StatusUnauthorized)
+		}
+	}
+}
+
+func secureEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
