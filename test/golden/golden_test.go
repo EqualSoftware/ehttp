@@ -27,7 +27,7 @@
 // The Vary field is rendered as a sorted list of names: its order carries no
 // meaning (RFC 9110 §12.5.5).
 //
-// The server is the real examples/server/app. Deliberate differences from
+// The server is the test app (test/testapp). Deliberate differences from
 // running the example:
 //   - LastModified uses a fixed time instead of time.Now();
 //   - templates and pudim.png are copied to t.TempDir() and pudim.png gets a
@@ -50,8 +50,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/EqualSoftware/ehttp/examples/server/app"
 	"github.com/EqualSoftware/ehttp/internal/ehttptest"
+	"github.com/EqualSoftware/ehttp/test/testapp"
 )
 
 func init() {
@@ -72,7 +72,7 @@ var goldenFixedTime = time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 func goldenCopy(t *testing.T, dir string) {
 	t.Helper()
 
-	src := filepath.Join("..", "..", "examples", "server")
+	src := filepath.Join("..", "testapp")
 
 	for _, rel := range []string{"templates/index.html", "static/pudim.png"} {
 		b, err := os.ReadFile(filepath.Join(src, rel))
@@ -96,14 +96,14 @@ func goldenCopy(t *testing.T, dir string) {
 	}
 }
 
-// goldenServer serves the example app. See the file comment.
+// goldenServer serves the test app. See the file comment.
 func goldenServer(t *testing.T) *httptest.Server {
 	t.Helper()
 
 	dir := t.TempDir()
 	goldenCopy(t, dir)
 
-	ts := httptest.NewServer(app.New(dir, goldenFixedTime))
+	ts := httptest.NewServer(testapp.New(dir, goldenFixedTime))
 	t.Cleanup(ts.Close)
 
 	return ts

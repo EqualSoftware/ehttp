@@ -1,6 +1,7 @@
-// Package app builds the example server. main runs it and the golden and
-// perf suites test it, so they all exercise the same configuration.
-package app
+// Package testapp builds the server that the golden and perf suites test.
+// It uses many middlewares and route types, so the suites cover them in one
+// configuration. It is not a guide: see examples/server for that.
+package testapp
 
 import (
 	"crypto/subtle"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/EqualSoftware/ehttp"
 	"github.com/EqualSoftware/ehttp/middleware"
-	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 )
 
@@ -28,25 +28,20 @@ const (
 	demoPassword = "demo-password"
 )
 
-// New builds the example server. dir holds the templates/ and static/
+// New builds the test server. dir holds the templates/ and static/
 // folders, so the caller picks the path that is valid from its working
 // directory. modified is the Last-Modified time of "/".
 func New(dir string, modified time.Time) *ehttp.Server {
-	return build(dir, modified, nil, nil)
+	return build(dir, modified, nil)
 }
 
 // NewQuiet is New with a logger that writes nothing. A benchmark uses it, so
 // the log lines do not mix with the result rows.
 func NewQuiet(dir string, modified time.Time) *ehttp.Server {
-	return build(dir, modified, nil, zap.NewNop())
+	return build(dir, modified, zap.NewNop())
 }
 
-// NewObserved is New plus Prometheus metrics at /metrics (see metrics.go).
-func NewObserved(dir string, modified time.Time) *ehttp.Server {
-	return build(dir, modified, prometheus.NewRegistry(), nil)
-}
-
-func build(dir string, modified time.Time, reg *prometheus.Registry, logger *zap.Logger) *ehttp.Server {
+func build(dir string, modified time.Time, logger *zap.Logger) *ehttp.Server {
 	logging := ehttp.WithMode(ehttp.Production) // the default preset
 	if logger != nil {
 		logging = ehttp.WithLogger(logger)
@@ -59,15 +54,6 @@ func build(dir string, modified time.Time, reg *prometheus.Registry, logger *zap
 		ehttp.WithTemplates(filepath.Join(dir, "templates", "*.html")),
 	)
 
-	var observer []ehttp.MiddlewareHandlerFunc
-	var observerRoutes func(*ehttp.Server)
-	if reg != nil {
-		var mw ehttp.MiddlewareHandlerFunc
-		mw, observerRoutes = observe(reg)
-		observer = append(observer, mw)
-	}
-
-	server.Use(observer...)
 	server.Use(
 		middleware.Log(middleware.LogOptions{
 			IgnorePaths: []string{"/healthcheck"},
@@ -166,10 +152,6 @@ func build(dir string, modified time.Time, reg *prometheus.Registry, logger *zap
 	admin.GET("/me", func(res *ehttp.ResponseWriter, req *ehttp.Request) {
 		res.String("Hello, " + demoUser + "\n")
 	})
-
-	if observerRoutes != nil {
-		observerRoutes(server)
-	}
 
 	return server
 }

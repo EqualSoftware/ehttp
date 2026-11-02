@@ -1,5 +1,5 @@
 // Benchmarks. Baseline numbers for the router, the middleware stack of
-// examples/server and a few hot middlewares. ns/op is noisy and only reported;
+// the test app and a few hot middlewares. ns/op is noisy and only reported;
 // the deterministic gate is alloc_test.go.
 //
 // The router fixture is the GitHub API surface used by
@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"github.com/EqualSoftware/ehttp"
-	"github.com/EqualSoftware/ehttp/examples/server/app"
 	"github.com/EqualSoftware/ehttp/middleware"
+	"github.com/EqualSoftware/ehttp/test/testapp"
 )
 
 // discard is a ResponseWriter that keeps no body, so benchmarks measure the
@@ -64,11 +64,11 @@ func githubServer(tb testing.TB) *ehttp.Server {
 	return s
 }
 
-// exampleApp is the real examples/server app.
+// exampleApp is the test app.
 func exampleApp(tb testing.TB) *ehttp.Server {
 	tb.Helper()
 
-	return app.New(filepath.Join("..", "..", "examples", "server"), time.Unix(1700000000, 0))
+	return testapp.New(filepath.Join("..", "testapp"), time.Unix(1700000000, 0))
 }
 
 func bench(b *testing.B, h http.Handler, req *http.Request) {
@@ -108,7 +108,7 @@ func BenchmarkRouter(b *testing.B) {
 }
 
 func BenchmarkServeHTTPExampleStack(b *testing.B) {
-	h := app.NewQuiet(filepath.Join("..", "..", "examples", "server"), time.Unix(1700000000, 0))
+	h := testapp.NewQuiet(filepath.Join("..", "testapp"), time.Unix(1700000000, 0))
 
 	b.Run("root_plain", func(b *testing.B) {
 		req := httptest.NewRequestWithContext(context.Background(), "GET", "/", http.NoBody)
