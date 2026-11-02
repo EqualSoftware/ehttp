@@ -201,6 +201,23 @@ func TestRouterMethods(t *testing.T) {
 		ehttptest.True(t, "RFC 9110 §9.3 (ehttp routes the standard methods only)", strings.HasPrefix(msg, `ehttp: method "PROPFIND" in Handle: `), "message %q", msg)
 	})
 
+	t.Run("dot segment in a pattern panics at registration", func(t *testing.T) {
+		t.Parallel()
+
+		for _, tt := range []struct {
+			name, pattern string
+			register      func(pattern string)
+		}{
+			{"parent segment", "/a/../b", func(p string) { NewServer().GET(p, aText("x")) }},
+			{"current segment", "/a/./b", func(p string) { NewServer().GET(p, aText("x")) }},
+			{"root parent", "/..", func(p string) { NewServer().GET(p, aText("x")) }},
+			{"group prefix", "/a/../b", func(p string) { NewServer().Route("/a/..").GET("/b", aText("x")) }},
+		} {
+			msg := aPanics(func() { tt.register(tt.pattern) })
+			ehttptest.True(t, "RFC 3986 §5.2.4 ("+tt.name+")", strings.Contains(msg, "GET "+tt.pattern), "message %q", msg)
+		}
+	})
+
 	allow := []struct {
 		name, method, target, want string
 	}{
@@ -719,4 +736,69 @@ func TestRouterRefusedRequestKeepsNoParams(t *testing.T) {
 	rec := aDo(s, "GET", "/q/ok/..")
 	ehttptest.Eq(t, "RFC 9110 §15.5.4", rec.Code, 403)
 	ehttptest.Eq(t, "a refused request keeps no partial params", seen, "")
+}
+
+// The param guard also runs for OPTIONS: an unsafe value gets 403 or 400 and
+// no Allow header, also for a preflight.
+func TestRouterOptionsParamGuard(t *testing.T) {
+	t.Parallel()
+
+	s := NewServer()
+	s.GET("/auto/:v", aText("x"))
+	s.GET("/auto-w/...", aText("x"))
+	s.router.Handle("OPTIONS", "/explicit/:v", aText("custom"))
+	ts := httptest.NewServer(s)
+	t.Cleanup(ts.Close)
+
+	options := func(path string, kv ...string) *http.Response {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodOptions, ts.URL+path, http.NoBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for i := 0; i+1 < len(kv); i += 2 {
+			req.Header.Set(kv[i], kv[i+1])
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		resp.Body.Close()
+
+		return resp
+	}
+
+	for _, tt := range []struct {
+		path string
+		code int
+	}{
+		{"/auto/%2e%2e", 403}, {"/auto/..", 403}, {"/auto-w/a/..", 403}, {"/auto/%00", 400},
+		{"/explicit/%2e%2e", 403}, {"/explicit/%5c", 400},
+	} {
+		t.Run(tt.path, func(t *testing.T) {
+			t.Parallel()
+
+			resp := options(tt.path)
+			ehttptest.Eq(t, "RFC 9110 §15.5", resp.StatusCode, tt.code)
+			ehttptest.Eq(t, "a refused request has no Allow", resp.Header.Get(HeaderAllow), "")
+		})
+	}
+
+	t.Run("preflight with an unsafe path", func(t *testing.T) {
+		t.Parallel()
+
+		resp := options("/auto/%2e%2e", "Origin", "https://a.example", HeaderAccessControlRequestMethod, "GET")
+		ehttptest.Eq(t, "RFC 9110 §15.5.4", resp.StatusCode, 403)
+		ehttptest.Eq(t, "no Allow", resp.Header.Get(HeaderAllow), "")
+	})
+
+	t.Run("safe value still gets Allow", func(t *testing.T) {
+		t.Parallel()
+
+		resp := options("/auto/a%2Fb")
+		ehttptest.Eq(t, "RFC 9110 §9.3.7", resp.StatusCode, 200)
+		ehttptest.True(t, "RFC 9110 §9.3.7", resp.Header.Get(HeaderAllow) != "", "no Allow")
+	})
 }

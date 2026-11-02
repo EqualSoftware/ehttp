@@ -98,6 +98,7 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc, m ...MiddlewareHa
 		segments = segments[:len(segments)-1]
 	}
 
+	mustNotHaveDotSegment(strings.ToUpper(method), r.prefix+pattern, segments)
 	r.mustBeNew(strings.ToUpper(method), r.prefix+pattern, segments)
 
 	r.routes = append(r.routes, &route{
@@ -108,6 +109,20 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc, m ...MiddlewareHa
 		handle:      h,
 		middlewares: m,
 	})
+}
+
+// mustNotHaveDotSegment panics when a pattern has a "." or ".." segment. A
+// client removes dot segments before it sends (RFC 3986 §5.2.4), so the route
+// can never be reached.
+func mustNotHaveDotSegment(method, pattern string, segments []string) {
+	for _, segment := range segments {
+		if segment != "." && segment != ".." {
+			continue
+		}
+
+		bootPanic(method+" "+pattern, "the segment "+quoteValue(segment), "a client removes dot segments before it sends (RFC 3986 §5.2.4), so this route can never be reached",
+			"remove the segment")
+	}
 }
 
 // mustBeNew panics when a route with the same method and the same shape of
@@ -238,7 +253,8 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		url_segments = url_segments[:len(url_segments)-1]
 	}
 
-	endpoint, matched := router.find(method, url_segments)
+	endpoint, first := router.find(method, url_segments)
+	matched := first != nil
 
 	if endpoint != nil {
 		if status := endpoint.bind(req, url_segments); status != 0 {
@@ -259,6 +275,11 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if method == MethodOptions {
 		if matched {
+			if status := first.checkValues(url_segments); status != 0 {
+				router.wrap(router.statusHandler(status)).ServeHTTP(res, req)
+				return
+			}
+
 			router.setAllow(res, url_segments)
 		}
 
@@ -270,23 +291,23 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	router.wrap(router.notFoundHandler).ServeHTTP(res, req)
 }
 
-// find returns the route that serves the method, and whether any route
-// matched the path. A route of the exact method wins. HEAD falls back to the
+// find returns the route that serves the method, and the first route that
+// matched the path (nil if none matched). A route of the exact method wins. HEAD falls back to the
 // first GET route when no HEAD route matches (RFC 9110 §9.3.2).
-func (r *Router) find(method string, segments []string) (*route, bool) {
+func (r *Router) find(method string, segments []string) (serving, first *route) {
 	var fallback *route
-
-	matched := false
 
 	for _, endpoint := range r.routes {
 		if !endpoint.match(segments) {
 			continue
 		}
 
-		matched = true
+		if first == nil {
+			first = endpoint
+		}
 
 		if endpoint.method == method {
-			return endpoint, true
+			return endpoint, first
 		}
 
 		if method == MethodHead && endpoint.method == MethodGet && fallback == nil {
@@ -294,7 +315,7 @@ func (r *Router) find(method string, segments []string) (*route, bool) {
 		}
 	}
 
-	return fallback, matched
+	return fallback, first
 }
 
 // setAllow sets the Allow header (RFC 9110 §10.2.1) from the routes that
