@@ -1,12 +1,10 @@
 package ehttp
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sony/gobreaker/v2"
-	"go.uber.org/zap"
 )
 
 // The breaker counts the calls of a rolling window of Interval, in buckets of
@@ -50,13 +48,6 @@ func NewCircuitBreaker[T any](opt BreakerOptions) *CircuitBreaker[T] {
 			if opt.PrometheusGauge != nil {
 				opt.PrometheusGauge.WithLabelValues(name).Set(getCircuitBreakerStateValue(to))
 			}
-
-			zap.L().Debug(fmt.Sprintf("circuit breaker(%s) changed the state", name),
-				zap.Dict("state",
-					zap.String("from", from.String()),
-					zap.String("to", to.String()),
-				),
-			)
 		},
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
 			if counts.Requests < breakerMinRequests {

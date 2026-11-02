@@ -341,6 +341,13 @@ func TestBreakerConcurrentAcrossStateChanges(t *testing.T) {
 
 	cb := ehttp.NewCircuitBreaker[int](ehttp.BreakerOptions{Name: "c", Timeout: 5 * time.Millisecond})
 
+	// Open it first, so the goroutines meet an open breaker at the start.
+	for range 100 {
+		_ = bFail(cb)
+	}
+
+	ehttptest.Eq(t, "a high failure rate trips the breaker", cb.State().String(), "open")
+
 	var (
 		wg                sync.WaitGroup
 		rejected, unknown atomic.Int64
@@ -386,4 +393,13 @@ func TestBreakerConcurrentAcrossStateChanges(t *testing.T) {
 
 	ehttptest.Eq(t, "gobreaker contract (only the callee error or a rejection)", unknown.Load(), int64(0))
 	ehttptest.True(t, "an open breaker rejects calls", rejected.Load() > 0, "no call was rejected")
+
+	// The calls end with successes only after the timeout, so it recovers.
+	time.Sleep(10 * time.Millisecond)
+
+	for range 3 {
+		_ = bSucceed(cb)
+	}
+
+	ehttptest.Eq(t, "gobreaker contract (a successful probe closes it)", cb.State().String(), "closed")
 }

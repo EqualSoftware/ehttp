@@ -21,9 +21,9 @@ const etagBufferLimit = 1 << 20
 // section 13.1.2). The ETag is over the whole body, so the middleware buffers
 // the body up to 1 MiB. A larger response is streamed without an ETag. A
 // response that already has an ETag (for example from SendFile) is not
-// buffered and keeps its ETag. An If-Match field answers 412 unless it is "*"
-// (strong comparison, RFC 9110 section 13.1.1): the ETag is weak. An If-Match or If-None-Match with an invalid
-// syntax gets 400.
+// buffered and keeps its ETag. An If-Match field answers 412 to a 2xx response
+// unless it is "*" (strong comparison, RFC 9110 section 13.1.1): the ETag is
+// weak. An If-Match or If-None-Match with an invalid syntax gets 400.
 func WeakEtag() ehttp.MiddlewareHandlerFunc {
 	return func(next ehttp.Handler) ehttp.HandlerFunc {
 		return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
@@ -42,7 +42,7 @@ func WeakEtag() ehttp.MiddlewareHandlerFunc {
 			}
 
 			ires, i := ehttp.WithResponseWriter(res)
-			w := &etagWriter{i: i, res: res, real: i.Unwrap()}
+			w := &etagWriter{i: i, res: res, real: i.Unwrap(), ifMatch: header.Values(ehttp.HeaderIfMatch)}
 			hook.WrapWriter(ires, func(http.ResponseWriter) http.ResponseWriter { return w })
 
 			next.ServeHTTP(ires, req)
@@ -58,8 +58,10 @@ type etagWriter struct {
 	i       *ehttp.ResponseWriterInterceptor
 	res     *ehttp.ResponseWriter
 	real    http.ResponseWriter
+	ifMatch []string
 	code    int
 	passing bool
+	discard bool // a 412 replaced the response: drop the next writes
 }
 
 func (w *etagWriter) Header() http.Header { return w.real.Header() }
@@ -78,6 +80,11 @@ func (w *etagWriter) WriteHeader(code int) {
 
 	w.code = code
 
+	if code != ehttp.StatusOK && code >= 200 && code < 300 && w.Header().Get(ehttp.HeaderEtag) == "" && w.failsIfMatch("") {
+		w.preconditionFailed()
+		return
+	}
+
 	if code != ehttp.StatusOK || w.Header().Get(ehttp.HeaderEtag) != "" {
 		w.pass()
 	}
@@ -86,6 +93,10 @@ func (w *etagWriter) WriteHeader(code int) {
 func (w *etagWriter) Write(b []byte) (int, error) {
 	if w.code == 0 {
 		w.WriteHeader(ehttp.StatusOK)
+	}
+
+	if w.discard {
+		return len(b), nil
 	}
 
 	if !w.passing && w.i.Buffer.Len()+len(b) > etagBufferLimit {
@@ -148,22 +159,51 @@ func (w *etagWriter) finish(header http.Header) {
 	body := w.i.Buffer.Bytes()
 
 	if len(body) == 0 {
+		if w.code >= 200 && w.code < 300 && w.failsIfMatch("") {
+			w.preconditionFailed()
+			return
+		}
+
 		w.pass()
+
 		return
 	}
 
 	tag := fmt.Sprintf(`W/"%d-%08x"`, len(body), crc32.ChecksumIEEE(body))
+
+	if w.failsIfMatch(tag) {
+		w.preconditionFailed()
+		return
+	}
+
 	w.res.Set(ehttp.HeaderEtag, tag)
 
-	// If-Match comes first and uses the strong comparison (RFC 9110 sections
-	// 13.1.1, 13.2.2). The ETag of this middleware is weak, so only "*" matches.
-	if im := header.Values("If-Match"); len(im) > 0 && !etag.MatchStrong(im, tag) {
-		w.i.Buffer.Reset()
-		w.code = ehttp.StatusPreconditionFailed
-	} else if etag.Match(header.Values(ehttp.HeaderIfNoneMatch), strings.TrimPrefix(tag, "W/")) {
+	if etag.Match(header.Values(ehttp.HeaderIfNoneMatch), strings.TrimPrefix(tag, "W/")) {
 		w.i.Buffer.Reset()
 		w.code = ehttp.StatusNotModified
 	}
 
+	w.pass()
+}
+
+// failsIfMatch reports that If-Match is there and does not match the current
+// tag by strong comparison (RFC 9110 sections 13.1.1, 13.2.2). The tag of this
+// middleware is weak, so only "*" matches. An empty tag is no representation
+// tag at all.
+func (w *etagWriter) failsIfMatch(tag string) bool {
+	return len(w.ifMatch) > 0 && !etag.MatchStrong(w.ifMatch, tag)
+}
+
+// preconditionFailed sends an empty 412 in place of the response. The headers
+// of the dropped representation go with it, or the length would not match.
+func (w *etagWriter) preconditionFailed() {
+	h := w.Header()
+	h.Del(ehttp.HeaderContentLength)
+	h.Del(ehttp.HeaderContentType)
+	h.Del(ehttp.HeaderEtag)
+
+	w.i.Buffer.Reset()
+	w.code = ehttp.StatusPreconditionFailed
+	w.discard = true
 	w.pass()
 }

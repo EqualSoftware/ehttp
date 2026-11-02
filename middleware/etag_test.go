@@ -535,3 +535,58 @@ func TestSendFileIfMatchStrong(t *testing.T) {
 		})
 	}
 }
+
+// The 412 of If-Match drops the headers of the discarded body. On a real
+// server the client must read the full response (a kept Content-Length with
+// no body gives an unexpected EOF).
+func TestWeakEtagIfMatchRealServer(t *testing.T) {
+	t.Parallel()
+
+	empty200 := func(res *ehttp.ResponseWriter, _ *ehttp.Request) { res.SendStatus(200) }
+	no204 := func(res *ehttp.ResponseWriter, _ *ehttp.Request) { res.SendStatus(204) }
+
+	tests := []struct {
+		name, im string
+		h        ehttp.HandlerFunc
+		code     int
+	}{
+		{"body, tag list", `"nope"`, bString("hello world"), 412},
+		{"body, wildcard", "*", bString("hello world"), 200},
+		{"empty 200, tag list", `"nope"`, empty200, 412},
+		{"empty 200, wildcard", "*", empty200, 200},
+		{"204, tag list", `"nope"`, no204, 412},
+		{"204, wildcard", "*", no204, 204},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ts := httptest.NewServer(fixtures.Handler(tt.h, middleware.WeakEtag()))
+			defer ts.Close()
+
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/x", http.NoBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			req.Header.Set("If-Match", tt.im)
+
+			resp, err := ts.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			body, err := io.ReadAll(resp.Body)
+
+			ehttptest.Eq(t, "RFC 9110 §13.2.2", resp.StatusCode, tt.code)
+			ehttptest.True(t, "the response is read in full", err == nil, "read: %v", err)
+
+			if tt.code == 412 {
+				ehttptest.Eq(t, "RFC 9110 §15.5.13", len(body), 0)
+				ehttptest.Eq(t, "the dropped body has no ETag", resp.Header.Get("ETag"), "")
+			}
+		})
+	}
+}
