@@ -154,6 +154,30 @@ func TestCacheNegativeDuration(t *testing.T) {
 	middleware.Cache(0) // zero is valid: no-store
 }
 
+// max-age takes whole seconds: a duration above 0 and under 1s panics at boot, 1.5s is cut to 1.
+func TestCacheSubSecondDuration(t *testing.T) {
+	t.Parallel()
+
+	for name, fn := range map[string]func(){
+		"Cache":            func() { middleware.Cache(500 * time.Millisecond) },
+		"ErrorCache":       func() { middleware.ErrorCache(time.Nanosecond) },
+		"ErrorCacheStatus": func() { middleware.ErrorCache(time.Minute, middleware.ErrorCacheStatus(404, 999*time.Millisecond)) },
+	} {
+		msg := bootMessage(fn)
+
+		ehttptest.True(t, "RFC 9111 §1.2.2 ("+name+")", strings.HasPrefix(msg, "ehttp: duration ") && strings.Contains(msg, " in "+name+": "), "message %q", msg)
+		ehttptest.True(t, "DX message: why and fix ("+name+")", strings.Contains(msg, "whole seconds") && strings.Contains(msg, "Fix: use 1s or more, or 0 to turn it off."), "message %q", msg)
+	}
+
+	// Valid: zero, one second, and a fraction above one second (cut to 1).
+	middleware.Cache(0)
+	middleware.ErrorCache(0, middleware.ErrorCacheStatus(404, 0))
+	middleware.ErrorCache(time.Second, middleware.ErrorCacheStatus(404, 1500*time.Millisecond))
+
+	rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Cache(1500*time.Millisecond)), fixtures.Req("GET", "/x"))
+	ehttptest.Eq(t, "delta-seconds are whole", rec.Header().Get("Cache-Control"), "max-age=1, stale-while-revalidate=1, stale-if-error=1")
+}
+
 // bootMessage returns the panic message of do, or "" when do does not panic.
 func bootMessage(do func()) (msg string) {
 	defer func() {

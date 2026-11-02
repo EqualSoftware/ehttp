@@ -84,6 +84,8 @@ func ErrorCacheStatus(status int, duration time.Duration) ErrorCacheOption {
 				"use zero for no header, or a positive duration, for example ErrorCacheStatus(405, 5*time.Second)")
 		}
 
+		checkSubSecond(where, duration)
+
 		if _, ok := cfg.byStatus[status]; ok {
 			hook.BootPanic(where, "status "+code+" twice", "the second lifetime would replace the first one",
 				"set each status one time")
@@ -164,9 +166,9 @@ func (cfg *errorCacheConfig) value(code int, auth bool) string {
 // stores it by URL serves it to every client.
 //
 // A lifetime has the value "max-age=N, stale-while-revalidate=N,
-// stale-if-error=N". N is the whole seconds of the lifetime, so a lifetime
-// under 1 second gives max-age=0. It has "private, " in front for 401, 403 and 407, and for
-// a request with Authorization (RFC 9111 §5.2.2.7, §3.5). No-store is the
+// stale-if-error=N". N is the whole seconds of the lifetime: 1.5s gives 1. A
+// lifetime above 0 and under 1s panics at boot. It has "private, " in front for
+// 401, 403 and 407, and for a request with Authorization (RFC 9111 §5.2.2.7, §3.5). No-store is the
 // plain value "no-store". ErrorCache(0) sends it for the default group.
 //
 // A Cache-Control that the handler or an inner middleware already set wins.
@@ -194,6 +196,8 @@ func ErrorCache(duration time.Duration, opts ...ErrorCacheOption) ehttp.Middlewa
 			"use zero for no-store, or a positive duration, for example ErrorCache(time.Minute)")
 	}
 
+	checkSubSecond("ErrorCache", duration)
+
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -201,6 +205,15 @@ func ErrorCache(duration time.Duration, opts ...ErrorCacheOption) ehttp.Middlewa
 	cfg.build()
 
 	return cacheControlMiddleware(cfg.value)
+}
+
+// checkSubSecond panics at boot for a duration above zero and under one
+// second: max-age takes whole seconds, so it would give max-age=0.
+func checkSubSecond(where string, d time.Duration) {
+	if d > 0 && d < time.Second {
+		hook.BootPanic(where, "duration "+d.String(), "max-age takes whole seconds (delta-seconds, RFC 9111 §1.2.2), so it would send max-age=0",
+			"use 1s or more, or 0 to turn it off")
+	}
 }
 
 // cachePolicy gives the Cache-Control for the final status, or empty for none.

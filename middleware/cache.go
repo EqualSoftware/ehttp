@@ -15,8 +15,8 @@ import (
 //
 // The value is "max-age=N, stale-while-revalidate=N, stale-if-error=N", with
 // "private, " in front for a request with Authorization (RFC 9111 §3.5). N is
-// the whole seconds of the duration, so a duration under 1 second gives
-// max-age=0.
+// the whole seconds of the duration: 1.5s gives 1. A duration above 0 and under
+// 1s panics at boot.
 // Cache(0) sends "no-store, no-cache, must-revalidate, proxy-revalidate".
 // ErrorCache(0) sends only "no-store".
 //
@@ -36,6 +36,8 @@ func Cache(duration time.Duration) ehttp.MiddlewareHandlerFunc {
 		hook.BootPanic("Cache", "duration "+duration.String(), "max-age is delta-seconds, a non-negative integer (RFC 9111 §1.2.2)",
 			"use zero for no-store, or a positive duration, for example Cache(time.Minute)")
 	}
+
+	checkSubSecond("Cache", duration)
 
 	values := [2]string{ehttp.CacheControl(duration, false), ehttp.CacheControl(duration, true)}
 
