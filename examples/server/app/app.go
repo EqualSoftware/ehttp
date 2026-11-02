@@ -13,6 +13,7 @@ import (
 	"github.com/EqualSoftware/ehttp"
 	"github.com/EqualSoftware/ehttp/middleware"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.uber.org/zap"
 )
 
 // nginxIP is the address of the nginx container in test/docker/compose.yaml.
@@ -31,16 +32,28 @@ const (
 // folders, so the caller picks the path that is valid from its working
 // directory. modified is the Last-Modified time of "/".
 func New(dir string, modified time.Time) *ehttp.Server {
-	return build(dir, modified, nil)
+	return build(dir, modified, nil, nil)
+}
+
+// NewQuiet is New with a logger that writes nothing. A benchmark uses it, so
+// the log lines do not mix with the result rows.
+func NewQuiet(dir string, modified time.Time) *ehttp.Server {
+	return build(dir, modified, nil, zap.NewNop())
 }
 
 // NewObserved is New plus Prometheus metrics at /metrics (see metrics.go).
 func NewObserved(dir string, modified time.Time) *ehttp.Server {
-	return build(dir, modified, prometheus.NewRegistry())
+	return build(dir, modified, prometheus.NewRegistry(), nil)
 }
 
-func build(dir string, modified time.Time, reg *prometheus.Registry) *ehttp.Server {
+func build(dir string, modified time.Time, reg *prometheus.Registry, logger *zap.Logger) *ehttp.Server {
+	logging := ehttp.WithMode(ehttp.Production) // the default preset
+	if logger != nil {
+		logging = ehttp.WithLogger(logger)
+	}
+
 	server := ehttp.NewServer(
+		logging,
 		ehttp.WithPortInt(3000),
 		ehttp.WithTrustedProxies(nginxIP),
 		ehttp.WithTemplates(filepath.Join(dir, "templates", "*.html")),

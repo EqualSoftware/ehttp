@@ -107,7 +107,7 @@ func BenchmarkRouter(b *testing.B) {
 }
 
 func BenchmarkServeHTTPExampleStack(b *testing.B) {
-	h := exampleApp(b)
+	h := app.NewQuiet(filepath.Join("..", "..", "examples", "server"), time.Unix(1700000000, 0))
 
 	b.Run("root_plain", func(b *testing.B) {
 		req := httptest.NewRequestWithContext(context.Background(), "GET", "/", http.NoBody)

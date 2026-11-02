@@ -58,7 +58,7 @@ bench:
 	@out="$(BENCHOUT)"; [ -n "$$out" ] || out=$$(mktemp -d); mkdir -p "$$out"; chmod 777 "$$out"; \
 	docker run --rm --cpuset-cpus=0-$$(( $(BENCHCPUS) - 1 )) --memory=$(BENCHMEM) -e GOMAXPROCS=$(BENCHCPUS) \
 		-v "$(CURDIR)":/src:ro -v $(BENCH_VOLUME):/cache -v "$$out":/out $(BENCH_IMAGE) \
-		sh -c 'go test -run="^\$$" -bench=. -benchmem -count=$(BENCHCOUNT) ./... > /out/raw.txt && awk -f test/docker/benchfilter.awk /out/raw.txt > /out/bench.txt && benchstat /out/bench.txt > /out/benchstat.txt' \
+		sh -c 'go test -run="^\$$" -bench=. -benchmem -count=$(BENCHCOUNT) ./... > /out/bench.txt && benchstat /out/bench.txt > /out/benchstat.txt' \
 		|| { echo "bench: failed, see $$out" >&2; exit 1; }; \
 	echo "wrote $$out/bench.txt and $$out/benchstat.txt"
 

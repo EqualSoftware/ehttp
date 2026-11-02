@@ -2,11 +2,13 @@ package app
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/EqualSoftware/ehttp"
+	"github.com/EqualSoftware/ehttp/internal/hook"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -35,10 +37,10 @@ func observe(reg *prometheus.Registry) (middleware ehttp.MiddlewareHandlerFunc, 
 		Name: "circuit_breaker_state", Help: "Circuit breaker state: 0 closed, 1 half-open, 2 open.",
 	}, []string{"name"})
 	bytesIn := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "http_request_bytes_total", Help: "Request body bytes, from Content-Length.",
+		Name: "http_request_bytes_total", Help: "Request body bytes read by the handlers.",
 	})
 	bytesOut := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "http_response_bytes_total", Help: "Response body bytes, from Content-Length (not set for a chunked body).",
+		Name: "http_response_bytes_total", Help: "Response body bytes written, chunked bodies included.",
 	})
 	reg.MustRegister(requests, latency, breakerState, bytesIn, bytesOut)
 
@@ -50,7 +52,17 @@ func observe(reg *prometheus.Registry) (middleware ehttp.MiddlewareHandlerFunc, 
 	return func(next ehttp.Handler) ehttp.HandlerFunc {
 		return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
 			start := time.Now()
+
+			in := &countingBody{ReadCloser: req.Request.Body}
+			req.Request.Body = in
+			out := &countingWriter{}
+			restore := hook.WrapWriter(res, func(w http.ResponseWriter) http.ResponseWriter {
+				out.ResponseWriter = w
+				return out
+			})
+
 			next.ServeHTTP(res, req)
+			restore()
 
 			route := req.RoutePath()
 			if route == "" {
@@ -60,13 +72,63 @@ func observe(reg *prometheus.Registry) (middleware ehttp.MiddlewareHandlerFunc, 
 			requests.WithLabelValues(route, req.Method(), strconv.Itoa(res.StatusCode())).Inc()
 			latency.WithLabelValues(route).Observe(time.Since(start).Seconds())
 
-			// ResponseWriter has no byte counter: use the declared lengths.
-			bytesIn.Add(float64(max(req.Request.ContentLength, 0)))
-			if n, err := strconv.ParseFloat(res.Header().Get(ehttp.HeaderContentLength), 64); err == nil {
-				bytesOut.Add(n)
-			}
+			bytesIn.Add(float64(in.n))
+			bytesOut.Add(float64(out.n))
 		}
 	}, routes
+}
+
+// countingBody counts the bytes that the handlers read from the request body.
+type countingBody struct {
+	io.ReadCloser
+	n int64
+}
+
+func (c *countingBody) Read(p []byte) (int, error) {
+	n, err := c.ReadCloser.Read(p)
+	c.n += int64(n)
+
+	return n, err
+}
+
+// countingWriter counts the body bytes that go to the wire. It keeps Flush,
+// ReadFrom (SendFile) and Unwrap of the writer below.
+type countingWriter struct {
+	http.ResponseWriter
+	n int64
+}
+
+func (c *countingWriter) Write(b []byte) (int, error) {
+	n, err := c.ResponseWriter.Write(b)
+	c.n += int64(n)
+
+	return n, err
+}
+
+func (c *countingWriter) ReadFrom(r io.Reader) (int64, error) {
+	if rf, ok := c.ResponseWriter.(io.ReaderFrom); ok {
+		n, err := rf.ReadFrom(r)
+		c.n += n
+
+		return n, err
+	}
+
+	n, err := io.Copy(struct{ io.Writer }{c.ResponseWriter}, r)
+	c.n += n
+
+	return n, err
+}
+
+func (c *countingWriter) Flush() {
+	_ = c.FlushError()
+}
+
+func (c *countingWriter) FlushError() error {
+	return http.NewResponseController(c.ResponseWriter).Flush()
+}
+
+func (c *countingWriter) Unwrap() http.ResponseWriter {
+	return c.ResponseWriter
 }
 
 // flaky adds GET /flaky?fail=1 behind a circuit breaker, so a load test can

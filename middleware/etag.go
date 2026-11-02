@@ -24,7 +24,8 @@ const etagBufferLimit = 1 << 20
 // buffered and keeps its ETag. An If-Match field answers 412 to a 2xx response
 // unless it is "*" or lists the strong ETag that the handler set (strong
 // comparison, RFC 9110 section 13.1.1). The ETag of this middleware is weak,
-// and a streamed response has no strong tag, so a list never matches them. An If-Match or If-None-Match with an invalid syntax gets 400.
+// and a streamed response has no strong tag, so a list never matches them.
+// An If-Match or If-None-Match with an invalid syntax gets 400.
 func WeakEtag() ehttp.MiddlewareHandlerFunc {
 	return func(next ehttp.Handler) ehttp.HandlerFunc {
 		return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
