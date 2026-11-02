@@ -456,6 +456,39 @@ func TestWithPortAccepts(t *testing.T) {
 
 // RFC 9111 §1.2.2: max-age is a non-negative integer. A negative duration in a
 // handler is a mistake: Development panics, Production logs and sends no-store.
+// RFC 9111 §1.2.2: max-age takes whole seconds. A duration above 0 and under 1s
+// follows the rule of a negative one: Development panics, Production logs and sends no-store.
+func TestSetCacheHeaderSubSecondDuration(t *testing.T) {
+	t.Parallel()
+
+	for _, private := range []bool{false, true} {
+		do := func(res *ResponseWriter, _ *Request) {
+			SetCacheHeaderPrivate(res, 500*time.Millisecond, private)
+			res.String("ok")
+		}
+
+		_, _, msg := aServe(Development, do)
+
+		aPart(t, msg, "ehttp.SetCacheHeader(500ms)", "whole seconds")
+		ehttptest.True(t, "the message names the route", strings.Contains(msg, "GET /x"), "message %q", msg)
+		ehttptest.True(t, "the message names the fix", strings.Contains(msg, "Fix: use 1s or more, or 0"), "message %q", msg)
+
+		rec, logs, msg := aServe(Production, do)
+
+		ehttptest.Eq(t, strictBasis, msg, "")
+		ehttptest.Eq(t, strictBasis, rec.Code, 200)
+		ehttptest.Eq(t, "safe fallback is no-store", rec.Header().Get("Cache-Control"), "no-store, no-cache, must-revalidate, proxy-revalidate")
+		ehttptest.Eq(t, strictBasis, logs.FilterField(zap.String("rule", "sub-second cache duration")).Len(), 1)
+		ehttptest.Eq(t, strictBasis, logs.FilterField(zap.String("rule", "sub-second cache duration")).All()[0].Level, zap.ErrorLevel)
+	}
+
+	ok := func(res *ResponseWriter, _ *Request) { SetCacheHeader(res, 1500*time.Millisecond); res.String("ok") }
+	rec, logs, msg := aServe(Production, ok)
+
+	ehttptest.Eq(t, "1.5s is cut to 1s", rec.Header().Get("Cache-Control"), "max-age=1, stale-while-revalidate=1, stale-if-error=1")
+	ehttptest.Eq(t, strictBasis, logs.Len()+len(msg), 0)
+}
+
 func TestSetCacheHeaderNegativeDuration(t *testing.T) {
 	t.Parallel()
 

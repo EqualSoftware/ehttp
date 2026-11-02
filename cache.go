@@ -18,8 +18,10 @@ func SetCacheHeader(r *ResponseWriter, d time.Duration) {
 // true and d is not 0, the response gets the `private` directive: a shared
 // cache must not store it (RFC 9111 §3.5).
 //
-// A negative d is a mistake of the developer. In Development it panics. In
-// Production it logs an error and sends no-store.
+// A negative d, and a d above 0 and under 1 second, are mistakes of the
+// developer: max-age takes whole seconds (RFC 9111 §1.2.2). In Development it
+// panics. In Production it logs an error and sends no-store. A d of 1.5s is
+// cut to 1 second.
 func SetCacheHeaderPrivate(r *ResponseWriter, d time.Duration, private bool) {
 	if d < 0 {
 		r.fail(strictError{
@@ -31,12 +33,26 @@ func SetCacheHeaderPrivate(r *ResponseWriter, d time.Duration, private bool) {
 		})
 	}
 
+	if d > 0 && d < time.Second {
+		r.fail(strictError{
+			level: zap.ErrorLevel,
+			rule:  "sub-second cache duration",
+			what:  "ehttp.SetCacheHeader(" + d.String() + ")",
+			why:   "max-age takes whole seconds (delta-seconds, RFC 9111 §1.2.2), so it would send max-age=0; the response gets no-store",
+			fix:   "use 1s or more, or 0 for no-store, for example ehttp.SetCacheHeader(res, time.Minute)",
+		})
+
+		d = 0
+	}
+
 	r.Set(HeaderCacheControl, CacheControl(d, private))
 }
 
 // CacheControl returns the Cache-Control value of SetCacheHeaderPrivate. It
 // has no side effect. A middleware passes it to Own. A duration of zero or
-// less gives no-store: a negative max-age is not valid (RFC 9111 §1.2.2).
+// less gives no-store: a negative max-age is not valid (RFC 9111 §1.2.2). It
+// does not check the duration: a duration under 1 second gives max-age=0. Use
+// SetCacheHeader in a handler to get the strict check.
 func CacheControl(d time.Duration, private bool) string {
 	if d <= 0 {
 		return "no-store, no-cache, must-revalidate, proxy-revalidate"
