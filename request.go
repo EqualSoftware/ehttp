@@ -171,22 +171,34 @@ func (req *Request) Accepts(value string) bool {
 		return false
 	}
 
-	best := acceptMatch{}
-	seen := false
+	best, seen, ok := req.acceptBest(typ, sub)
 
+	if !ok {
+		return false
+	}
+
+	return !seen || best.q > 0
+}
+
+// acceptBest finds the best match of the media type in all Accept lines. seen
+// is false if the header has no member. ok is false if the header is invalid.
+func (req *Request) acceptBest(typ, sub string) (best acceptMatch, seen, ok bool) {
 	for _, line := range req.Request.Header.Values(HeaderAccept) {
-		for member := range strings.SplitSeq(line, ",") {
+		for rest, more := line, true; more; {
+			var member string
+
+			member, rest, more, ok = cutUnquoted(rest, ',')
 			member = strings.Trim(member, " \t")
 
-			if member == "" {
+			if ok && member == "" {
 				continue
 			}
 
-			rng, ok := parseAcceptRange(member)
+			rng, valid := parseAcceptRange(member)
 
-			if !ok {
-				req.newLogger().Error(fmt.Sprintf("invalid header accept '%s'", line))
-				return false
+			if !ok || !valid {
+				req.newLogger().Warn("ehttp: invalid Accept header", zap.String("value", quoteValue(line)))
+				return best, seen, false
 			}
 
 			seen = true
@@ -194,7 +206,45 @@ func (req *Request) Accepts(value string) bool {
 		}
 	}
 
-	return !seen || best.q > 0
+	return best, seen, true
+}
+
+// cutUnquoted cuts s at the first sep that is not inside a quoted string
+// (RFC 9110 §5.6.4). found is true if it cut. ok is false if a quote does not
+// end.
+func cutUnquoted(s string, sep byte) (before, after string, found, ok bool) {
+	quoted := false
+
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case quoted && c == '\\':
+			i++
+		case c == '"':
+			quoted = !quoted
+		case c == sep && !quoted:
+			return s[:i], s[i+1:], true, true
+		}
+	}
+
+	return s, "", false, !quoted
+}
+
+// validQuoted reports if s is a quoted-string (RFC 9110 §5.6.4).
+func validQuoted(s string) bool {
+	if len(s) < 2 || s[0] != '"' {
+		return false
+	}
+
+	for i := 1; i < len(s); i++ {
+		switch s[i] {
+		case '"':
+			return i == len(s)-1
+		case '\\':
+			i++
+		}
+	}
+
+	return false
 }
 
 // acceptMatch holds the best match found so far: the specificity of the range
@@ -238,10 +288,15 @@ func (r acceptRange) specificity(typ, sub string) int {
 }
 
 // parseAcceptRange parses "type/subtype", "type/*" or "*/*" with parameters
-// (RFC 9110 §12.5.1). Parameters other than q are checked and ignored.
+// (RFC 9110 §12.5.1). Parameters other than q are checked and ignored. They
+// do not count for specificity.
 func parseAcceptRange(member string) (acceptRange, bool) {
 	rng := acceptRange{q: 1000}
-	head, params, _ := strings.Cut(member, ";")
+	head, params, more, ok := cutUnquoted(member, ';')
+
+	if !ok {
+		return rng, false
+	}
 
 	typ, sub, ok := strings.Cut(strings.TrimRight(head, " \t"), "/")
 
@@ -251,13 +306,23 @@ func parseAcceptRange(member string) (acceptRange, bool) {
 
 	rng.typ, rng.sub = typ, sub
 
-	for params != "" {
+	for more {
 		var p string
 
-		p, params, _ = strings.Cut(params, ";")
-		name, val, ok := strings.Cut(strings.Trim(p, " \t"), "=")
+		p, params, more, ok = cutUnquoted(params, ';')
+		p = strings.Trim(p, " \t")
 
-		if !ok || !isToken(name) || val == "" {
+		if !ok {
+			return rng, false
+		}
+
+		if p == "" {
+			continue
+		}
+
+		name, val, ok := strings.Cut(p, "=")
+
+		if !ok || !isToken(name) || !isToken(val) && !validQuoted(val) {
 			return rng, false
 		}
 

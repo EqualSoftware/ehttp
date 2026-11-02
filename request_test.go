@@ -100,6 +100,13 @@ func TestRequestAccepts(t *testing.T) {
 		{"most specific range can exclude", "*/*, text/html;q=0", "text/html", false, "RFC 9110 §12.5.1"},
 		{"type wildcard q=0 excludes its subtypes", "text/*;q=0, */*", "text/plain", false, "RFC 9110 §12.5.1"},
 		{"other parameters are ignored", "text/html;level=1;q=0.5", "text/html", true, "RFC 9110 §12.5.1"},
+		{"quoted comma in a parameter", `text/html;foo="a,b"`, "text/html", true, "RFC 9110 §5.6.4"},
+		{"quoted semicolon, then a second member", `text/html;foo="a;b", application/json`, "application/json", true, "RFC 9110 §5.6.4"},
+		{"quoted semicolon does not hide q", `text/html;foo="a;q=0"`, "text/html", true, "RFC 9110 §5.6.4"},
+		{"escaped quote in a parameter", `text/html;foo="a\"b,c", application/json`, "application/json", true, "RFC 9110 §5.6.4"},
+		{"empty parameter in the middle", "text/html;;q=0", "text/html", false, "RFC 9110 §5.6.6"},
+		{"empty parameter before q", "text/html;;q=0.5", "text/html", true, "RFC 9110 §5.6.6"},
+		{"parameters do not count for specificity", "text/html;level=1;q=0, text/*", "text/html", false, "RFC 9110 §12.5.1"},
 		{"malformed value", "text/html", "garbage", false, "RFC 9110 §8.3.1"},
 	}
 
@@ -117,6 +124,20 @@ func TestRequestAccepts(t *testing.T) {
 	}
 }
 
+func TestRequestAcceptsTwoFieldLines(t *testing.T) {
+	t.Parallel()
+
+	req := aReq("GET", "/", nil)
+	req.Request.Header.Add(HeaderAccept, "text/html")
+	req.Request.Header.Add(HeaderAccept, "application/json;q=0")
+
+	ehttptest.Eq(t, "RFC 9110 §5.3 (field lines join as a list)", req.Accepts("text/html"), true)
+	ehttptest.Eq(t, "RFC 9110 §5.3 (field lines join as a list)", req.Accepts("application/json"), false)
+
+	req.Request.Header.Add(HeaderAccept, "garbage")
+	ehttptest.Eq(t, "RFC 9110 §12.5.1 (an invalid line makes the field invalid)", req.Accepts("text/html"), false)
+}
+
 // An invalid Accept header is answered with 406
 // (RFC 9110 §12.5.1 lets a server do that), so Accepts is false for every value.
 func TestRequestAcceptsMalformedHeaderIsRefused(t *testing.T) {
@@ -124,7 +145,7 @@ func TestRequestAcceptsMalformedHeaderIsRefused(t *testing.T) {
 
 	values := []string{"text/html", "application/json", "garbage"}
 
-	for _, accept := range []string{"garbage", "/", "text/", ";;;", "*/*, garbage", "*/*,(", "text/html;q=2", "text/html;q=0.1234", "text/html;q", "*/html"} {
+	for _, accept := range []string{"garbage", "/", "text/", ";;;", "*/*, garbage", "*/*,(", "text/html;q=2", "text/html;q=0.1234", "text/html;q", "*/html", `text/html;a="b`, `text/html;a="b\"`, "text/html;a=b c", `text/html;a="b"c`, "text/html;a="} {
 		t.Run(accept, func(t *testing.T) {
 			t.Parallel()
 
