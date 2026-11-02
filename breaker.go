@@ -9,22 +9,24 @@ import (
 	"go.uber.org/zap"
 )
 
-// The breaker opens when at least breakerMinRequests calls ran in the
-// interval and at least breakerFailureRate of them failed. The values follow
-// Hystrix (requestVolumeThreshold 20, errorThresholdPercentage 50, a 10 s
-// rolling window), https://github.com/Netflix/Hystrix/wiki/Configuration, and
-// the 50 % threshold of resilience4j,
-// https://resilience4j.readme.io/docs/circuitbreaker.
+// The breaker counts the calls of a rolling window of Interval, in buckets of
+// breakerBucket. It opens when the window has at least breakerMinRequests
+// calls and at least breakerFailureRate of them failed. Fewer calls in one
+// window never trip it. The values follow Hystrix (requestVolumeThreshold 20,
+// errorThresholdPercentage 50, a 10 s rolling window),
+// https://github.com/Netflix/Hystrix/wiki/Configuration, and the 50 %
+// threshold of resilience4j, https://resilience4j.readme.io/docs/circuitbreaker.
 const (
 	breakerMinRequests = 20
 	breakerFailureRate = 0.5
 	breakerInterval    = 10 * time.Second
+	breakerBucket      = time.Second
 )
 
 type BreakerOptions struct {
 	Name string
-	// Interval is the period after which the counts of a closed breaker reset.
-	// Default 10s.
+	// Interval is the length of the rolling window of a closed breaker. Its
+	// counts roll off bucket by bucket. Zero or less means 10s.
 	Interval        time.Duration
 	Timeout         time.Duration
 	PrometheusGauge *prometheus.GaugeVec
@@ -38,9 +40,10 @@ func NewCircuitBreaker[T any](opt BreakerOptions) *CircuitBreaker[T] {
 	}
 
 	cb := gobreaker.NewCircuitBreaker[T](gobreaker.Settings{
-		Name:     opt.Name,
-		Interval: opt.Interval,
-		Timeout:  opt.Timeout,
+		Name:         opt.Name,
+		Interval:     opt.Interval,
+		BucketPeriod: min(breakerBucket, opt.Interval),
+		Timeout:      opt.Timeout,
 		OnStateChange: func(name string, from, to gobreaker.State) {
 			if opt.PrometheusGauge != nil {
 				opt.PrometheusGauge.WithLabelValues(name).Set(getCircuitBreakerStateValue(to))

@@ -262,3 +262,71 @@ func TestBreakerDefaultIntervalResets(t *testing.T) {
 		ehttptest.Eq(t, "the default interval resets the counts", cb.State().String(), "closed")
 	})
 }
+
+// The window rolls: the counts leave it bucket by bucket, not all at once.
+func TestBreakerRollingWindow(t *testing.T) {
+	t.Parallel()
+
+	t.Run("failures inside one window open it", func(t *testing.T) {
+		t.Parallel()
+
+		synctest.Test(t, func(t *testing.T) {
+			cb := bBreaker()
+			for range 10 {
+				_ = bFail(cb)
+			}
+
+			time.Sleep(5 * time.Second)
+
+			for range 10 {
+				_ = bFail(cb)
+			}
+
+			ehttptest.Eq(t, "20 failures in 5 s are in the 10 s window", cb.State().String(), "open")
+		})
+	})
+
+	t.Run("old failures roll off", func(t *testing.T) {
+		t.Parallel()
+
+		synctest.Test(t, func(t *testing.T) {
+			cb := bBreaker()
+			for range 10 {
+				_ = bFail(cb)
+			}
+
+			time.Sleep(11 * time.Second)
+
+			for range 10 {
+				_ = bFail(cb)
+			}
+
+			ehttptest.Eq(t, "failures older than the window are not counted", cb.State().String(), "closed")
+		})
+	})
+
+	t.Run("a bucket leaves alone", func(t *testing.T) {
+		t.Parallel()
+
+		synctest.Test(t, func(t *testing.T) {
+			cb := bBreaker()
+			for range 10 {
+				_ = bFail(cb)
+			}
+
+			time.Sleep(6 * time.Second)
+
+			for range 5 {
+				_ = bFail(cb)
+			}
+
+			time.Sleep(5 * time.Second) // the first 10 are out, the 5 stay
+
+			for range 5 {
+				_ = bFail(cb)
+			}
+
+			ehttptest.Eq(t, "only the 10 failures of the old bucket rolled off", cb.State().String(), "closed")
+		})
+	})
+}
