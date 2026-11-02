@@ -170,7 +170,7 @@ func FuzzRouterMatch(f *testing.F) {
 		// escaped form does not apply. TestRouterParamDecoding covers it.
 		// A decoded "/" must not change the route: when %2F is the only escape,
 		// the oracle on the escaped form still applies.
-		oracleApplies := !strings.Contains(req.URL.EscapedPath(), "%") || onlySlashEscapes(req.URL.EscapedPath())
+		oracleApplies := !strings.Contains(req.URL.EscapedPath(), "%") || onlySlashEscapes(req.URL.EscapedPath()) && !strings.Contains(req.URL.EscapedPath(), "..")
 		if want := dExpectedRoute(req.URL.EscapedPath()); oracleApplies && got.pattern != want {
 			t.Errorf("[README routing] %q routed to %q, want %q", req.URL.EscapedPath(), got.pattern, want)
 		}

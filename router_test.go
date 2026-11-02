@@ -618,3 +618,58 @@ func TestRouterGroups(t *testing.T) {
 		ehttptest.Eq(t, "inner.Use must not affect the outer group", len(log), 0)
 	})
 }
+
+// A decoded value must not create new path structure (RFC 3986 §2.4).
+func TestRouterDecodedParamGuard(t *testing.T) {
+	t.Parallel()
+
+	s := NewServer()
+	s.GET("/p/:v", func(res *ResponseWriter, req *Request) { res.String(req.Param("v")) })
+	s.GET("/w/...", func(res *ResponseWriter, req *Request) { res.String(req.Param("...")) })
+	ts := httptest.NewServer(s)
+	t.Cleanup(ts.Close)
+
+	get := func(path string) (int, string) {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+path, http.NoBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		body, _ := io.ReadAll(resp.Body)
+
+		return resp.StatusCode, string(body)
+	}
+
+	for _, v := range []string{"%2e%2e%2f", "..%2f", "%2e%2e", "%00", "%5c", "a%2f..%2fb"} {
+		for _, prefix := range []string{"/p/", "/w/"} {
+			t.Run(prefix+v, func(t *testing.T) {
+				t.Parallel()
+
+				code, _ := get(prefix + v)
+				ehttptest.Eq(t, "RFC 3986 §2.4 (decoding must not create path structure)", code, 404)
+			})
+		}
+	}
+
+	for _, tt := range []struct{ path, want string }{
+		{"/p/a%2Fb", "a/b"},
+		{"/w/a%2Fb", "a/b"},
+		{"/p/%252e%252e", "%2e%2e"},
+		{"/w/%252e%252e", "%2e%2e"},
+		{"/p/%2e", "."},
+	} {
+		t.Run(tt.path, func(t *testing.T) {
+			t.Parallel()
+
+			code, body := get(tt.path)
+			ehttptest.Eq(t, "RFC 3986 §2.1 (data stays data)", code, 200)
+			ehttptest.Eq(t, "RFC 3986 §2.1", body, tt.want)
+		})
+	}
+}

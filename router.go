@@ -393,9 +393,10 @@ func validEscapes(segments []string) bool {
 }
 
 // decodeRest joins the segments of a wildcard and decodes each one, once. The
-// value can hold "/", ".." and NUL: the caller must confine it before file use
-// (for example with os.Root or filepath.IsLocal). An invalid escape gives no
-// match, as for a single param. Over HTTP this cannot run: Request.Path is
+// value can hold "/" and ".": a decoded ".." part, NUL or backslash gives no
+// match (see safeDecoded). The caller must still confine the value before file
+// use (for example with os.Root or filepath.IsLocal). An invalid escape gives
+// no match, as for a single param. Over HTTP this cannot run: Request.Path is
 // URL.EscapedPath and net/http answers 400 for a bad escape.
 func decodeRest(segments []string) (string, bool) {
 	rest := strings.Join(segments, "/")
@@ -420,6 +421,7 @@ func decodeRest(segments []string) (string, bool) {
 
 // decodeSegment decodes the percent escapes of one path segment (RFC 3986
 // §2.1). A decoded %2F stays inside the value, as the path is split first.
+// A decoded value that fails safeDecoded gives no match, so the client gets 404.
 func decodeSegment(segment string) (string, bool) {
 	if !strings.Contains(segment, "%") {
 		return segment, true
@@ -427,7 +429,24 @@ func decodeSegment(segment string) (string, bool) {
 
 	value, err := url.PathUnescape(segment)
 
-	return value, err == nil
+	return value, err == nil && safeDecoded(value)
+}
+
+// safeDecoded reports whether decoding made no new path structure (RFC 3986
+// §2.4): the value has no NUL, no backslash and no ".." part between "/". A
+// decoded "/" alone is data, and a single "." part is allowed.
+func safeDecoded(value string) bool {
+	if strings.ContainsAny(value, "\\\x00") {
+		return false
+	}
+
+	for part := range strings.SplitSeq(value, "/") {
+		if part == ".." {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (r *Router) wrap(h HandlerFunc) HandlerFunc {

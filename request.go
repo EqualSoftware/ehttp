@@ -149,10 +149,12 @@ func (req *Request) UserAgent() string {
 }
 
 // Param returns a route param. The value is percent-decoded once, per segment
-// (RFC 3986 §2.1). A wildcard ("...") value can hold "/", ".." and NUL: confine
-// it before file use, for example with os.Root or filepath.IsLocal. Static
-// segments compare the raw, still-escaped path, so "/us%65rs" does not match
-// "/users".
+// (RFC 3986 §2.1). A value whose decoded form has a ".." part (split on "/"),
+// a NUL or a backslash gives no match, so the client gets 404 (RFC 3986
+// §2.4). A decoded "/" stays as data, and so does a "." part. Still confine a
+// wildcard ("...") value before file use, for example with os.Root or
+// filepath.IsLocal. Static segments compare the raw, still-escaped path, so
+// "/us%65rs" does not match "/users".
 func (req *Request) Param(name string) string {
 	return req.Request.PathValue(name)
 }
