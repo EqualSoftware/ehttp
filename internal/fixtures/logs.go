@@ -18,3 +18,11 @@ func CaptureLogs(t *testing.T) *observer.ObservedLogs {
 
 	return logs
 }
+
+// ObservedLogger returns a logger that records its entries, for WithLogger.
+// It does not touch the global logger, so the test can run in parallel.
+func ObservedLogger() (*zap.Logger, *observer.ObservedLogs) {
+	core, logs := observer.New(zapcore.DebugLevel)
+
+	return zap.New(core), logs
+}

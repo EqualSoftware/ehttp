@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 
 	"github.com/EqualSoftware/ehttp"
+	"go.uber.org/zap"
 )
 
 // Handler builds a server that serves h on GET /x (and HEAD) with the
@@ -16,6 +17,14 @@ import (
 // method only: GET plus POST on the same path answers 405 for POST (C1).
 func Handler(h ehttp.HandlerFunc, mws ...ehttp.MiddlewareHandlerFunc) http.Handler {
 	s := ehttp.NewServer()
+	s.GET("/x", h, mws...)
+
+	return s
+}
+
+// HandlerLogged is Handler with the server logger set.
+func HandlerLogged(l *zap.Logger, h ehttp.HandlerFunc, mws ...ehttp.MiddlewareHandlerFunc) http.Handler {
+	s := ehttp.NewServer(ehttp.WithLogger(l))
 	s.GET("/x", h, mws...)
 
 	return s

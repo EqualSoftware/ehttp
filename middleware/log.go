@@ -34,9 +34,8 @@ func Log(option LogOptions) ehttp.MiddlewareHandlerFunc {
 				return
 			}
 
-			zap.L().Info("server sent response",
+			req.Logger().Info("server sent response",
 				zap.Int("code", res.StatusCode()),
-				zap.String("method", req.Method()),
 				zap.String("url", url),
 				zap.Duration("duration", duration),
 			)

@@ -12,6 +12,8 @@ func RequestId() ehttp.MiddlewareHandlerFunc {
 
 			if rid == "" {
 				rid = uuid.New().String()
+				// The logger of the request (req.Logger) reads the id from here.
+				req.Request.Header.Set(ehttp.HeaderXRequestID, rid)
 			}
 
 			res.Append(ehttp.HeaderXRequestID, rid)

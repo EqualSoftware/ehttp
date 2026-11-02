@@ -22,8 +22,8 @@ func bAccessLogs(logs *observer.ObservedLogs) []map[string]any {
 
 func TestLog(t *testing.T) {
 	t.Run("logs method, route pattern and status", func(t *testing.T) {
-		logs := fixtures.CaptureLogs(t)
-		s := ehttp.NewServer()
+		logger, logs := fixtures.ObservedLogger()
+		s := ehttp.NewServer(ehttp.WithLogger(logger))
 		s.Use(middleware.Log(middleware.LogOptions{}))
 		s.GET("/users/:id", fixtures.OK)
 
@@ -40,8 +40,8 @@ func TestLog(t *testing.T) {
 	})
 
 	t.Run("unmatched route logs the raw path and 404", func(t *testing.T) {
-		logs := fixtures.CaptureLogs(t)
-		s := ehttp.NewServer()
+		logger, logs := fixtures.ObservedLogger()
+		s := ehttp.NewServer(ehttp.WithLogger(logger))
 		s.Use(middleware.Log(middleware.LogOptions{}))
 		s.GET("/a", fixtures.OK)
 
@@ -54,8 +54,8 @@ func TestLog(t *testing.T) {
 	})
 
 	t.Run("IgnoreStatus and IgnorePaths suppress the line", func(t *testing.T) {
-		logs := fixtures.CaptureLogs(t)
-		s := ehttp.NewServer()
+		logger, logs := fixtures.ObservedLogger()
+		s := ehttp.NewServer(ehttp.WithLogger(logger))
 		s.Use(middleware.Log(middleware.LogOptions{IgnoreStatus: []int{404}, IgnorePaths: []string{"/health"}}))
 		s.GET("/health", fixtures.OK)
 		s.GET("/real", fixtures.OK)
@@ -70,8 +70,6 @@ func TestLog(t *testing.T) {
 	})
 
 	t.Run("calls next and keeps the response", func(t *testing.T) {
-		fixtures.CaptureLogs(t)
-
 		rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Log(middleware.LogOptions{})), fixtures.Req("GET", "/x"))
 
 		ehttptest.Eq(t, "middleware contract", rec.Code, 200)
@@ -79,8 +77,8 @@ func TestLog(t *testing.T) {
 	})
 
 	t.Run("outside Recover it records the recovered 500", func(t *testing.T) {
-		logs := fixtures.CaptureLogs(t)
-		h := fixtures.Handler(func(*ehttp.ResponseWriter, *ehttp.Request) { panic("boom") },
+		logger, logs := fixtures.ObservedLogger()
+		h := fixtures.HandlerLogged(logger, func(*ehttp.ResponseWriter, *ehttp.Request) { panic("boom") },
 			middleware.Log(middleware.LogOptions{}), middleware.Recover())
 
 		rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
@@ -92,8 +90,8 @@ func TestLog(t *testing.T) {
 	})
 
 	t.Run("query string stays out of the log", func(t *testing.T) {
-		logs := fixtures.CaptureLogs(t)
-		s := ehttp.NewServer()
+		logger, logs := fixtures.ObservedLogger()
+		s := ehttp.NewServer(ehttp.WithLogger(logger))
 		s.Use(middleware.Log(middleware.LogOptions{}))
 		s.GET("/nope-not-registered", fixtures.OK)
 
@@ -108,9 +106,9 @@ func TestLog(t *testing.T) {
 // A handler that answers through net/http's implicit 200 (nothing written
 // via ehttp) is logged with the sent code (NB-5).
 func TestLogImplicitStatus(t *testing.T) {
-	logs := fixtures.CaptureLogs(t)
+	logger, logs := fixtures.ObservedLogger()
 
-	rec := ehttptest.Do(fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+	rec := ehttptest.Do(fixtures.HandlerLogged(logger, func(res *ehttp.ResponseWriter, req *ehttp.Request) {
 		_, _ = res.Write([]byte("direct"))
 	}, middleware.Log(middleware.LogOptions{})), fixtures.Req("GET", "/x"))
 	got := bAccessLogs(logs)

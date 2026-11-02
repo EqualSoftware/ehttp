@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/EqualSoftware/ehttp"
+	"github.com/EqualSoftware/ehttp/middleware"
+	"go.uber.org/zap"
 )
 
 func TestAllocsHotPaths(t *testing.T) { //nolint:paralleltest // AllocsPerRun is global
@@ -40,6 +42,10 @@ func TestAllocsHotPaths(t *testing.T) { //nolint:paralleltest // AllocsPerRun is
 	plainRoot := httptest.NewRequestWithContext(context.Background(), "GET", "/", http.NoBody)
 	plainRoot.Header.Set("Accept", "text/plain")
 
+	logSrv := ehttp.NewServer(ehttp.WithLogger(zap.NewNop()))
+	logSrv.Use(middleware.Log(middleware.LogOptions{}))
+	logSrv.GET("/", noop)
+
 	cases := []struct {
 		name    string
 		h       http.Handler
@@ -57,6 +63,7 @@ func TestAllocsHotPaths(t *testing.T) { //nolint:paralleltest // AllocsPerRun is
 		{"router 405 (C1 path)", gh, httptest.NewRequestWithContext(context.Background(), "DELETE", "/user/keys/1", http.NoBody), 14},
 		{"cors simple", cors, simple, 5},
 		{"cors preflight", cors, preflight, 9},
+		{"route with Log middleware (nop logger)", logSrv, httptest.NewRequestWithContext(context.Background(), "GET", "/", http.NoBody), 6},
 		{"stack GET / html (no Accept)", stack, httptest.NewRequestWithContext(context.Background(), "GET", "/", http.NoBody), 77},
 		{"stack GET / plain", stack, plainRoot, 99},
 		{"stack GET /api/v1/hello/:name", stack, httptest.NewRequestWithContext(context.Background(), "GET", "/api/v1/hello/octocat", http.NoBody), 49},

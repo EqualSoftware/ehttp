@@ -37,6 +37,8 @@ type Router struct {
 	routes      []*route
 	cors        *CorsOptions
 	proxies     trustedProxies
+	logger      *zap.Logger
+	mode        Mode
 }
 
 type route struct {
@@ -152,14 +154,16 @@ func (r *Router) TRACE(pattern string, h HandlerFunc, m ...MiddlewareHandlerFunc
 }
 
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	res := &ResponseWriter{
-		w:        w,
-		request:  r,
-		template: router.template,
-	}
 	req := &Request{
 		Request: r,
 		proxies: router.proxies,
+		logger:  router.logger,
+	}
+	res := &ResponseWriter{
+		w:        w,
+		request:  r,
+		req:      req,
+		template: router.template,
 	}
 
 	corsUpdateHeaders(res, req, router.cors)
@@ -282,8 +286,7 @@ func (r *Router) optionsHandler(res *ResponseWriter, req *Request) {
 
 	res.SendStatus(StatusForbidden)
 
-	zap.L().Warn("the request did not pass cors validation",
-		zap.String("method", req.Method()),
+	req.newLogger().Warn("the request did not pass cors validation",
 		zap.String("path", req.Path()),
 		zap.String("host", req.Host()),
 		zap.String("origin", req.Origin()),

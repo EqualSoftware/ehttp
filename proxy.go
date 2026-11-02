@@ -118,7 +118,7 @@ func (req *Request) forwarded(name string) string {
 	}
 
 	if !req.trustedPeer() {
-		logIgnoredHeader(name, "untrusted peer", req.Request.RemoteAddr)
+		req.logIgnoredHeader(name, "untrusted peer")
 
 		return ""
 	}
@@ -143,7 +143,7 @@ func (req *Request) forwardedProto() string {
 			return "http"
 		}
 
-		logIgnoredHeader(name, "invalid value", req.Request.RemoteAddr)
+		req.logIgnoredHeader(name, "invalid value")
 	}
 
 	return ""
@@ -158,17 +158,20 @@ func (req *Request) forwardedHost() string {
 	}
 
 	if !validHost(v) {
-		logIgnoredHeader(HeaderXForwardedHost, "invalid value", req.Request.RemoteAddr)
+		req.logIgnoredHeader(HeaderXForwardedHost, "invalid value")
 		return ""
 	}
 
 	return v
 }
 
-func logIgnoredHeader(name, reason, remoteAddr string) {
-	if ce := zap.L().Check(zap.DebugLevel, "ehttp: ignored forwarded header"); ce != nil {
-		ce.Write(zap.String("header", name), zap.String("reason", reason), zap.String("remote_addr", remoteAddr))
+func (req *Request) logIgnoredHeader(name, reason string) {
+	if !req.baseLogger().Core().Enabled(zap.DebugLevel) {
+		return
 	}
+
+	req.newLogger().Debug("ehttp: ignored forwarded header",
+		zap.String("header", name), zap.String("reason", reason), zap.String("remote_addr", req.Request.RemoteAddr))
 }
 
 // validHost reports whether h is "host" or "host:port", with "[ipv6]" for IPv6.

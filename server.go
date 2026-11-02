@@ -2,6 +2,7 @@ package ehttp
 
 import (
 	"context"
+	"fmt"
 	"html/template"
 	"net"
 	"net/http"
@@ -26,7 +27,7 @@ type serverOption func(*Server)
 
 const (
 	defaultReadHeaderTimeout = 10 * time.Second
-	defaultShutdownTimeout   = 30 * time.Second
+	defaultShutdownTimeout   = 25 * time.Second
 )
 
 type Server struct {
@@ -39,6 +40,47 @@ type Server struct {
 	idleTimeout       time.Duration
 	maxHeaderBytes    int
 	shutdownTimeout   time.Duration
+}
+
+// Mode picks the preset of the server logger.
+type Mode int
+
+const (
+	// Production is the default. The logger writes JSON at info level.
+	Production Mode = iota
+	// Development writes console output at debug level.
+	Development
+)
+
+// WithMode picks the logger preset of the server. WithLogger wins over it,
+// in any order of the options. An error from zap panics at boot.
+func WithMode(m Mode) serverOption {
+	return func(s *Server) { s.router.mode = m }
+}
+
+// WithLogger sets the logger of the server instead of the preset of WithMode.
+// A nil logger panics. The server never changes the global zap logger.
+func WithLogger(l *zap.Logger) serverOption {
+	if l == nil {
+		panic("ehttp: WithLogger needs a logger")
+	}
+
+	return func(s *Server) { s.router.logger = l }
+}
+
+// presetLogger builds the logger of a mode. An error panics at boot.
+func presetLogger(m Mode) *zap.Logger {
+	build := zap.NewProduction
+	if m == Development {
+		build = zap.NewDevelopment
+	}
+
+	l, err := build()
+	if err != nil {
+		panic("ehttp: cannot build the logger: " + err.Error())
+	}
+
+	return l
 }
 
 // mustBeNonNegative panics when a duration option is negative.
@@ -97,7 +139,8 @@ func WithMaxHeaderBytes(n int) serverOption {
 }
 
 // WithShutdownTimeout sets how long Listen waits for in-flight requests after
-// its context is done. The default is 30 s. Zero means no limit.
+// its context is done. The default is 25 s, below the 30 s grace period of
+// Kubernetes. Zero means no limit.
 func WithShutdownTimeout(d time.Duration) serverOption {
 	mustBeNonNegative("WithShutdownTimeout", d)
 
@@ -121,7 +164,7 @@ func WithTemplates(v string) serverOption {
 		t, err := template.ParseGlob(v)
 
 		if err != nil {
-			zap.L().Fatal("server.WithTemplates error", zap.Error(err))
+			panic(fmt.Errorf("ehttp: WithTemplates: %w", err))
 		}
 
 		s.router.template = t
@@ -182,6 +225,10 @@ func NewServer(options ...serverOption) *Server {
 		panic("ehttp: CORS Credentials cannot be used with the * origin")
 	}
 
+	if server.router.logger == nil {
+		server.router.logger = presetLogger(server.router.mode)
+	}
+
 	return server
 }
 
@@ -239,7 +286,7 @@ func (s *Server) Listen(c context.Context) error {
 		return err
 	}
 
-	zap.L().Info("server is running", zap.String("port", s.port))
+	s.router.logger.Info("server is running", zap.String("port", s.port))
 
 	serveErr := make(chan error, 1)
 
@@ -249,7 +296,7 @@ func (s *Server) Listen(c context.Context) error {
 	case err := <-serveErr:
 		_ = server.Close()
 
-		zap.L().Error("shutting down the server with error", zap.Error(err))
+		s.router.logger.Error("shutting down the server with error", zap.Error(err))
 
 		return err
 	case <-ctx.Done():
@@ -259,7 +306,7 @@ func (s *Server) Listen(c context.Context) error {
 	// ends the process while the shutdown waits.
 	quit()
 
-	zap.L().Info("shutting down the server gracefully")
+	s.router.logger.Info("shutting down the server gracefully")
 
 	return s.shutdown(context.WithoutCancel(ctx), server, serveErr)
 }

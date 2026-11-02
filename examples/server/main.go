@@ -8,13 +8,11 @@ import (
 	"go.uber.org/zap"
 )
 
-func init() {
-	logger := zap.Must(zap.NewDevelopment())
-	zap.ReplaceGlobals(logger)
-}
-
 func main() {
+	// The server owns its logger. This one is for the failure of main only.
+	logger := zap.Must(zap.NewDevelopment())
+
 	if err := app.New("./examples/server", time.Now()).Listen(context.Background()); err != nil {
-		zap.L().Fatal("server stopped", zap.Error(err))
+		logger.Fatal("server stopped", zap.Error(err))
 	}
 }

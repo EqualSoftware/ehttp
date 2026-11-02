@@ -100,6 +100,7 @@ func WithResponseWriter(res *ResponseWriter) (*ResponseWriter, *ResponseWriterIn
 	return &ResponseWriter{
 		w:        i,
 		request:  res.request,
+		req:      res.req,
 		code:     res.code,
 		template: res.template,
 	}, i
@@ -110,9 +111,19 @@ var _ http.ResponseWriter = (*ResponseWriter)(nil)
 type ResponseWriter struct {
 	w        http.ResponseWriter
 	request  *http.Request
+	req      *Request // for the logger; nil in a writer built by hand
 	code     int
 	template *template.Template
 	sent     bool
+}
+
+// logger returns the logger of the request, or a no-op logger.
+func (res *ResponseWriter) logger() *zap.Logger {
+	if res.req == nil {
+		return nopLogger
+	}
+
+	return res.req.newLogger()
 }
 
 // HeadersSent reports that the header was sent through the ResponseWriter, by
@@ -360,12 +371,12 @@ func (res *ResponseWriter) Cookie(cookie *http.Cookie) {
 	}
 
 	if cookie == nil {
-		zap.L().Error("nil cookie")
+		res.logger().Error("nil cookie")
 		return
 	}
 
 	if err := cookie.Valid(); err != nil {
-		zap.L().Error("invalid cookie", zap.String("name", cookie.Name), zap.Error(err))
+		res.logger().Error("invalid cookie", zap.String("name", cookie.Name), zap.Error(err))
 		return
 	}
 
@@ -524,7 +535,7 @@ func (res *ResponseWriter) SendFile(name string) {
 	}
 
 	if hasDotDot(name) {
-		zap.L().Error("path traversal refused", zap.String("filename", name))
+		res.logger().Error("path traversal refused", zap.String("filename", name))
 		res.SendStatus(StatusNotFound)
 		return
 	}
@@ -536,7 +547,7 @@ func (res *ResponseWriter) SendFile(name string) {
 	file, err := os.Open(name)
 
 	if err != nil {
-		zap.L().Error("file not found", zap.String("filename", name))
+		res.logger().Error("file not found", zap.String("filename", name))
 		res.SendStatus(StatusNotFound)
 		return
 	}
@@ -546,7 +557,7 @@ func (res *ResponseWriter) SendFile(name string) {
 	file_stat, err := file.Stat()
 
 	if err != nil || file_stat.IsDir() {
-		zap.L().Error("invalid file", zap.String("filename", name))
+		res.logger().Error("invalid file", zap.String("filename", name))
 		res.SendStatus(StatusNotFound)
 		return
 	}
@@ -586,7 +597,7 @@ func (res *ResponseWriter) SendFile(name string) {
 			_, err := file.Seek(0, io.SeekStart)
 
 			if err != nil {
-				zap.L().Error("seeker can't seek", zap.Error(err))
+				res.logger().Error("seeker can't seek", zap.Error(err))
 				res.SendStatus(StatusInternalServerError)
 				return
 			}

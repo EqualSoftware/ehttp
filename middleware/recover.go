@@ -24,7 +24,7 @@ func Recover() ehttp.MiddlewareHandlerFunc {
 					panic(r)
 				}
 
-				zap.L().Error("panic recovered",
+				req.Logger().Error("panic recovered",
 					zap.Any("panic", r),
 					zap.ByteString("stack", debug.Stack()),
 				)

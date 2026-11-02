@@ -72,6 +72,7 @@ func TestNewServerDefaults(t *testing.T) {
 	s := NewServer()
 
 	ehttptest.Eq(t, "Express app.listen examples use 3000", s.port, "3000")
+	ehttptest.Eq(t, "shutdown default is below the Kubernetes grace period", s.shutdownTimeout, 25*time.Second)
 	ehttptest.True(t, "default CORS allows everything", len(s.router.cors.Origin) == 1 && s.router.cors.Origin[0] == "*", "got %v", s.router.cors.Origin)
 
 	t.Run("server gets its own CORS options", func(t *testing.T) {
@@ -137,10 +138,8 @@ func TestServerWithTemplatesInvalidGlob(t *testing.T) {
 			ehttptest.True(t, "principle 5: bad config stops the boot", code != 0, "child exited 0, output: %s", out)
 
 			t.Run("fails with a panic", func(t *testing.T) {
-				ehttptest.KnownBug(t, "NA-4", func(t testing.TB) {
-					ehttptest.True(t, "principle 5: panic at boot (recoverable, testable), not os.Exit", strings.Contains(out, "panic:"),
-						"child exit code %d without a panic, output: %q", code, out)
-				})
+				ehttptest.True(t, "principle 5: panic at boot (recoverable, testable), not os.Exit", strings.Contains(out, "panic:"),
+					"child exit code %d without a panic, output: %q", code, out)
 			})
 		})
 	}

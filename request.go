@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 
 	"go.uber.org/zap"
 )
@@ -21,6 +22,53 @@ type Request struct {
 
 	proxies trustedProxies
 	peer    uint8
+	logger  *zap.Logger                // the server logger; nil in a Request built by hand
+	log     atomic.Pointer[zap.Logger] // logger with the request fields, built on first use
+}
+
+var nopLogger = zap.NewNop()
+
+// Logger returns the logger of the server with the fields request_id, method
+// and route (the registered pattern). A field with an empty value is left
+// out. The first call caches the logger, so a middleware that adds request
+// data (for example RequestId) must run before the first call. It is safe
+// to call from many goroutines.
+func (req *Request) Logger() *zap.Logger {
+	if l := req.log.Load(); l != nil {
+		return l
+	}
+
+	req.log.CompareAndSwap(nil, req.newLogger())
+
+	return req.log.Load()
+}
+
+// baseLogger returns the server logger, or a no-op logger.
+func (req *Request) baseLogger() *zap.Logger {
+	if req.logger == nil {
+		return nopLogger
+	}
+
+	return req.logger
+}
+
+// newLogger builds the logger of the request and does not cache it. The
+// library uses it, so its own log calls never freeze the fields before a
+// middleware like RequestId has run.
+func (req *Request) newLogger() *zap.Logger {
+	fields := make([]zap.Field, 0, 3)
+
+	if id := req.Header(HeaderXRequestID); id != "" {
+		fields = append(fields, zap.String("request_id", id))
+	}
+
+	fields = append(fields, zap.String("method", req.Method()))
+
+	if route := req.RoutePath(); route != "" {
+		fields = append(fields, zap.String("route", route))
+	}
+
+	return req.baseLogger().With(fields...)
 }
 
 func (req *Request) WithContext(ctx context.Context) *Request {
@@ -113,21 +161,21 @@ func (req *Request) Accepts(value string) bool {
 	mediatype, _, err := mime.ParseMediaType(accept)
 
 	if err != nil {
-		zap.L().Error(fmt.Sprintf("invalid header accept '%s'", accept), zap.Error(err))
+		req.newLogger().Error(fmt.Sprintf("invalid header accept '%s'", accept), zap.Error(err))
 		return false
 	}
 
 	vmediatype, _, err := mime.ParseMediaType(value)
 
 	if err != nil {
-		zap.L().Error(fmt.Sprintf("invalid accepts value '%s'", value), zap.Error(err))
+		req.newLogger().Error(fmt.Sprintf("invalid accepts value '%s'", value), zap.Error(err))
 		return false
 	}
 
 	mediatype_reg, err := regexp.Compile(mediatype)
 
 	if err != nil {
-		zap.L().Error("invalid accepts regex", zap.Error(err))
+		req.newLogger().Error("invalid accepts regex", zap.Error(err))
 		return false
 	}
 

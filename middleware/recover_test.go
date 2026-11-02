@@ -100,3 +100,32 @@ func TestRecoverRethrowsAbortHandler(t *testing.T) {
 // The "response already started" case (a 500 JSON glued to a chunked body,
 // RFC 9112 §8: the client must see an incomplete message) needs a real
 // server. It lives in test/security (TestCSecurityS6PanicAfterHeadersSent).
+
+// A recovered panic goes to the logger of the server, with the request fields.
+func TestRecoverLogsThroughServerLogger(t *testing.T) {
+	t.Parallel()
+
+	logger, logs := fixtures.ObservedLogger()
+	h := fixtures.HandlerLogged(logger, bPanic("boom"), middleware.RequestId(), middleware.Recover())
+
+	ehttptest.Do(h, fixtures.Req("GET", "/x", "X-Request-Id", "rid-9"))
+
+	got := logs.FilterMessage("panic recovered").All()
+	ehttptest.Eq(t, "one log line", len(got), 1)
+	ehttptest.Eq(t, "request_id comes from RequestId", got[0].ContextMap()["request_id"], any("rid-9"))
+	ehttptest.Eq(t, "route", got[0].ContextMap()["route"], any("/x"))
+}
+
+func TestRequestIdFeedsTheRequestLogger(t *testing.T) {
+	t.Parallel()
+
+	logger, logs := fixtures.ObservedLogger()
+	h := fixtures.HandlerLogged(logger, func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+		req.Logger().Info("hit")
+	}, middleware.RequestId())
+
+	rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
+
+	id := rec.Header().Get("X-Request-Id")
+	ehttptest.Eq(t, "generated id is in the log", logs.All()[0].ContextMap()["request_id"], any(id))
+}
