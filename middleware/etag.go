@@ -3,16 +3,26 @@ package middleware
 import (
 	"fmt"
 	"hash/crc32"
-	"strconv"
+	"io"
+	"net/http"
 	"strings"
 
 	"github.com/EqualSoftware/ehttp"
+	"github.com/EqualSoftware/ehttp/internal/etag"
+	"github.com/EqualSoftware/ehttp/internal/hook"
 )
+
+// etagBufferLimit is the most bytes that WeakEtag buffers. An ETag needs the
+// whole body, so a response over the limit is streamed without an ETag.
+const etagBufferLimit = 1 << 20
 
 // WeakEtag adds a weak ETag over the body of a 200 response to GET and HEAD, and
 // answers 304 when If-None-Match matches it (weak comparison, RFC 9110
 // section 13.1.2). The ETag is over the whole body, so the middleware buffers
-// it. An If-Match or If-None-Match with an invalid syntax gets 400.
+// the body up to 1 MiB. A larger response is streamed without an ETag. A
+// response that already has an ETag (for example from SendFile) is not
+// buffered and keeps its ETag. An If-Match or If-None-Match with an invalid
+// syntax gets 400.
 func WeakEtag() ehttp.MiddlewareHandlerFunc {
 	return func(next ehttp.Handler) ehttp.HandlerFunc {
 		return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
@@ -24,113 +34,128 @@ func WeakEtag() ehttp.MiddlewareHandlerFunc {
 			}
 
 			header := req.Request.Header
-			inm := header.Values(ehttp.HeaderIfNoneMatch)
 
-			if !validETagList(header.Values("If-Match")) || !validETagList(inm) {
+			if !etag.ValidRequest(header) {
 				res.SendStatus(ehttp.StatusBadRequest)
 				return
 			}
 
-			skip_body := method == ehttp.MethodHead
 			ires, i := ehttp.WithResponseWriter(res)
+			w := &etagWriter{i: i, res: res, real: i.Unwrap()}
+			hook.WrapWriter(ires, func(http.ResponseWriter) http.ResponseWriter { return w })
+
 			next.ServeHTTP(ires, req)
-
-			if skip_body {
-				res.Set(ehttp.HeaderContentLength, strconv.FormatInt(i.Size, 10))
-			}
-
-			if i.Code != ehttp.StatusOK || i.Size == 0 {
-				i.SendResponse(res)
-				return
-			}
-
-			etag := fmt.Sprintf(`W/"%d-%08x"`, i.Size, crc32.ChecksumIEEE(i.Buffer.Bytes()))
-			res.Set(ehttp.HeaderEtag, etag)
-
-			if matchETagList(inm, strings.TrimPrefix(etag, "W/")) {
-				res.SendStatus(ehttp.StatusNotModified)
-				return
-			}
-
-			i.SendResponse(res)
+			w.finish(header.Values(ehttp.HeaderIfNoneMatch))
 		}
 	}
 }
 
-// validETagList reports that each value is "*" alone or a list of entity-tags
-// (RFC 9110 section 13.1.1, 13.1.2). A field without a member is not valid.
-func validETagList(values []string) bool {
-	_, ok := scanETagList(values, "")
-	return ok || len(values) == 0
+// etagWriter is the writer of the handler. It keeps a 200 response in the
+// buffer of the interceptor until the handler ends or the buffer is full. Any
+// other response goes to the real writer at once.
+type etagWriter struct {
+	i       *ehttp.ResponseWriterInterceptor
+	res     *ehttp.ResponseWriter
+	real    http.ResponseWriter
+	code    int
+	passing bool
 }
 
-// matchETagList reports that the field is valid and has "*" or a tag with the
-// opaque value opaque, by weak comparison.
-func matchETagList(values []string, opaque string) bool {
-	match, ok := scanETagList(values, opaque)
-	return match && ok
+func (w *etagWriter) Header() http.Header { return w.real.Header() }
+
+func (w *etagWriter) Unwrap() http.ResponseWriter { return w.real }
+
+func (w *etagWriter) WriteHeader(code int) {
+	if w.code != 0 {
+		return
+	}
+
+	if code >= 100 && code <= 199 && code != ehttp.StatusSwitchingProtocols {
+		w.real.WriteHeader(code) // interim: not the final status
+		return
+	}
+
+	w.code = code
+
+	if code != ehttp.StatusOK || w.Header().Get(ehttp.HeaderEtag) != "" {
+		w.pass()
+	}
 }
 
-// scanETagList reads the field lines. ok is false when a member is not an
-// entity-tag, "*" is not the only member, or the field has no member.
-func scanETagList(values []string, opaque string) (match, ok bool) {
-	members, star := 0, false
-
-	for _, list := range values {
-		for {
-			list = strings.TrimLeft(list, " \t,")
-
-			if list == "" {
-				break
-			}
-
-			n, tag := scanETag(list)
-
-			if n == 0 {
-				return false, false
-			}
-
-			members++
-			star = star || tag == "*"
-			match = match || tag == "*" || strings.TrimPrefix(tag, "W/") == opaque
-
-			list = strings.TrimLeft(list[n:], " \t")
-
-			if list != "" && list[0] != ',' {
-				return false, false
-			}
-		}
+func (w *etagWriter) Write(b []byte) (int, error) {
+	if w.code == 0 {
+		w.WriteHeader(ehttp.StatusOK)
 	}
 
-	return match, members > 0 && (!star || members == 1)
+	if !w.passing && w.i.Buffer.Len()+len(b) > etagBufferLimit {
+		w.pass()
+	}
+
+	if w.passing {
+		return w.real.Write(b)
+	}
+
+	return w.i.Buffer.Write(b)
 }
 
-// scanETag returns the length of the member at the start of s: "*" or an
-// entity-tag ([W/] and a quoted string of etagc, RFC 9110 section 8.8.3). It
-// returns 0 for anything else.
-func scanETag(s string) (n int, tag string) {
-	if s[0] == '*' {
-		return 1, "*"
+// ReadFrom keeps the fast path of the real writer after the response is passing.
+func (w *etagWriter) ReadFrom(r io.Reader) (int64, error) {
+	if w.code == 0 {
+		w.WriteHeader(ehttp.StatusOK)
 	}
 
-	i := 0
-
-	if strings.HasPrefix(s, "W/") {
-		i = 2
+	if rf, ok := w.real.(io.ReaderFrom); ok && w.passing {
+		return rf.ReadFrom(r)
 	}
 
-	if i >= len(s) || s[i] != '"' {
-		return 0, ""
+	return io.Copy(struct{ io.Writer }{w}, r)
+}
+
+// FlushError flushes the real writer after the response is passing. Before
+// that, the body waits for the ETag and the flush is not supported.
+func (w *etagWriter) FlushError() error {
+	if !w.passing {
+		return http.ErrNotSupported
 	}
 
-	for i++; i < len(s); i++ {
-		switch c := s[i]; {
-		case c == '"':
-			return i + 1, s[:i+1]
-		case c < 0x21 || c == 0x7f:
-			return 0, ""
-		}
+	return http.NewResponseController(w.real).Flush()
+}
+
+// pass sends the status and the buffered bytes. The next writes go to the real writer.
+func (w *etagWriter) pass() {
+	if w.passing {
+		return
 	}
 
-	return 0, ""
+	w.passing = true
+	w.i.Code = w.code
+	w.i.SendResponse(w.res)
+}
+
+// finish ends a response that is still in the buffer.
+func (w *etagWriter) finish(inm []string) {
+	if w.passing {
+		return
+	}
+
+	if w.code == 0 {
+		w.code = ehttp.StatusOK
+	}
+
+	body := w.i.Buffer.Bytes()
+
+	if len(body) == 0 {
+		w.pass()
+		return
+	}
+
+	tag := fmt.Sprintf(`W/"%d-%08x"`, len(body), crc32.ChecksumIEEE(body))
+	w.res.Set(ehttp.HeaderEtag, tag)
+
+	if etag.Match(inm, strings.TrimPrefix(tag, "W/")) {
+		w.i.Buffer.Reset()
+		w.code = ehttp.StatusNotModified
+	}
+
+	w.pass()
 }

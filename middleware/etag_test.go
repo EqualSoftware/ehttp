@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -182,20 +181,58 @@ func TestWeakEtagIfNoneMatchList(t *testing.T) {
 	}
 }
 
-// 413 is for request bodies (RFC 9110 §15.5.14); a large response is not
-// an error. The size is faked through the exported interceptor field.
-func TestWeakEtagLargeResponseIsNot413(t *testing.T) {
+// 413 is for request bodies (RFC 9110 §15.5.14); a large response is not an
+// error. The middleware buffers up to 1 MiB for the ETag. A larger response is
+// streamed without an ETag, and the full body arrives.
+func TestWeakEtagLargeResponse(t *testing.T) {
 	t.Parallel()
 
-	h := fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
-		res.String("x")
-		res.Unwrap().(*ehttp.ResponseWriterInterceptor).Size = math.MaxUint32 + 1
-	}, middleware.WeakEtag())
+	const limit = 1 << 20
 
-	rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
+	tests := []struct {
+		name     string
+		size     int
+		wantEtag bool
+	}{
+		{"at the limit gets an ETag", limit, true},
+		{"over the limit is streamed", limit + 1, false},
+		{"far over the limit is streamed", 5 * limit, false},
+	}
 
-	ehttptest.True(t, "RFC 9110 §15.5.14", rec.Code != 413, "response of >4GiB was answered 413")
-	ehttptest.Eq(t, "middleware contract", rec.Code, 200)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			body := strings.Repeat("x", tt.size)
+			ts := httptest.NewServer(fixtures.Handler(func(res *ehttp.ResponseWriter, _ *ehttp.Request) {
+				// Two writes: the second one crosses the limit.
+				_, _ = res.Write([]byte(body[:limit/2]))
+				_, _ = res.Write([]byte(body[limit/2:]))
+			}, middleware.WeakEtag()))
+			defer ts.Close()
+
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/x", http.NoBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			resp, err := ts.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			defer resp.Body.Close()
+
+			got, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			ehttptest.Eq(t, "RFC 9110 §15.5.14", resp.StatusCode, 200)
+			ehttptest.Eq(t, "middleware contract", len(got), tt.size)
+			ehttptest.Eq(t, "RFC 9110 §8.8.3", resp.Header.Get("ETag") != "", tt.wantEtag)
+		})
+	}
 }
 
 // Composition with ErrorCache, in both orders (the pair must work).
@@ -275,10 +312,10 @@ func TestSendFileWithValidatorMiddleware(t *testing.T) {
 		"LastModified": fixtures.Handler(send, middleware.LastModified(modified)),
 	}
 
-	do := func(t *testing.T, c *http.Client, url string, kv ...string) (*http.Response, string) {
+	doMethod := func(t *testing.T, c *http.Client, method, url string, kv ...string) (*http.Response, string) {
 		t.Helper()
 
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, http.NoBody)
+		req, err := http.NewRequestWithContext(t.Context(), method, url, http.NoBody)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -300,6 +337,12 @@ func TestSendFileWithValidatorMiddleware(t *testing.T) {
 		}
 
 		return resp, string(body)
+	}
+
+	do := func(t *testing.T, c *http.Client, url string, kv ...string) (*http.Response, string) {
+		t.Helper()
+
+		return doMethod(t, c, http.MethodGet, url, kv...)
 	}
 
 	for label, h := range servers {
@@ -336,6 +379,16 @@ func TestSendFileWithValidatorMiddleware(t *testing.T) {
 			rng, part := do(t, c, url, "Range", "bytes=0-9")
 			ehttptest.Eq(t, "RFC 9110 §14.4", rng.StatusCode, 206)
 			ehttptest.Eq(t, "RFC 9110 §14.4", part, "0123456789")
+
+			// One representation has one ETag (RFC 9110 §15.3.7).
+			ehttptest.Eq(t, "RFC 9110 §15.3.7", rng.Header.Get("ETag"), etag)
+
+			// HEAD keeps the real length and the ETag of the 200.
+			head, hbody := doMethod(t, c, http.MethodHead, url)
+			ehttptest.Eq(t, "RFC 9110 §9.3.2", head.StatusCode, 200)
+			ehttptest.Eq(t, "RFC 9110 §9.3.2", head.Header.Get("Content-Length"), "1000")
+			ehttptest.Eq(t, "RFC 9110 §9.3.2", head.Header.Get("ETag"), etag)
+			ehttptest.Eq(t, "RFC 9110 §9.3.2", hbody, "")
 		})
 	}
 }
