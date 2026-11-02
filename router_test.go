@@ -211,6 +211,10 @@ func TestRouterMethods(t *testing.T) {
 			{"parent segment", "/a/../b", func(p string) { NewServer().GET(p, aText("x")) }},
 			{"current segment", "/a/./b", func(p string) { NewServer().GET(p, aText("x")) }},
 			{"root parent", "/..", func(p string) { NewServer().GET(p, aText("x")) }},
+			{"encoded parent", "/f/%2e%2e", func(p string) { NewServer().GET(p, aText("x")) }},
+			{"mixed encoded parent", "/f/%2E%2e", func(p string) { NewServer().GET(p, aText("x")) }},
+			{"encoded NUL", "/f/%00", func(p string) { NewServer().GET(p, aText("x")) }},
+			{"encoded backslash", "/f/a%5cb", func(p string) { NewServer().GET(p, aText("x")) }},
 			{"group prefix", "/a/../b", func(p string) { NewServer().Route("/a/..").GET("/b", aText("x")) }},
 		} {
 			msg := aPanics(func() { tt.register(tt.pattern) })
@@ -801,4 +805,49 @@ func TestRouterOptionsParamGuard(t *testing.T) {
 		ehttptest.Eq(t, "RFC 9110 §9.3.7", resp.StatusCode, 200)
 		ehttptest.True(t, "RFC 9110 §9.3.7", resp.Header.Get(HeaderAllow) != "", "no Allow")
 	})
+}
+
+// A refused value wins over 405: no Allow header (RFC 9110 §15.5).
+func TestRouterRefusalBeforeMethodNotAllowed(t *testing.T) {
+	t.Parallel()
+
+	s := NewServer()
+	s.GET("/files/...", aText("x"))
+	s.GET("/f/x/:a", aText("x"))
+	s.GET("/f/:b/y", aText("x"))
+	ts := httptest.NewServer(s)
+	t.Cleanup(ts.Close)
+
+	for _, tt := range []struct {
+		method, path string
+		code         int
+	}{
+		{"POST", "/files/../x", 403},
+		{"DELETE", "/files/%2e%2e%2fx", 403},
+		{"DELETE", "/files/a%00b", 400},
+		{"OPTIONS", "/f/../y", 403},
+		{"POST", "/files/ok", 405},
+	} {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			t.Parallel()
+
+			req, err := http.NewRequestWithContext(t.Context(), tt.method, ts.URL+tt.path, http.NoBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			resp.Body.Close()
+
+			ehttptest.Eq(t, "RFC 9110 §15.5", resp.StatusCode, tt.code)
+
+			if tt.code != 405 {
+				ehttptest.Eq(t, "a refused request has no Allow", resp.Header.Get(HeaderAllow), "")
+			}
+		})
+	}
 }

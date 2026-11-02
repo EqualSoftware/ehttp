@@ -111,16 +111,27 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc, m ...MiddlewareHa
 	})
 }
 
-// mustNotHaveDotSegment panics when a pattern has a "." or ".." segment. A
-// client removes dot segments before it sends (RFC 3986 §5.2.4), so the route
-// can never be reached.
+// mustNotHaveDotSegment panics when a static segment of a pattern can never be
+// reached. A client removes dot segments before it sends (RFC 3986 §5.2.4),
+// and the router refuses a NUL or a backslash. A static segment compares the
+// raw text, so a segment that decodes to "." or ".." (for example "%2e"), or
+// holds a NUL or a backslash (for example "%00", "%5c"), is also refused.
 func mustNotHaveDotSegment(method, pattern string, segments []string) {
 	for _, segment := range segments {
-		if segment != "." && segment != ".." {
+		if strings.HasPrefix(segment, ":") || segment == "..." {
 			continue
 		}
 
-		bootPanic(method+" "+pattern, "the segment "+quoteValue(segment), "a client removes dot segments before it sends (RFC 3986 §5.2.4), so this route can never be reached",
+		decoded, err := url.PathUnescape(segment)
+		if err != nil {
+			decoded = segment
+		}
+
+		if decoded != "." && decoded != ".." && !strings.ContainsAny(decoded, "\\\x00") {
+			continue
+		}
+
+		bootPanic(method+" "+pattern, "the segment "+quoteValue(segment), "a client removes dot segments before it sends (RFC 3986 §5.2.4), and the router refuses a NUL or a backslash in a path value, so this route can never be reached",
 			"remove the segment")
 	}
 }
@@ -268,6 +279,13 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if matched {
+		if status := router.refusal(url_segments); status != 0 {
+			router.wrap(router.statusHandler(status)).ServeHTTP(res, req)
+			return
+		}
+	}
+
 	if matched && method != MethodOptions {
 		router.wrap(router.methodNotAllowedHandler(url_segments)).ServeHTTP(res, req)
 		return
@@ -275,11 +293,6 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if method == MethodOptions {
 		if matched {
-			if status := first.checkValues(url_segments); status != 0 {
-				router.wrap(router.statusHandler(status)).ServeHTTP(res, req)
-				return
-			}
-
 			router.setAllow(res, url_segments)
 		}
 
@@ -316,6 +329,29 @@ func (r *Router) find(method string, segments []string) (serving, first *route) 
 	}
 
 	return fallback, first
+}
+
+// refusal checks the param values of every route that matches the path. It
+// returns the first 400 (a NUL or a backslash), or else a 403 (a ".." part),
+// or 0. The router answers it before a 405 or an OPTIONS response, with no
+// Allow header.
+func (r *Router) refusal(segments []string) int {
+	status := 0
+
+	for _, endpoint := range r.routes {
+		if !endpoint.match(segments) {
+			continue
+		}
+
+		switch endpoint.checkValues(segments) {
+		case StatusBadRequest:
+			return StatusBadRequest
+		case StatusForbidden:
+			status = StatusForbidden
+		}
+	}
+
+	return status
 }
 
 // setAllow sets the Allow header (RFC 9110 §10.2.1) from the routes that
