@@ -57,8 +57,9 @@ type ErrorCacheOption func(*errorCacheConfig)
 // "max-age=N, stale-while-revalidate=N, stale-if-error=N", with "private, " in
 // front for 401, 403, 407 and for a request with Authorization.
 //
-// Zero sends no header from this ErrorCache. A Cache-Control from an ErrorCache
-// further out can still fill the header, so the outermost off switch is final.
+// Zero sends no header from this ErrorCache. The next ErrorCache further out, if
+// there is one, can still set the header. A route off switch does not turn off
+// a global ErrorCache.
 //
 // Each status can be set one time. The call panics at boot for a status
 // outside 400 to 599, a negative lifetime, and 428, 429, 431 and 511: a cache
@@ -144,6 +145,10 @@ func (cfg *errorCacheConfig) value(code int, auth bool) string {
 
 // ErrorCache decides Cache-Control for each error response (status 400 to
 // 599). Cache decides the statuses below 400. They never decide the same status.
+// The decision is made when the handler or a middleware commits a status. A
+// handler that writes nothing gets 200 with no header from ErrorCache.
+//
+// The default group is all error statuses with no ErrorCacheStatus.
 //
 // Default for each status:
 //   - 404, 405, 410, 414, 501: the lifetime duration, because they are
@@ -159,7 +164,8 @@ func (cfg *errorCacheConfig) value(code int, auth bool) string {
 // stores it by URL serves it to every client.
 //
 // A lifetime has the value "max-age=N, stale-while-revalidate=N,
-// stale-if-error=N". It has "private, " in front for 401, 403 and 407, and for
+// stale-if-error=N". N is the whole seconds of the lifetime, so a lifetime
+// under 1 second gives max-age=0. It has "private, " in front for 401, 403 and 407, and for
 // a request with Authorization (RFC 9111 §5.2.2.7, §3.5). No-store is the
 // plain value "no-store". ErrorCache(0) sends it for the default group.
 //
@@ -167,7 +173,11 @@ func (cfg *errorCacheConfig) value(code int, auth bool) string {
 //
 // Global and route: when several ErrorCache apply to a request, the one
 // closest to the handler decides. If it sends no header (an off switch), the
-// next one out can decide.
+// next one out decides.
+//
+// Write the response from the handler goroutine only. A write after the
+// handler returns, from another goroutine, is not supported (like
+// ResponseWriter).
 //
 // Order: put ErrorCache outside WeakEtag to decide the 412 of WeakEtag. Inside,
 // the 412 has no Cache-Control, which is safe. A Timeout sets no Cache-Control

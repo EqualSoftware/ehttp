@@ -9,9 +9,14 @@ import (
 
 // Cache decides Cache-Control for each response with a status below 400.
 // ErrorCache decides the error statuses. They never decide the same status.
+// The decision is made when the handler or a middleware commits a status. A
+// handler that writes nothing gets 200 with no header. A 101 gets
+// none.
 //
 // The value is "max-age=N, stale-while-revalidate=N, stale-if-error=N", with
-// "private, " in front for a request with Authorization (RFC 9111 §3.5).
+// "private, " in front for a request with Authorization (RFC 9111 §3.5). N is
+// the whole seconds of the duration, so a duration under 1 second gives
+// max-age=0.
 // Cache(0) sends "no-store, no-cache, must-revalidate, proxy-revalidate".
 // ErrorCache(0) sends only "no-store".
 //
@@ -19,6 +24,10 @@ import (
 //
 // Global and route: when several Cache apply to a request, the one closest to
 // the handler wins. A route Cache wins over a global one.
+//
+// Write the response from the handler goroutine only. A write after the
+// handler returns, from another goroutine, is not supported (like
+// ResponseWriter).
 //
 // A Cache outside Timeout does not cover the 503 of Timeout. Use ErrorCache
 // for it.

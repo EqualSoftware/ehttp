@@ -130,3 +130,40 @@ func TestCacheOrderWithWeakEtag(t *testing.T) {
 }
 
 func mws2(m ...ehttp.MiddlewareHandlerFunc) []ehttp.MiddlewareHandlerFunc { return m }
+
+// Recover answers a panic through the writer at its own place in the stack.
+func TestCacheOrderWithRecover(t *testing.T) {
+	t.Parallel()
+
+	boom := func(*ehttp.ResponseWriter, *ehttp.Request) { panic("boom") }
+	hour := time.Hour
+	outer := middleware.ErrorCache(time.Minute, middleware.ErrorCacheStatus(500, hour))
+	inner := middleware.ErrorCache(time.Minute, middleware.ErrorCacheStatus(500, time.Second))
+
+	rec := ehttptest.Do(fixtures.Handler(boom, outer, middleware.Recover(), inner), fixtures.Req("GET", "/x"))
+	ehttptest.Eq(t, "Recover between two ErrorCache", rec.Code, 500)
+	ehttptest.Eq(t, "the outer ErrorCache decides: the inner one left the request", rec.Header().Get("Cache-Control"), ehttp.CacheControl(hour, false))
+
+	rec = ehttptest.Do(fixtures.Handler(boom, middleware.Recover(), outer, inner), fixtures.Req("GET", "/x"))
+	ehttptest.Eq(t, "Recover outside both", rec.Code, 500)
+	ehttptest.Eq(t, "no ErrorCache is in the stack when Recover answers", rec.Header().Get("Cache-Control"), "")
+}
+
+// A joined Cache leaves the request when its handler returns: a write of an
+// outer middleware after that gets no Cache header.
+func TestCacheOrderOuterWriteAfterJoin(t *testing.T) {
+	t.Parallel()
+
+	late := func(next ehttp.Handler) ehttp.HandlerFunc {
+		return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+			next.ServeHTTP(res, req)
+			res.String("late")
+		}
+	}
+	nothing := func(*ehttp.ResponseWriter, *ehttp.Request) {}
+
+	rec := ehttptest.Do(fixtures.Handler(nothing, middleware.ErrorCache(time.Minute), late, middleware.Cache(time.Hour)), fixtures.Req("GET", "/x"))
+
+	ehttptest.Eq(t, "late write", rec.Body.String(), "late")
+	ehttptest.Eq(t, "Cache left the request", rec.Header().Get("Cache-Control"), "")
+}
