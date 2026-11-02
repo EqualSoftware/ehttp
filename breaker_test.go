@@ -3,6 +3,7 @@ package ehttp_test
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/EqualSoftware/ehttp"
 	"github.com/EqualSoftware/ehttp/internal/ehttptest"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/sony/gobreaker/v2"
 )
 
 var errBoom = errors.New("boom")
@@ -329,4 +331,59 @@ func TestBreakerRollingWindow(t *testing.T) {
 			ehttptest.Eq(t, "only the 10 failures of the old bucket rolled off", cb.State().String(), "closed")
 		})
 	})
+}
+
+// Many goroutines call the breaker while it moves from closed to open, to
+// half-open and back. Each call gets its own result, an open breaker rejects
+// the call, and nothing races (run with -race).
+func TestBreakerConcurrentAcrossStateChanges(t *testing.T) {
+	t.Parallel()
+
+	cb := ehttp.NewCircuitBreaker[int](ehttp.BreakerOptions{Name: "c", Timeout: 5 * time.Millisecond})
+
+	var (
+		wg                sync.WaitGroup
+		rejected, unknown atomic.Int64
+	)
+
+	for g := range 32 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for i := range 400 {
+				// The first half of the calls fail, the second half succeed,
+				// so the breaker opens and then recovers.
+				fail := i < 200
+
+				_, err := cb.Execute(func() (int, error) {
+					if fail || g%2 == 0 && i%3 == 0 {
+						return 0, errBoom
+					}
+
+					return 1, nil
+				})
+
+				switch {
+				case err == nil || errors.Is(err, errBoom):
+				case errors.Is(err, gobreaker.ErrOpenState), errors.Is(err, gobreaker.ErrTooManyRequests):
+					rejected.Add(1)
+				default:
+					unknown.Add(1)
+				}
+
+				_ = cb.State()
+
+				if i%50 == 0 {
+					time.Sleep(time.Millisecond) // let the 5 ms timeout pass
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	ehttptest.Eq(t, "gobreaker contract (only the callee error or a rejection)", unknown.Load(), int64(0))
+	ehttptest.True(t, "an open breaker rejects calls", rejected.Load() > 0, "no call was rejected")
 }

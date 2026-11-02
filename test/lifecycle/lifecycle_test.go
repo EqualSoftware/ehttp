@@ -442,3 +442,54 @@ func TestCLifecycleShutdownTimeoutStopsWaiting(t *testing.T) {
 		t.Fatal("Listen ignored WithShutdownTimeout")
 	}
 }
+
+// A header section over MaxHeaderBytes gets 431 (RFC 6585 section 5).
+func TestCLifecycleMaxHeaderBytesAnswers431(t *testing.T) {
+	l := fixtures.Listen(t, func(port string) *ehttp.Server {
+		srv := ehttp.NewServer(ehttp.WithPort(port), ehttp.WithMaxHeaderBytes(1024))
+		srv.GET("/", func(res *ehttp.ResponseWriter, req *ehttp.Request) { res.String("ok") })
+
+		return srv
+	})
+
+	addr := "127.0.0.1:" + l.Port
+	small := fixtures.Raw(t, addr, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+	big := fixtures.Raw(t, addr, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\nX-Big: "+strings.Repeat("a", 16<<10)+"\r\n\r\n")
+
+	ehttptest.True(t, "a small header section is served", strings.HasPrefix(small, "HTTP/1.1 200"), "got %q", small)
+	ehttptest.True(t, "RFC 6585 §5: an oversized header section gets 431", strings.HasPrefix(big, "HTTP/1.1 431"), "got %q", big)
+}
+
+// A keep-alive connection with no request is closed after IdleTimeout.
+func TestCLifecycleIdleTimeoutClosesKeepAlive(t *testing.T) {
+	l := fixtures.Listen(t, func(port string) *ehttp.Server {
+		srv := ehttp.NewServer(ehttp.WithPort(port), ehttp.WithIdleTimeout(200*time.Millisecond))
+		srv.GET("/", func(res *ehttp.ResponseWriter, req *ehttp.Request) { res.String("ok") })
+
+		return srv
+	})
+
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", "127.0.0.1:"+l.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	_, _ = conn.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+
+	buf := make([]byte, 1024)
+	n, _ := conn.Read(buf)
+
+	ehttptest.True(t, "the request is served", strings.HasPrefix(string(buf[:n]), "HTTP/1.1 200"), "got %q", buf[:n])
+
+	// The connection is idle now. The server must close it.
+	start := time.Now()
+	_, readErr := conn.Read(buf)
+
+	var nerr net.Error
+
+	closed := readErr != nil && (!errors.As(readErr, &nerr) || !nerr.Timeout())
+	ehttptest.True(t, "WithIdleTimeout closes an idle keep-alive connection", closed, "connection still open: %v", readErr)
+	ehttptest.True(t, "the close comes after the idle timeout", time.Since(start) >= 150*time.Millisecond, "closed after %v", time.Since(start))
+}

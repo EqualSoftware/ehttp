@@ -454,3 +454,84 @@ func TestSendFileWithValidatorMiddleware(t *testing.T) {
 		})
 	}
 }
+
+// If-Match uses the strong comparison (RFC 9110 section 13.1.1). The ETag of
+// WeakEtag is weak, so only "*" passes, and any tag list gets 412 before
+// If-None-Match is read (section 13.2.2).
+func TestWeakEtagIfMatch(t *testing.T) {
+	t.Parallel()
+
+	const body = "hello world"
+
+	weak := bETag(body)
+	strong := strings.TrimPrefix(weak, "W/")
+	tests := []struct {
+		name, im string
+		code     int
+	}{
+		{"weak tag of the response", weak, 412},
+		{"strong form of the tag", strong, 412},
+		{"list with the weak tag", `"zzz", ` + weak, 412},
+		{"other tag", `"nope"`, 412},
+		{"wildcard", "*", 200},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := ehttptest.Do(fixtures.Handler(bString(body), middleware.WeakEtag()), fixtures.Req("GET", "/x", "If-Match", tt.im))
+
+			ehttptest.Eq(t, "RFC 9110 §13.1.1", rec.Code, tt.code)
+
+			if tt.code == 412 {
+				ehttptest.Eq(t, "RFC 9110 §15.5.13", rec.Body.String(), "")
+			}
+		})
+	}
+
+	t.Run("If-Match fails before If-None-Match", func(t *testing.T) {
+		t.Parallel()
+
+		rec := ehttptest.Do(fixtures.Handler(bString(body), middleware.WeakEtag()),
+			fixtures.Req("GET", "/x", "If-Match", `"nope"`, "If-None-Match", weak))
+
+		ehttptest.Eq(t, "RFC 9110 §13.2.2", rec.Code, 412)
+	})
+}
+
+// SendFile sets a weak ETag, so a tag list of If-Match never matches it
+// (strong comparison, RFC 9110 section 13.1.1) and "*" does.
+func TestSendFileIfMatchStrong(t *testing.T) {
+	t.Parallel()
+
+	name := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(name, []byte("0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h := fixtures.Handler(func(res *ehttp.ResponseWriter, _ *ehttp.Request) { res.SendFile(name) })
+	etag := ehttptest.Do(h, fixtures.Req("GET", "/x")).Header().Get("ETag")
+
+	ehttptest.True(t, "RFC 9110 §8.8.3", etag != "", "the response has no ETag")
+
+	tests := []struct {
+		name, im string
+		code     int
+	}{
+		{"weak tag of the response", etag, 412},
+		{"strong form of the tag", strings.TrimPrefix(etag, "W/"), 412},
+		{"list with the tag", `"zzz", ` + etag, 412},
+		{"wildcard", "*", 200},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := ehttptest.Do(h, fixtures.Req("GET", "/x", "If-Match", tt.im))
+
+			ehttptest.Eq(t, "RFC 9110 §13.1.1", rec.Code, tt.code)
+		})
+	}
+}

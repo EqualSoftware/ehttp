@@ -62,6 +62,7 @@ func TestNewServerDefaults(t *testing.T) {
 	s := NewServer()
 
 	ehttptest.Eq(t, "Express app.listen examples use 3000", s.port, "3000")
+	ehttptest.Eq(t, "slowloris defense: a default header timeout", s.readHeaderTimeout, 10*time.Second)
 	ehttptest.Eq(t, "shutdown default is below the Kubernetes grace period", s.shutdownTimeout, 25*time.Second)
 }
 

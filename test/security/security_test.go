@@ -725,16 +725,12 @@ func TestCSecurityBodyLimit(t *testing.T) {
 // Slowloris (ReadHeaderTimeout)
 // ---------------------------------------------------------------------------
 
-// The default ReadHeaderTimeout is 10s, and the probe is a half-open
-// connection that never ends its headers, so the test needs ~12s:
-// opt in with EHTTP_SLOW_TESTS=1 (nightly), skipped otherwise to keep the suite fast.
+// The probe is a half-open connection that never ends its headers. The test
+// sets a short ReadHeaderTimeout to keep the suite fast. The default (10s) is
+// checked by TestNewServerDefaults.
 func TestCSecuritySlowloris(t *testing.T) {
-	if os.Getenv("EHTTP_SLOW_TESTS") == "" {
-		t.Skip("testability: needs >10s (proposed ReadHeaderTimeout default); set EHTTP_SLOW_TESTS=1")
-	}
-
 	l := fixtures.Listen(t, func(port string) *ehttp.Server {
-		srv := ehttp.NewServer(ehttp.WithPort(port))
+		srv := ehttp.NewServer(ehttp.WithPort(port), ehttp.WithReadHeaderTimeout(300*time.Millisecond))
 		srv.GET("/", func(res *ehttp.ResponseWriter, req *ehttp.Request) { res.String("ok") })
 
 		return srv
@@ -748,7 +744,7 @@ func TestCSecuritySlowloris(t *testing.T) {
 
 	_, _ = conn.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\nX-Slow: "))
 
-	_ = conn.SetReadDeadline(time.Now().Add(13 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	_, readErr := conn.Read(make([]byte, 1))
 
 	var nerr net.Error
@@ -756,5 +752,5 @@ func TestCSecuritySlowloris(t *testing.T) {
 	closedByServer := readErr != nil && (!errors.As(readErr, &nerr) || !nerr.Timeout())
 
 	ehttptest.True(t, "the server drops a connection that never finishes its headers",
-		closedByServer, "connection still open after 13s")
+		closedByServer, "connection still open after 3s")
 }

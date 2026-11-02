@@ -45,3 +45,37 @@ func TestMatchAndValid(t *testing.T) {
 		})
 	}
 }
+
+// If-Match uses the strong comparison (RFC 9110 sections 13.1.1, 8.8.3.2).
+func TestMatchStrong(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		values  []string
+		current string
+		want    bool
+	}{
+		{"strong vs strong", []string{`"a"`}, `"a"`, true},
+		{"strong vs other strong", []string{`"a"`}, `"b"`, false},
+		{"weak request vs strong current", []string{`W/"a"`}, `"a"`, false},
+		{"strong request vs weak current", []string{`"a"`}, `W/"a"`, false},
+		{"weak vs weak", []string{`W/"a"`}, `W/"a"`, false},
+		{"star vs strong", []string{"*"}, `"a"`, true},
+		{"star vs weak", []string{"*"}, `W/"a"`, true},
+		{"list with one strong match", []string{`W/"a", "b", "c"`}, `"b"`, true},
+		{"two field lines", []string{`"x"`, `"b"`}, `"b"`, true},
+		{"invalid field", []string{"abc"}, `"abc"`, false},
+		{"no field", nil, `"a"`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := MatchStrong(tt.values, tt.current); got != tt.want {
+				t.Errorf("MatchStrong = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
