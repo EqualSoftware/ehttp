@@ -73,52 +73,46 @@ func TestRequestAccepts(t *testing.T) {
 		accept string
 		value  string
 		want   bool
-		bug    string
 		basis  string
 	}{
-		{"no Accept header accepts anything", "", "application/json", true, "", "RFC 9110 §12.5.1"},
-		{"wildcard", "*/*", "text/html", true, "", "RFC 9110 §12.5.1"},
-		{"exact", "application/json", "application/json", true, "", "RFC 9110 §12.5.1"},
-		{"different type", "application/json", "text/html", false, "", "RFC 9110 §12.5.1"},
-		{"value with parameters", "text/html", "text/html; charset=utf-8", true, "", "RFC 9110 §8.3.1"},
-		{"media type is case-insensitive", "TEXT/HTML", "text/html", true, "", "RFC 9110 §8.3.1"},
-		{"type wildcard", "application/*", "application/json", true, "", "RFC 9110 §12.5.1"},
-		{"type wildcard, other type", "application/*", "text/html", false, "", "RFC 9110 §12.5.1"},
-		{"subtype wildcard", "text/*", "text/html", true, "", "RFC 9110 §12.5.1"},
-		{"text/* must not match application/text", "text/*", "application/text", false, "accepts-matches-substring", "RFC 9110 §12.5.1"},
-		{"structured suffix is literal", "application/vnd.api+json", "application/vnd.api+json", true, "accepts-treats-type-as-regex", "RFC 6838 §4.2.8"},
-		{"list, first member", "application/json, text/plain", "application/json", true, "accepts-ignores-list", "RFC 9110 §12.5.1"},
-		{"list, second member", "application/json, text/plain", "text/plain", true, "accepts-ignores-list", "RFC 9110 §12.5.1"},
-		{"list, absent member", "application/json, text/plain", "text/html", false, "", "RFC 9110 §12.5.1"},
-		{"list with weights", "text/html;q=0.9, application/json;q=0.8", "application/json", true, "accepts-ignores-list", "RFC 9110 §12.5.1"},
-		{"q=0 means not acceptable", "text/html;q=0", "text/html", false, "accepts-q0-acceptable", "RFC 9110 §12.4.2"},
-		{"prefix of the value is not a match", "text/html", "text/htmlx", false, "accepts-matches-substring", "RFC 9110 §12.5.1"},
-		{"dot is not a regex wildcard", "text/h.ml", "text/html", false, "accepts-treats-type-as-regex", "RFC 9110 §12.5.1"},
-		{"alternation is not a regex operator", "text/x|y", "application/y", false, "accepts-treats-type-as-regex", "RFC 9110 §12.5.1"},
-		{"wildcard with q=0 means not acceptable", "*/*;q=0", "text/html", false, "accepts-q0-acceptable", "RFC 9110 §12.4.2"},
-		{"q=0 type excludes it even with a wildcard member", "text/html;q=0, */*", "text/html", false, "accepts-q0-acceptable", "RFC 9110 §12.5.1"},
-		{"malformed value", "text/html", "garbage", false, "", "RFC 9110 §8.3.1"},
+		{"no Accept header accepts anything", "", "application/json", true, "RFC 9110 §12.5.1"},
+		{"wildcard", "*/*", "text/html", true, "RFC 9110 §12.5.1"},
+		{"exact", "application/json", "application/json", true, "RFC 9110 §12.5.1"},
+		{"different type", "application/json", "text/html", false, "RFC 9110 §12.5.1"},
+		{"value with parameters", "text/html", "text/html; charset=utf-8", true, "RFC 9110 §8.3.1"},
+		{"media type is case-insensitive", "TEXT/HTML", "text/html", true, "RFC 9110 §8.3.1"},
+		{"type wildcard", "application/*", "application/json", true, "RFC 9110 §12.5.1"},
+		{"type wildcard, other type", "application/*", "text/html", false, "RFC 9110 §12.5.1"},
+		{"subtype wildcard", "text/*", "text/html", true, "RFC 9110 §12.5.1"},
+		{"text/* must not match application/text", "text/*", "application/text", false, "RFC 9110 §12.5.1"},
+		{"structured suffix is literal", "application/vnd.api+json", "application/vnd.api+json", true, "RFC 6838 §4.2.8"},
+		{"list, first member", "application/json, text/plain", "application/json", true, "RFC 9110 §12.5.1"},
+		{"list, second member", "application/json, text/plain", "text/plain", true, "RFC 9110 §12.5.1"},
+		{"list, absent member", "application/json, text/plain", "text/html", false, "RFC 9110 §12.5.1"},
+		{"list with weights", "text/html;q=0.9, application/json;q=0.8", "application/json", true, "RFC 9110 §12.5.1"},
+		{"q=0 means not acceptable", "text/html;q=0", "text/html", false, "RFC 9110 §12.4.2"},
+		{"prefix of the value is not a match", "text/html", "text/htmlx", false, "RFC 9110 §12.5.1"},
+		{"dot is not a regex wildcard", "text/h.ml", "text/html", false, "RFC 9110 §12.5.1"},
+		{"alternation is not a regex operator", "text/x|y", "application/y", false, "RFC 9110 §12.5.1"},
+		{"wildcard with q=0 means not acceptable", "*/*;q=0", "text/html", false, "RFC 9110 §12.4.2"},
+		{"q=0 type excludes it even with a wildcard member", "text/html;q=0, */*", "text/html", false, "RFC 9110 §12.5.1"},
+		{"most specific range sets q", "text/*;q=0, text/html", "text/html", true, "RFC 9110 §12.5.1"},
+		{"most specific range can exclude", "*/*, text/html;q=0", "text/html", false, "RFC 9110 §12.5.1"},
+		{"type wildcard q=0 excludes its subtypes", "text/*;q=0, */*", "text/plain", false, "RFC 9110 §12.5.1"},
+		{"other parameters are ignored", "text/html;level=1;q=0.5", "text/html", true, "RFC 9110 §12.5.1"},
+		{"malformed value", "text/html", "garbage", false, "RFC 9110 §8.3.1"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			check := func(t testing.TB) {
-				req := aReq("GET", "/", nil)
-				if tt.accept != "" {
-					req.Request.Header.Set(HeaderAccept, tt.accept)
-				}
-
-				ehttptest.Eq(t, tt.basis, req.Accepts(tt.value), tt.want)
+			req := aReq("GET", "/", nil)
+			if tt.accept != "" {
+				req.Request.Header.Set(HeaderAccept, tt.accept)
 			}
 
-			if tt.bug != "" {
-				ehttptest.KnownBug(t, tt.bug, check)
-				return
-			}
-
-			check(t)
+			ehttptest.Eq(t, tt.basis, req.Accepts(tt.value), tt.want)
 		})
 	}
 }
@@ -130,7 +124,7 @@ func TestRequestAcceptsMalformedHeaderIsRefused(t *testing.T) {
 
 	values := []string{"text/html", "application/json", "garbage"}
 
-	for _, accept := range []string{"garbage", "/", "text/", ";;;", "*/*, garbage", "*/*,("} {
+	for _, accept := range []string{"garbage", "/", "text/", ";;;", "*/*, garbage", "*/*,(", "text/html;q=2", "text/html;q=0.1234", "text/html;q", "*/html"} {
 		t.Run(accept, func(t *testing.T) {
 			t.Parallel()
 
@@ -141,13 +135,6 @@ func TestRequestAcceptsMalformedHeaderIsRefused(t *testing.T) {
 				for _, v := range values {
 					ehttptest.Eq(t, "RFC 9110 §12.5.1 (an invalid Accept is refused with 406) value "+v, req.Accepts(v), false)
 				}
-			}
-
-			// "garbage" is used as an unanchored regex today, so it matches
-			// the value "garbage".
-			if accept == "garbage" || strings.HasPrefix(accept, "*/*") {
-				ehttptest.KnownBug(t, "accepts-matches-substring", check)
-				return
 			}
 
 			check(t)
@@ -266,12 +253,12 @@ func TestRequestBodyJSON(t *testing.T) {
 		ehttptest.Eq(t, "encoding/json: null is a no-op", p.A, 1)
 	})
 
-	// These tests document the current behavior for an empty or blank body.
+	// An empty or blank body is an error, as in encoding/json.
 	for _, tt := range []struct {
 		name, body string
 	}{
-		{"empty body is an error today", ""},
-		{"whitespace-only body is an error today", "  \n"},
+		{"empty body is an error", ""},
+		{"whitespace-only body is an error", "  \n"},
 		{"malformed", `{"a":`},
 		{"trailing garbage", `{"a":1}xyz`},
 		{"wrong type", `{"a":"x"}`},
@@ -409,4 +396,21 @@ func TestRequestProtocolAndHostOverRealServer(t *testing.T) {
 
 		ehttptest.Eq(t, "Protocol() derives from r.TLS", string(b), "https|127.0.0.1")
 	})
+}
+
+func BenchmarkRequestAccepts(b *testing.B) {
+	for _, bb := range []struct{ name, accept, value string }{
+		{"simple", "application/json", "application/json"},
+		{"list with q", "text/html, application/xhtml+xml;q=0.9, */*;q=0.8", "application/json"},
+	} {
+		b.Run(bb.name, func(b *testing.B) {
+			req := aReq("GET", "/", nil)
+			req.Request.Header.Set(HeaderAccept, bb.accept)
+			b.ReportAllocs()
+
+			for b.Loop() {
+				req.Accepts(bb.value)
+			}
+		})
+	}
 }

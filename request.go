@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync/atomic"
 
@@ -156,39 +154,177 @@ func (req *Request) Param(name string) string {
 
 // Accepts reports if the Accept header allows the media type value. The answer
 // depends on Accept, so it adds Accept to Vary (RFC 9110 §12.5.5).
+//
+// A missing Accept header allows every type. The most specific media range that
+// matches value sets its q value, and q=0 means not acceptable (RFC 9110
+// §12.4.2). Media type parameters in the header are ignored. An invalid header
+// or an invalid value is never acceptable, so the caller answers with 406.
 func (req *Request) Accepts(value string) bool {
 	if req.res != nil {
 		req.res.varyQuiet(HeaderAccept)
 	}
 
-	accept := req.Header(HeaderAccept)
+	typ, sub, ok := parseMediaType(value)
 
-	if accept == "" || strings.Contains(accept, "*/*") {
-		return true
-	}
-
-	mediatype, _, err := mime.ParseMediaType(accept)
-
-	if err != nil {
-		req.newLogger().Error(fmt.Sprintf("invalid header accept '%s'", accept), zap.Error(err))
+	if !ok {
+		req.newLogger().Error(fmt.Sprintf("invalid accepts value '%s'", value))
 		return false
 	}
 
-	vmediatype, _, err := mime.ParseMediaType(value)
+	best := acceptMatch{}
+	seen := false
 
-	if err != nil {
-		req.newLogger().Error(fmt.Sprintf("invalid accepts value '%s'", value), zap.Error(err))
+	for _, line := range req.Request.Header.Values(HeaderAccept) {
+		for member := range strings.SplitSeq(line, ",") {
+			member = strings.Trim(member, " \t")
+
+			if member == "" {
+				continue
+			}
+
+			rng, ok := parseAcceptRange(member)
+
+			if !ok {
+				req.newLogger().Error(fmt.Sprintf("invalid header accept '%s'", line))
+				return false
+			}
+
+			seen = true
+			best.add(rng, typ, sub)
+		}
+	}
+
+	return !seen || best.q > 0
+}
+
+// acceptMatch holds the best match found so far: the specificity of the range
+// (0 none, 1 "*/*", 2 "type/*", 3 "type/subtype") and its q value.
+type acceptMatch struct {
+	specificity int
+	q           int
+}
+
+func (m *acceptMatch) add(r acceptRange, typ, sub string) {
+	spec := r.specificity(typ, sub)
+
+	switch {
+	case spec == 0 || spec < m.specificity:
+	case spec > m.specificity:
+		m.specificity, m.q = spec, r.q
+	default:
+		m.q = max(m.q, r.q)
+	}
+}
+
+// acceptRange is one media range of an Accept header. q is in thousandths.
+type acceptRange struct {
+	typ, sub string
+	q        int
+}
+
+func (r acceptRange) specificity(typ, sub string) int {
+	switch {
+	case r.typ == "*":
+		return 1
+	case !strings.EqualFold(r.typ, typ):
+		return 0
+	case r.sub == "*":
+		return 2
+	case strings.EqualFold(r.sub, sub):
+		return 3
+	}
+
+	return 0
+}
+
+// parseAcceptRange parses "type/subtype", "type/*" or "*/*" with parameters
+// (RFC 9110 §12.5.1). Parameters other than q are checked and ignored.
+func parseAcceptRange(member string) (acceptRange, bool) {
+	rng := acceptRange{q: 1000}
+	head, params, _ := strings.Cut(member, ";")
+
+	typ, sub, ok := strings.Cut(strings.TrimRight(head, " \t"), "/")
+
+	if !ok || !isToken(typ) && typ != "*" || !isToken(sub) && sub != "*" || typ == "*" && sub != "*" {
+		return rng, false
+	}
+
+	rng.typ, rng.sub = typ, sub
+
+	for params != "" {
+		var p string
+
+		p, params, _ = strings.Cut(params, ";")
+		name, val, ok := strings.Cut(strings.Trim(p, " \t"), "=")
+
+		if !ok || !isToken(name) || val == "" {
+			return rng, false
+		}
+
+		if name != "q" && name != "Q" {
+			continue
+		}
+
+		if rng.q, ok = parseQValue(val); !ok {
+			return rng, false
+		}
+	}
+
+	return rng, true
+}
+
+// parseQValue parses a weight (RFC 9110 §12.4.2) into thousandths.
+func parseQValue(s string) (int, bool) {
+	whole, frac, _ := strings.Cut(s, ".")
+
+	if len(frac) > 3 || whole != "0" && whole != "1" {
+		return 0, false
+	}
+
+	q := int(whole[0]-'0') * 1000
+	scale := 100
+
+	for i := range len(frac) {
+		d := int(frac[i] - '0')
+
+		if d < 0 || d > 9 || whole == "1" && d != 0 {
+			return 0, false
+		}
+
+		q += d * scale
+		scale /= 10
+	}
+
+	return q, true
+}
+
+// parseMediaType parses "type/subtype" with optional parameters, which it drops.
+func parseMediaType(value string) (typ, sub string, ok bool) {
+	head, _, _ := strings.Cut(value, ";")
+	typ, sub, ok = strings.Cut(strings.Trim(head, " \t"), "/")
+
+	return typ, sub, ok && isToken(typ) && isToken(sub)
+}
+
+// isToken reports if s is a non-empty token (RFC 9110 §5.6.2).
+func isToken(s string) bool {
+	if s == "" {
 		return false
 	}
 
-	mediatype_reg, err := regexp.Compile(mediatype)
+	for i := range len(s) {
+		c := s[i]
 
-	if err != nil {
-		req.newLogger().Error("invalid accepts regex", zap.Error(err))
-		return false
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' {
+			continue
+		}
+
+		if strings.IndexByte("!#$%&'*+-.^_`|~", c) < 0 {
+			return false
+		}
 	}
 
-	return mediatype_reg.Match([]byte(vmediatype))
+	return true
 }
 
 func (req *Request) Body() ([]byte, error) {
@@ -233,9 +369,5 @@ func (req *Request) BodyJSON(v interface{}) error {
 		return err
 	}
 
-	if err := json.Unmarshal(b, v); err != nil && !errors.Is(err, io.EOF) {
-		return err
-	}
-
-	return nil
+	return json.Unmarshal(b, v)
 }

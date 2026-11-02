@@ -274,14 +274,6 @@ func FuzzParseRange(f *testing.F) {
 // dTokenRe is a media-type token without regexp metacharacters.
 var dTokenRe = regexp.MustCompile(`^[a-z0-9]+$`)
 
-// dAcceptsKnown reports whether the input is in the known-bug domain (Accept header
-// used as an unanchored regex), where the behaviour is a known bug.
-func dAcceptsKnown(accept, value string) bool {
-	return strings.ContainsAny(accept+value, `*+.^$()[]{}|\?,;`) ||
-		strings.Contains(strings.ToLower(value), strings.ToLower(accept)) ||
-		strings.Contains(strings.ToLower(accept), strings.ToLower(value))
-}
-
 // dIsToken reports whether s is a token: one or more tchar (RFC 9110 §5.6.2).
 func dIsToken(s string) bool {
 	if s == "" {
@@ -361,21 +353,22 @@ func FuzzAccepts(f *testing.F) {
 
 		got := req.Accepts(value) // invariant 1: no panic
 
-		// invariant 2 (RFC 9110 §12.5.1): an empty Accept, or a list that has
+		// invariant 2 (RFC 9110 §12.5.1): for a valid value, an empty Accept, or a list that has
 		// a plain */* member and no parameters at all, accepts every media
 		// type. A parameter can be q=0, which excludes the type (§12.4.2), so
 		// "*/*;q=0" and "text/html;q=0, */*" are outside this invariant.
-		if (accept == "" || dPlainWildcard(accept)) && !got {
+		vt0, vs0, vok0 := strings.Cut(value, "/")
+		if vok0 && dIsToken(vt0) && dIsToken(vs0) && (accept == "" || dPlainWildcard(accept)) && !got {
 			t.Errorf("[RFC 9110 §12.5.1] Accept %q must accept %q", accept, value)
 		}
 
 		// invariant 3: two distinct plain "type/subtype" tokens never match
-		// (RFC 9110 §8.3.1). Outside the known-bug domain only.
+		// (RFC 9110 §8.3.1).
 		at, as, aok := strings.Cut(accept, "/")
 		vt, vs, vok := strings.Cut(value, "/")
 		if aok && vok && dTokenRe.MatchString(at) && dTokenRe.MatchString(as) &&
 			dTokenRe.MatchString(vt) && dTokenRe.MatchString(vs) &&
-			!dAcceptsKnown(accept, value) && got {
+			!strings.EqualFold(accept, value) && got {
 			t.Errorf("[RFC 9110 §8.3.1] Accept %q matched different type %q", accept, value)
 		}
 	})
@@ -469,30 +462,6 @@ func TestFuzzKnownBugs(t *testing.T) {
 		res.Vary("Accept-Encoding")
 		res.Vary("Accept")
 		ehttptest.Eq(t, "RFC 9110 §12.5.5", rec.Header().Get(HeaderVary), "Accept-Encoding, Accept")
-	})
-
-	t.Run("Accepts matches substring of other type", func(t *testing.T) {
-		t.Parallel()
-		ehttptest.KnownBug(t, "accepts-matches-substring", func(t testing.TB) {
-			req := &Request{Request: &http.Request{Header: http.Header{HeaderAccept: {"text/html"}}}}
-			ehttptest.Eq(t, "RFC 9110 §8.3.1", req.Accepts("text/htmlx"), false)
-		})
-	})
-
-	t.Run("Accepts ignores a list", func(t *testing.T) {
-		t.Parallel()
-		ehttptest.KnownBug(t, "accepts-ignores-list", func(t testing.TB) {
-			req := &Request{Request: &http.Request{Header: http.Header{HeaderAccept: {"application/json, text/plain"}}}}
-			ehttptest.Eq(t, "RFC 9110 §12.5.1", req.Accepts("text/plain"), true)
-		})
-	})
-
-	t.Run("Accepts treats q=0 as acceptable", func(t *testing.T) {
-		t.Parallel()
-		ehttptest.KnownBug(t, "accepts-q0-acceptable", func(t testing.TB) {
-			req := &Request{Request: &http.Request{Header: http.Header{HeaderAccept: {"text/html;q=0"}}}}
-			ehttptest.Eq(t, "RFC 9110 §12.5.1", req.Accepts("text/html"), false)
-		})
 	})
 
 	rangeCases := []struct {
