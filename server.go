@@ -151,19 +151,54 @@ func WithShutdownTimeout(d time.Duration) serverOption {
 	return func(s *Server) { s.shutdownTimeout = d }
 }
 
+// WithPort sets the TCP port. It is a decimal number from 0 to 65535, where 0
+// lets the OS pick a free port. Any other value panics.
 func WithPort(v string) serverOption {
+	mustBePort("WithPort", v)
+
 	return func(s *Server) {
 		s.port = v
 	}
 }
 
+// WithPortInt is WithPort with a number.
 func WithPortInt(v int64) serverOption {
+	port := strconv.FormatInt(v, 10)
+	mustBePort("WithPortInt", port)
+
 	return func(s *Server) {
-		s.port = strconv.FormatInt(v, 10)
+		s.port = port
 	}
 }
 
+// mustBePort panics when v is not a decimal number from 0 to 65535.
+func mustBePort(option, v string) {
+	if validPortNumber(v) {
+		return
+	}
+
+	bootPanic(option, "port "+quoteValue(v), "a TCP port is a decimal number from 0 to 65535",
+		"pass a port such as "+option+"(\"8080\"), or \"0\" for a free port")
+}
+
+func validPortNumber(v string) bool {
+	for i := 0; i < len(v); i++ {
+		if v[i] < '0' || v[i] > '9' {
+			return false
+		}
+	}
+
+	_, err := strconv.ParseUint(v, 10, 16)
+
+	return err == nil
+}
+
 func WithTemplates(v string) serverOption {
+	if v == "" {
+		bootPanic("WithTemplates", "pattern \"\"", "the glob is empty, so it matches no file",
+			"pass a glob that matches valid template files, for example \"views/*.html\"")
+	}
+
 	return func(s *Server) {
 		t, err := template.ParseGlob(v)
 

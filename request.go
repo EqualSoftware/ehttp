@@ -21,10 +21,12 @@ type Request struct {
 	Request *http.Request
 
 	proxies trustedProxies
-	peer    uint8
-	res     *ResponseWriter            // for Vary; nil in a Request built by hand
-	logger  *zap.Logger                // the server logger; nil in a Request built by hand
-	log     atomic.Pointer[zap.Logger] // logger with the request fields, built on first use
+	peer    atomic.Uint32 // peerUnknown, peerTrusted or peerUntrusted; the result is the same in every goroutine
+	// forwardedWarned is true after the warning for an invalid forwarded header.
+	forwardedWarned atomic.Bool
+	res             *ResponseWriter            // for Vary; nil in a Request built by hand
+	logger          *zap.Logger                // the server logger; nil in a Request built by hand
+	log             atomic.Pointer[zap.Logger] // logger with the request fields, built on first use
 }
 
 var nopLogger = zap.NewNop()

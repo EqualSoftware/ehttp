@@ -86,7 +86,7 @@ func (t trustedProxies) contains(remoteAddr string) bool {
 }
 
 const (
-	peerUnknown uint8 = iota
+	peerUnknown uint32 = iota
 	peerTrusted
 	peerUntrusted
 )
@@ -98,15 +98,17 @@ func (req *Request) trustedPeer() bool {
 		return false
 	}
 
-	if req.peer == peerUnknown {
-		req.peer = peerUntrusted
+	if req.peer.Load() == peerUnknown {
+		state := peerUntrusted
 
 		if req.proxies.contains(req.Request.RemoteAddr) {
-			req.peer = peerTrusted
+			state = peerTrusted
 		}
+
+		req.peer.Store(state)
 	}
 
-	return req.peer == peerTrusted
+	return req.peer.Load() == peerTrusted
 }
 
 // forwarded returns the first value of the header name when the peer is
@@ -129,7 +131,7 @@ func (req *Request) forwarded(name string) string {
 }
 
 // forwardedProto returns "http" or "https" from a trusted proxy.
-// Any other value is ignored with a debug log.
+// Any other value is ignored with a warning.
 func (req *Request) forwardedProto() string {
 	for _, name := range [...]string{HeaderXForwardedProto, HeaderXForwardedProtocol} {
 		v := req.forwarded(name)
@@ -143,14 +145,14 @@ func (req *Request) forwardedProto() string {
 			return "http"
 		}
 
-		req.logIgnoredHeader(name, "invalid value")
+		req.warnInvalidForwarded(name, v, "make the proxy send http or https")
 	}
 
 	return ""
 }
 
 // forwardedHost returns a valid X-Forwarded-Host from a trusted proxy.
-// An invalid value is ignored with a debug log.
+// An invalid value is ignored with a warning.
 func (req *Request) forwardedHost() string {
 	v := req.forwarded(HeaderXForwardedHost)
 	if v == "" {
@@ -158,11 +160,24 @@ func (req *Request) forwardedHost() string {
 	}
 
 	if !validHost(v) {
-		req.logIgnoredHeader(HeaderXForwardedHost, "invalid value")
+		req.warnInvalidForwarded(HeaderXForwardedHost, v, "make the proxy send host or host:port")
 		return ""
 	}
 
 	return v
+}
+
+// warnInvalidForwarded logs one warning for each request: a trusted proxy sent
+// a value that is not valid, so the connection value is used. The value is
+// client data, so the log keeps it quoted and truncated.
+func (req *Request) warnInvalidForwarded(name, value, fix string) {
+	if !req.forwardedWarned.CompareAndSwap(false, true) {
+		return
+	}
+
+	req.newLogger().Warn("ehttp: ignored an invalid forwarded header from a trusted proxy",
+		zap.String("header", fieldName(name)), zap.String("value", quoteValue(value)),
+		zap.String("peer", req.Request.RemoteAddr), zap.String("fix", fix))
 }
 
 func (req *Request) logIgnoredHeader(name, reason string) {

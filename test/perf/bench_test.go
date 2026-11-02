@@ -193,3 +193,16 @@ func BenchmarkMethodNotAllowed(b *testing.B) {
 
 	bench(b, s, httptest.NewRequestWithContext(context.Background(), "GET", "/x", http.NoBody))
 }
+
+// BenchmarkLastModified304 serves a 64 KB body to a conditional request that
+// gets 304: the middleware must not copy the body.
+func BenchmarkLastModified304(b *testing.B) {
+	modified := time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)
+	body := strings.Repeat("x", 64<<10)
+	s := ehttp.NewServer()
+	s.GET("/", func(res *ehttp.ResponseWriter, _ *ehttp.Request) { res.String(body) }, middleware.LastModified(modified))
+
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", http.NoBody)
+	req.Header.Set("If-Modified-Since", modified.Format(http.TimeFormat))
+	bench(b, s, req)
+}

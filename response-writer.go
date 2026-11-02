@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/EqualSoftware/ehttp/internal/hook"
 )
 
 type ResponseWriterInterceptor struct {
@@ -140,6 +142,30 @@ type ResponseWriter struct {
 	owned    []ownedField
 	ownedSeq uint32
 	ownedBuf [ownedInline]ownedField
+}
+
+func init() {
+	hook.WrapWriter = func(v any, wrap func(http.ResponseWriter) http.ResponseWriter) func() {
+		res := hookWriter("hook.WrapWriter", v)
+		old := res.w
+		res.w = wrap(old)
+
+		return func() { res.w = old }
+	}
+	hook.SetStatus = func(v any, code int) { hookWriter("hook.SetStatus", v).code = code }
+	hook.BootPanic = bootPanic
+}
+
+// hookWriter returns v as a *ResponseWriter. Any other value, also a nil
+// one, panics at boot with the message format.
+func hookWriter(where string, v any) *ResponseWriter {
+	res, ok := v.(*ResponseWriter)
+	if !ok || res == nil {
+		bootPanic(where, "value of type "+fmt.Sprintf("%T", v), "it is not a non-nil *ehttp.ResponseWriter",
+			"pass the *ehttp.ResponseWriter that the handler gets")
+	}
+
+	return res
 }
 
 // logger returns the logger of the request, or a no-op logger.

@@ -4,8 +4,10 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/EqualSoftware/ehttp/internal/ehttptest"
 	"go.uber.org/zap"
@@ -285,12 +287,19 @@ func TestBootMessagesHaveTheFormat(t *testing.T) {
 	tests := map[string]func(){
 		"cors origin":      func() { NewServer(WithCors(CorsOptions{Origin: []string{"a\nb"}})) },
 		"cors credentials": func() { NewServer(WithCors(CorsOptions{Origin: []string{"*"}, Credentials: true})) },
+		"unknown method":   func() { NewServer().router.Handle("PROPFIND", "/", func(*ResponseWriter, *Request) {}) },
 		"route method":     func() { NewServer().router.Handle("GE T", "/", func(*ResponseWriter, *Request) {}) },
 		"route regex":      func() { NewServer().router.GET("/:id|(", func(*ResponseWriter, *Request) {}) },
 		"trusted proxy":    func() { WithTrustedProxies("nope") },
 		"timeout":          func() { WithReadTimeout(-1) },
 		"max header bytes": func() { WithMaxHeaderBytes(-1) },
 		"nil logger":       func() { WithLogger(nil) },
+		"cors max age":     func() { NewServer(WithCors(CorsOptions{CacheDuration: -time.Second})) },
+		"duplicate route": func() {
+			s := NewServer()
+			s.GET("/a", aText("1"))
+			s.GET("/a", aText("2"))
+		},
 	}
 
 	for name, do := range tests {
@@ -366,4 +375,115 @@ func TestRedirectInvalidLocation(t *testing.T) {
 	ehttptest.Eq(t, strictBasis, rec.Result().Header.Get("Location"), "")
 	ehttptest.Eq(t, strictBasis+" (one error)", logs.FilterField(zap.String("rule", "invalid header value")).Len(), 1)
 	ehttptest.Eq(t, strictBasis, logs.All()[0].Level, zapcore.ErrorLevel)
+}
+
+func TestDuplicateRoutePanics(t *testing.T) {
+	t.Parallel()
+
+	noop := func(*ResponseWriter, *Request) {}
+
+	tests := map[string]func(s *Server){
+		"same method and path": func(s *Server) { s.GET("/a", noop); s.GET("/a", noop) },
+		"lower case method":    func(s *Server) { s.GET("/a", noop); s.router.Handle("get", "/a", noop) },
+		"trailing slash":       func(s *Server) { s.GET("/a", noop); s.GET("/a/", noop) },
+		"parameter name":       func(s *Server) { s.GET("/u/:id", noop); s.GET("/u/:name", noop) },
+		"same regex":           func(s *Server) { s.GET("/u/:id|[0-9]+", noop); s.GET("/u/:n|[0-9]+", noop) },
+		"in a group":           func(s *Server) { s.GET("/g/a", noop); s.Route("/g").GET("/a", noop) },
+		"in two groups":        func(s *Server) { s.Route("/g").GET("/a", noop); s.Route("/g").GET("/a", noop) },
+		"nested group":         func(s *Server) { s.Route("/g").Route("/h").GET("/a", noop); s.GET("/g/h/a", noop) },
+		"explicit HEAD":        func(s *Server) { s.router.Handle("HEAD", "/a", noop); s.router.Handle("head", "/a", noop) },
+	}
+
+	for name, do := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			msg := aPanics(func() { do(NewServer()) })
+
+			ehttptest.True(t, "the first route wins, so a second one never runs", strings.HasPrefix(msg, "ehttp: a second handler in "), "message %q", msg)
+			ehttptest.True(t, "DX message: fix part", strings.Contains(msg, ". Fix: "), "message %q has no Fix part", msg)
+		})
+	}
+}
+
+func TestDifferentRoutesDoNotPanic(t *testing.T) {
+	t.Parallel()
+
+	noop := func(*ResponseWriter, *Request) {}
+
+	s := NewServer()
+	s.GET("/a", noop)
+	s.POST("/a", noop)
+	s.router.Handle("HEAD", "/a", noop)
+	s.GET("/u/:id|[0-9]+", noop)
+	s.GET("/u/:id|[a-z]+", noop)
+	s.GET("/u/:id", noop)
+	s.GET("/u/:id/x", noop)
+	s.GET("/s/...", noop)
+	s.Route("/g").GET("/a", noop)
+}
+
+// A port that is not a decimal number from 0 to 65535 is a mistake of the
+// developer and panics at boot. Port 0 is valid: the OS picks a free port.
+func TestWithPortInvalidPanics(t *testing.T) {
+	t.Parallel()
+
+	for _, port := range []string{"", "65536", "99999999999", "-1", "8080:9", "http", " 80", "+80"} {
+		t.Run("port "+port, func(t *testing.T) {
+			t.Parallel()
+
+			msg := aPanics(func() { WithPort(port) })
+
+			ehttptest.True(t, "a TCP port is 0 to 65535", strings.HasPrefix(msg, "ehttp: port "+strconv.Quote(port)+" in WithPort: "), "message %q", msg)
+			ehttptest.True(t, "DX message: fix part", strings.Contains(msg, ". Fix: "), "message %q has no Fix part", msg)
+		})
+	}
+
+	for _, n := range []int64{-1, 65536} {
+		msg := aPanics(func() { WithPortInt(n) })
+
+		ehttptest.True(t, "a TCP port is 0 to 65535", strings.Contains(msg, " in WithPortInt: "), "message %q", msg)
+	}
+}
+
+func TestWithPortAccepts(t *testing.T) {
+	t.Parallel()
+
+	ehttptest.Eq(t, "port 0 lets the OS pick a port", NewServer(WithPort("0")).port, "0")
+	ehttptest.Eq(t, "port 65535 is the last port", NewServer(WithPort("65535")).port, "65535")
+	ehttptest.Eq(t, "port 0 lets the OS pick a port", NewServer(WithPortInt(0)).port, "0")
+}
+
+// RFC 9111 §1.2.2: max-age is a non-negative integer. A negative duration in a
+// handler is a mistake: Development panics, Production logs and sends no-store.
+func TestSetCacheHeaderNegativeDuration(t *testing.T) {
+	t.Parallel()
+
+	do := func(res *ResponseWriter, _ *Request) { SetCacheHeader(res, -time.Minute); res.String("ok") }
+
+	t.Run("development panics", func(t *testing.T) {
+		t.Parallel()
+
+		_, _, msg := aServe(Development, do)
+
+		aPart(t, msg, "ehttp.SetCacheHeader(-1m0s)", "non-negative integer (RFC 9111 §1.2.2)")
+		ehttptest.True(t, "the message names the fallback", strings.Contains(msg, "no-store"), "message %q", msg)
+	})
+
+	t.Run("production logs and sends no-store", func(t *testing.T) {
+		t.Parallel()
+
+		rec, logs, msg := aServe(Production, do)
+
+		ehttptest.Eq(t, strictBasis, msg, "")
+		ehttptest.Eq(t, strictBasis, rec.Code, 200)
+		ehttptest.Eq(t, "safe fallback is no-store", strings.HasPrefix(rec.Header().Get("Cache-Control"), "no-store"), true)
+		ehttptest.Eq(t, strictBasis, logs.FilterField(zap.String("rule", "negative cache duration")).Len(), 1)
+	})
+
+	t.Run("the pure function gives no-store", func(t *testing.T) {
+		t.Parallel()
+
+		ehttptest.Eq(t, "RFC 9111 §1.2.2", strings.HasPrefix(CacheControl(-time.Second, false), "no-store"), true)
+	})
 }

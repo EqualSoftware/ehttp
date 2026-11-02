@@ -104,12 +104,13 @@ func TestServerWithTemplates(t *testing.T) {
 // zap's Fatal calls os.Exit(1) even when the logger is a no-op, so the invalid
 // glob has to run in a child process. The child is this same test binary.
 func TestServerWithTemplatesInvalidGlob(t *testing.T) {
-	if glob := os.Getenv("EHTTP_A_CHILD_GLOB"); glob != "" {
+	if glob, isChild := os.LookupEnv("EHTTP_A_CHILD_GLOB"); isChild {
 		NewServer(WithTemplates(glob))
 		return // only reached when the option neither exits nor panics
 	}
 
 	cases := map[string]string{
+		"empty pattern":        "",
 		"malformed pattern":    "[",
 		"pattern with no file": filepath.Join(t.TempDir(), "*.html"),
 	}
@@ -136,6 +137,10 @@ func TestServerWithTemplatesInvalidGlob(t *testing.T) {
 			out, code := run()
 
 			ehttptest.True(t, "fail fast: bad config stops the boot", code != 0, "child exited 0, output: %s", out)
+
+			if glob == "" {
+				ehttptest.True(t, "the message says why", strings.Contains(out, "the glob is empty"), "output: %q", out)
+			}
 
 			t.Run("fails with a panic", func(t *testing.T) {
 				ehttptest.True(t, "fail fast: panic at boot (recoverable, testable), not os.Exit", strings.Contains(out, "panic:"),

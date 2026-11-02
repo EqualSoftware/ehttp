@@ -1,6 +1,7 @@
 package middleware_test
 
 import (
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -105,4 +106,17 @@ func TestTimeoutRestoresRequestContext(t *testing.T) {
 	ehttptest.Do(fixtures.Handler(fixtures.OK, outer, middleware.Timeout(time.Second)), fixtures.Req("GET", "/x"))
 
 	ehttptest.True(t, "the request context is restored after Timeout returns", after == nil, "outer middleware sees ctx error %v after a successful request", after)
+}
+
+// context.WithTimeout: a deadline of zero or less is already past, so a
+// Timeout that never lets a request finish is a mistake and panics at boot.
+func TestTimeoutNonPositiveDuration(t *testing.T) {
+	t.Parallel()
+
+	for _, d := range []time.Duration{0, -time.Second} {
+		msg := bootMessage(func() { middleware.Timeout(d) })
+
+		ehttptest.True(t, "context.WithTimeout contract", strings.HasPrefix(msg, "ehttp: duration "+d.String()+" in Timeout: "), "message %q", msg)
+		ehttptest.True(t, "DX message: fix part", strings.Contains(msg, ". Fix: "), "message %q has no Fix part", msg)
+	}
 }

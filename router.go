@@ -70,6 +70,11 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc, m ...MiddlewareHa
 			"use a method name such as \"GET\", or a helper such as router.GET")
 	}
 
+	if !standardMethod(method) {
+		bootPanic("Handle", "method "+quoteValue(method), "it is not a method that ehttp routes: GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, CONNECT, TRACE (RFC 9110 §9.3, RFC 5789)",
+			"use one of these methods, or a helper such as router.GET")
+	}
+
 	if r.parent != nil {
 		all := make([]MiddlewareHandlerFunc, 0, len(r.middlewares)+len(m))
 		all = append(all, r.middlewares...)
@@ -92,6 +97,8 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc, m ...MiddlewareHa
 		segments = segments[:len(segments)-1]
 	}
 
+	r.mustBeNew(strings.ToUpper(method), r.prefix+pattern, segments)
+
 	r.routes = append(r.routes, &route{
 		method:      strings.ToUpper(method),
 		pattern:     r.prefix + pattern,
@@ -100,6 +107,52 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc, m ...MiddlewareHa
 		handle:      h,
 		middlewares: m,
 	})
+}
+
+// mustBeNew panics when a route with the same method and the same shape of
+// pattern exists: the first one always wins, so the second never runs. A
+// parameter name does not change the shape, a regex does.
+func (r *Router) mustBeNew(method, pattern string, segments []string) {
+	key := routeKey(segments)
+
+	for _, old := range r.routes {
+		if old.method != method || routeKey(old.segments) != key {
+			continue
+		}
+
+		bootPanic(method+" "+pattern, "a second handler", "the route "+method+" "+old.pattern+" matches the same requests and is first, so this one never runs",
+			"remove one of them, or give them different paths")
+	}
+}
+
+// routeKey writes the segments with the name of each parameter removed.
+func routeKey(segments []string) string {
+	var b strings.Builder
+
+	for _, segment := range segments {
+		b.WriteByte('/')
+
+		if !strings.HasPrefix(segment, ":") {
+			b.WriteString(segment)
+			continue
+		}
+
+		_, expr, _ := strings.Cut(segment, "|")
+		b.WriteString(":|" + expr)
+	}
+
+	return b.String()
+}
+
+// standardMethod reports whether method is one that ehttp routes. The name
+// is case-insensitive, as Handle upper-cases it.
+func standardMethod(method string) bool {
+	switch strings.ToUpper(method) {
+	case MethodGet, MethodHead, MethodPost, MethodPut, MethodPatch, MethodDelete, MethodOptions, MethodConnect, MethodTrace:
+		return true
+	}
+
+	return false
 }
 
 // compileSegments compiles the regex of each ":name|regex" segment one time.
@@ -438,6 +491,11 @@ func validateCors(o *CorsOptions) {
 			bootPanic("WithCors", "Methods entry "+quoteValue(method), "it is not a token (RFC 9110 §9.1)",
 				"use a method such as \"GET\", or \"*\"")
 		}
+	}
+
+	if o.CacheDuration < 0 {
+		bootPanic("WithCors", "CacheDuration "+o.CacheDuration.String(), "Access-Control-Max-Age is delta-seconds, a non-negative integer (Fetch §3.2.3)",
+			"use zero for no Max-Age, or a positive duration, for example CacheDuration: time.Hour")
 	}
 
 	for _, header := range o.Headers {

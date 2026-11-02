@@ -263,7 +263,7 @@ func TestGolden(t *testing.T) {
 			"Origin": "http://evil.example", "Access-Control-Request-Method": "POST", "Sec-Fetch-Site": "cross-site",
 		}},
 		{name: "conditional_etag_304", bug: "xss-protection-not-zero", method: "GET", path: "/", headers: htmlAccept, before: goldenETag},
-		{name: "conditional_if_modified_since_root", bug: "xss-protection-not-zero+304-drops-validators", method: "GET", path: "/", headers: map[string]string{
+		{name: "conditional_if_modified_since_root", bug: "xss-protection-not-zero", method: "GET", path: "/", headers: map[string]string{
 			"If-Modified-Since": goldenFixedTime.Format(http.TimeFormat),
 		}},
 		{name: "file_full", bug: "xss-protection-not-zero", method: "GET", path: "/file"},

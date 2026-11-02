@@ -179,7 +179,6 @@ func TestRouterMethods(t *testing.T) {
 
 	s := NewServer()
 	s.router.Handle("get", "/lower", aText("lower"))
-	s.router.Handle("PROPFIND", "/custom", aText("custom"))
 	s.POST("/only-post", aText("posted"))
 	s.GET("/get-only", aText("got"))
 	s.GET("/multi", aText("g"))
@@ -196,9 +195,12 @@ func TestRouterMethods(t *testing.T) {
 		ehttptest.Eq(t, "RFC 9110 §9.1 (methods are upper-case tokens)", aDo(h, "GET", "/lower").Body.String(), "lower")
 	})
 
-	t.Run("custom method", func(t *testing.T) {
+	t.Run("extension method panics at registration", func(t *testing.T) {
 		t.Parallel()
-		ehttptest.Eq(t, "RFC 9110 §9.1 (extension methods)", aDo(h, "PROPFIND", "/custom").Body.String(), "custom")
+
+		msg := aPanics(func() { NewServer().router.Handle("PROPFIND", "/custom", aText("custom")) })
+
+		ehttptest.True(t, "RFC 9110 §9.3 (ehttp routes the standard methods only)", strings.HasPrefix(msg, `ehttp: method "PROPFIND" in Handle: `), "message %q", msg)
 	})
 
 	allow := []struct {

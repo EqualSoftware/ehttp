@@ -105,14 +105,28 @@ func TestCachePublic(t *testing.T) {
 	})
 }
 
-// RFC 9111 §1.2.2: delta-seconds is a non-negative integer.
+// RFC 9111 §1.2.2: delta-seconds is a non-negative integer, so a negative
+// duration is a mistake of the developer and panics at boot.
 func TestCacheNegativeDuration(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "cache-negative-duration", func(t testing.TB) {
-		rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Cache(-time.Minute)), fixtures.Req("GET", "/x"))
-		cc := rec.Header().Get("Cache-Control")
+	msg := bootMessage(func() { middleware.Cache(-time.Minute) })
 
-		ehttptest.True(t, "RFC 9111 §1.2.2", !strings.Contains(cc, "=-"), "Cache-Control %q has a negative delta-seconds", cc)
-	})
+	ehttptest.True(t, "RFC 9111 §1.2.2", strings.HasPrefix(msg, "ehttp: duration -1m0s in Cache: "), "message %q", msg)
+	ehttptest.True(t, "DX message: fix part", strings.Contains(msg, ". Fix: "), "message %q has no Fix part", msg)
+
+	middleware.Cache(0) // zero is valid: no-store
+}
+
+// bootMessage returns the panic message of do, or "" when do does not panic.
+func bootMessage(do func()) (msg string) {
+	defer func() {
+		if r := recover(); r != nil {
+			msg, _ = r.(string)
+		}
+	}()
+
+	do()
+
+	return ""
 }

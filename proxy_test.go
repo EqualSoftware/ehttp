@@ -6,10 +6,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/EqualSoftware/ehttp/internal/ehttptest"
+	"go.uber.org/zap"
 )
 
 // aWho serves GET /x and answers "protocol|host|hostname".
@@ -123,8 +127,8 @@ func TestForwardedHeaders(t *testing.T) {
 		{"protocol header", "X-Forwarded-* counts only from a trusted peer", "https|example.com|example.com", peer, []string{"X-Forwarded-Protocol", "https"}},
 		{"proto http", "X-Forwarded-* counts only from a trusted peer", "http|example.com|example.com", peer, []string{"X-Forwarded-Proto", "http"}},
 		{"proto list first", "Express: the first list member wins", "https|example.com|example.com", peer, []string{"X-Forwarded-Proto", "https, http"}},
-		{"proto other value ignored", "author premise: strict", "http|example.com|example.com", peer, []string{"X-Forwarded-Proto", "javascript"}},
-		{"proto scheme form ignored", "author premise: strict", "http|example.com|example.com", peer, []string{"X-Forwarded-Proto", "https://"}},
+		{"proto other value ignored", "only http and https are valid schemes; other values are ignored", "http|example.com|example.com", peer, []string{"X-Forwarded-Proto", "javascript"}},
+		{"proto scheme form ignored", "only http and https are valid schemes; other values are ignored", "http|example.com|example.com", peer, []string{"X-Forwarded-Proto", "https://"}},
 		{"host list first", "Express: the first list member wins", "http|a.com|a.com", peer, []string{"X-Forwarded-Host", "a.com, b.com"}},
 		{"host with port", "RFC 9110 §7.2", "http|a.com:8443|a.com", peer, []string{"X-Forwarded-Host", "a.com:8443"}},
 		{"host ipv6 with port", "RFC 3986 §3.2.2", "http|[::1]:8080|::1", peer, []string{"X-Forwarded-Host", "[::1]:8080"}},
@@ -246,4 +250,92 @@ func TestServerShutdownDeadlineClosesAndReturnsError(t *testing.T) {
 
 	ehttptest.Eq(t, "the deadline error is returned", got, context.DeadlineExceeded)
 	ehttptest.True(t, "Close ends the connection of the stuck request", <-clientErr != nil, "client got a response")
+}
+
+// A trusted proxy that sends an invalid value is a configuration mistake that
+// the operator must see: the value is ignored and one warning names it.
+func TestInvalidForwardedHeaderWarns(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct{ name, header, value string }{
+		{"proto word", "X-Forwarded-Proto", "javascript"},
+		{"proto scheme form", "X-Forwarded-Proto", "https://"},
+		{"host with path", "X-Forwarded-Host", "evil.com/x"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			l, logs := aObserved()
+			s := NewServer(WithLogger(l), WithTrustedProxies("192.0.2.1"))
+			s.GET("/x", func(res *ResponseWriter, req *Request) {
+				res.String(req.Protocol() + "|" + req.Host() + "|" + req.Hostname())
+			})
+
+			ehttptest.Eq(t, "the connection value is used", aWhoDo(s, "192.0.2.1:1", tt.header, tt.value), "http|example.com|example.com")
+
+			entries := logs.FilterLevelExact(zap.WarnLevel).All()
+			ehttptest.Eq(t, "one warning for each request", len(entries), 1)
+
+			if len(entries) != 1 {
+				return
+			}
+
+			f := entries[0].ContextMap()
+			ehttptest.Eq(t, "the header is named", fmt.Sprint(f["header"]), tt.header)
+			ehttptest.Eq(t, "the value is quoted", fmt.Sprint(f["value"]), strconv.Quote(tt.value))
+			ehttptest.Eq(t, "the peer is named", fmt.Sprint(f["peer"]), "192.0.2.1:1")
+			ehttptest.True(t, "the log has a fix", f["fix"] != "", "no fix field")
+		})
+	}
+
+	t.Run("a long value is truncated", func(t *testing.T) {
+		t.Parallel()
+
+		l, logs := aObserved()
+		s := NewServer(WithLogger(l), WithTrustedProxies("192.0.2.1"))
+		s.GET("/x", func(res *ResponseWriter, req *Request) { res.String(req.Protocol()) })
+
+		aWhoDo(s, "192.0.2.1:1", "X-Forwarded-Proto", strings.Repeat("a", 500))
+
+		v, _ := logs.FilterLevelExact(zap.WarnLevel).All()[0].ContextMap()["value"].(string)
+		ehttptest.True(t, "the log keeps a bounded value", len(v) < 100, "value has %d bytes", len(v))
+	})
+
+	t.Run("an untrusted peer does not warn", func(t *testing.T) {
+		t.Parallel()
+
+		l, logs := aObserved()
+		s := NewServer(WithLogger(l), WithTrustedProxies("192.0.2.1"))
+		s.GET("/x", func(res *ResponseWriter, req *Request) { res.String(req.Protocol()) })
+
+		aWhoDo(s, "198.51.100.1:1", "X-Forwarded-Proto", "javascript")
+
+		ehttptest.Eq(t, "only a trusted proxy is told about", logs.FilterLevelExact(zap.WarnLevel).Len(), 0)
+	})
+}
+
+// Protocol and Host can run in two goroutines of one request. The warning
+// still comes one time, and the race detector sees no data race.
+func TestInvalidForwardedHeaderWarnsOnceConcurrently(t *testing.T) {
+	t.Parallel()
+
+	l, logs := aObserved()
+	s := NewServer(WithLogger(l), WithTrustedProxies("192.0.2.1"))
+	s.GET("/x", func(res *ResponseWriter, req *Request) {
+		var wg sync.WaitGroup
+
+		wg.Add(2)
+
+		go func() { defer wg.Done(); _ = req.Protocol() }()
+		go func() { defer wg.Done(); _ = req.Host() }()
+
+		wg.Wait()
+		res.String("ok")
+	})
+
+	aWhoDo(s, "192.0.2.1:1", "X-Forwarded-Proto", "javascript", "X-Forwarded-Host", "evil.com/x")
+
+	ehttptest.Eq(t, "one warning for each request", logs.FilterLevelExact(zap.WarnLevel).Len(), 1)
 }
