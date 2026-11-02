@@ -130,14 +130,14 @@ func TestOwnerMiddlewareVary(t *testing.T) {
 	ehttptest.Eq(t, ownBasis+" (Vary does not log)", logs.Len(), 0)
 }
 
-func TestErrorCacheReplacesCacheWithoutWarning(t *testing.T) {
+func TestErrorCacheKeepsCacheWithoutWarning(t *testing.T) {
 	t.Parallel()
 
 	l, logs := bObserved()
 	h := fixtures.HandlerLogged(l, fixtures.Status(404, "gone"), middleware.Cache(time.Minute), middleware.ErrorCache(time.Hour))
 	rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
 
-	ehttptest.True(t, ownBasis+" (a middleware can replace a middleware value)", strings.Contains(rec.Header().Get("Cache-Control"), "max-age=3600"), "Cache-Control %q", rec.Header().Get("Cache-Control"))
+	ehttptest.True(t, ownBasis+" (an existing middleware value wins)", strings.Contains(rec.Header().Get("Cache-Control"), "max-age=60,"), "Cache-Control %q", rec.Header().Get("Cache-Control"))
 	ehttptest.Eq(t, ownBasis+" (no warning)", logs.Len(), 0)
 
 	msg := bDevPanic(fixtures.Status(404, "gone"), middleware.Cache(time.Minute), middleware.ErrorCache(time.Hour))

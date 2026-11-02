@@ -584,8 +584,8 @@ func conformanceCases() []conformanceCase {
 			want: cAll(cStatus(200), cNoHdr("Cache-Control"))},
 		{name: "ErrorCache does not let a shared cache store 401", basis: "RFC 9111 §3 + §5.2.2.5", fixture: "main", method: get, path: "/err401",
 			want: cAll(cStatus(401), cNotSharedCacheable())},
-		{name: "ErrorCache does not let a shared cache store 429", basis: "RFC 9111 §3 + §5.2.2.5, client-dependent response", fixture: "main", method: get, path: "/err429",
-			want: cAll(cStatus(429), cNotSharedCacheable())},
+		{name: "ErrorCache gives 429 the default lifetime", basis: "ErrorCache contract (no fixed exclusion)", fixture: "main", method: get, path: "/err429",
+			want: cAll(cStatus(429), cHasToken("Cache-Control", "max-age=60"))},
 
 		// ---- CORS (Fetch Standard) ------------------------------------------------
 		{name: "CORS list: allowed origin is echoed", basis: fetch, fixture: "cors-list", method: get, path: "/api", hdr: cors(fixtures.OriginA),

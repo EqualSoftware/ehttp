@@ -134,7 +134,7 @@ func TestCacheAuthorizationIsPrivate(t *testing.T) {
 	ehttptest.Eq(t, "Cache sends one Cache-Control line", len(rec.Header().Values("Cache-Control")), 1)
 }
 
-// The handler sets Cache-Control itself on an error and the request has Authorization.
+// The handler sets Cache-Control itself on an error: it wins, also with Authorization.
 func TestErrorCacheAuthorizationWithHandlerCacheControl(t *testing.T) {
 	t.Parallel()
 
@@ -146,7 +146,7 @@ func TestErrorCacheAuthorizationWithHandlerCacheControl(t *testing.T) {
 	rec := ehttptest.Do(h, fixtures.Req("GET", "/x", "Authorization", "Bearer t"))
 
 	ehttptest.Eq(t, "ErrorCache keeps the status", rec.Code, http.StatusNotFound)
-	ehttptest.True(t, "ErrorCache with Authorization is private", strings.HasPrefix(rec.Header().Get("Cache-Control"), "private,"), "Cache-Control = %q", rec.Header().Get("Cache-Control"))
+	ehttptest.Eq(t, "ErrorCache keeps the handler value", rec.Header().Get("Cache-Control"), "no-store")
 }
 
 func bTimeoutServer(t *testing.T, outer ehttp.MiddlewareHandlerFunc, h ehttp.HandlerFunc) *httptest.Server {
@@ -186,14 +186,6 @@ func TestTimeout503IsNotCached(t *testing.T) {
 			ehttptest.Eq(t, "Timeout sets no Cache-Control: a 503 is not heuristically cacheable", strings.Join(resp.Header.Values("Cache-Control"), "|"), "")
 		})
 	}
-}
-
-func TestErrorCacheSkips503FromHandler(t *testing.T) {
-	t.Parallel()
-
-	rec := ehttptest.Do(fixtures.Handler(fixtures.Status(503, "x"), middleware.ErrorCache(time.Minute)), fixtures.Req("GET", "/x"))
-
-	ehttptest.Eq(t, "RFC 9110 §15.6.4", rec.Header().Get("Cache-Control"), "")
 }
 
 // The client is gone after the handler sent a status. The context

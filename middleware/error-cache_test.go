@@ -30,7 +30,9 @@ func TestErrorCache(t *testing.T) {
 		{400, true},
 		{404, true},
 		{500, true},
-		{503, false}, // 503 is temporary (RFC 9110 §15.6.4), never cached
+		{429, true},
+		{503, true}, // no fixed exclusion: Timeout sends its own no-store
+		{599, true},
 	}
 
 	for _, tt := range tests {
@@ -54,13 +56,12 @@ func TestErrorCache(t *testing.T) {
 		})
 	}
 
-	t.Run("zero duration marks errors no-store", func(t *testing.T) {
+	t.Run("zero duration sets no header", func(t *testing.T) {
 		t.Parallel()
 
 		rec := ehttptest.Do(fixtures.Handler(fixtures.Status(500, "x"), middleware.ErrorCache(0)), fixtures.Req("GET", "/x"))
 
-		ehttptest.True(t, "RFC 9111 §5.2.2.5", strings.Contains(rec.Header().Get("Cache-Control"), "no-store"),
-			"Cache-Control = %q", rec.Header().Get("Cache-Control"))
+		ehttptest.Eq(t, "ErrorCache contract: zero is off", rec.Header().Get("Cache-Control"), "")
 	})
 
 	t.Run("status without body", func(t *testing.T) {
@@ -102,18 +103,100 @@ func TestErrorCacheDoesNotBufferBody(t *testing.T) {
 	ehttptest.True(t, "ErrorCache streams the body to the client", seen > 0, "handler wrote a body but %d bytes reached the underlying writer before it returned", seen)
 }
 
-// Statuses that depend on who asked must not be cached by URL.
-func TestErrorCacheClientDependentStatuses(t *testing.T) {
+// 401, 403 and 407 depend on the credentials: always private (RFC 9111 §5.2.2.7).
+func TestErrorCachePrivateStatuses(t *testing.T) {
 	t.Parallel()
 
-	for _, code := range []int{401, 403, 407, 429} {
+	for _, code := range []int{401, 403, 407} {
 		t.Run(bStatusName(code), func(t *testing.T) {
 			t.Parallel()
 
 			rec := ehttptest.Do(fixtures.Handler(fixtures.Status(code, "x"), middleware.ErrorCache(time.Minute)), fixtures.Req("GET", "/x"))
-			cc := rec.Header().Get("Cache-Control")
 
-			ehttptest.True(t, "a status that depends on the caller is not cached by URL", !strings.Contains(cc, "max-age=60"), "status %d is cached: %q", code, cc)
+			ehttptest.Eq(t, "ErrorCache contract", rec.Header().Get("Cache-Control"), "private, max-age=60, stale-while-revalidate=60, stale-if-error=60")
+		})
+	}
+}
+
+// A request with Authorization gets a private answer (RFC 9111 §3.5); one without stays public.
+func TestErrorCacheAuthorizationIsPrivate(t *testing.T) {
+	t.Parallel()
+
+	h := fixtures.Handler(fixtures.Status(404, "x"), middleware.ErrorCache(time.Minute))
+
+	rec := ehttptest.Do(h, fixtures.Req("GET", "/x", "Authorization", "Bearer t"))
+	ehttptest.Eq(t, "ErrorCache contract", rec.Header().Get("Cache-Control"), "private, max-age=60, stale-while-revalidate=60, stale-if-error=60")
+
+	rec = ehttptest.Do(h, fixtures.Req("GET", "/x"))
+	ehttptest.Eq(t, "ErrorCache contract", rec.Header().Get("Cache-Control"), "max-age=60, stale-while-revalidate=60, stale-if-error=60")
+}
+
+func TestErrorCacheStatusOverride(t *testing.T) {
+	t.Parallel()
+
+	mw := middleware.ErrorCache(time.Minute, middleware.ErrorCacheStatus(405, 5*time.Second), middleware.ErrorCacheStatus(500, 0))
+
+	tests := map[int]string{
+		404: "max-age=60, stale-while-revalidate=60, stale-if-error=60", // default
+		405: "max-age=5, stale-while-revalidate=5, stale-if-error=5",    // override
+		500: "",                                                         // 0 = off
+	}
+
+	for code, want := range tests {
+		t.Run(bStatusName(code), func(t *testing.T) {
+			t.Parallel()
+
+			rec := ehttptest.Do(fixtures.Handler(fixtures.Status(code, "x"), mw), fixtures.Req("GET", "/x"))
+
+			ehttptest.Eq(t, "ErrorCache contract", rec.Header().Get("Cache-Control"), want)
+		})
+	}
+}
+
+// A Cache-Control that is already set wins, with or without Authorization.
+func TestErrorCacheKeepsExistingCacheControl(t *testing.T) {
+	t.Parallel()
+
+	h := fixtures.Handler(func(res *ehttp.ResponseWriter, _ *ehttp.Request) {
+		res.Set("Cache-Control", "no-store")
+		res.Status(401)
+		res.String("x")
+	}, middleware.ErrorCache(time.Minute))
+
+	for _, hdr := range [][]string{nil, {"Authorization", "Bearer t"}} {
+		rec := ehttptest.Do(h, fixtures.Req("GET", "/x", hdr...))
+
+		ehttptest.Eq(t, "ErrorCache contract: an existing value wins", strings.Join(rec.Header().Values("Cache-Control"), "|"), "no-store")
+	}
+}
+
+func TestErrorCacheBootPanics(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]func(){
+		"negative default": func() { middleware.ErrorCache(-time.Second) },
+		"negative status":  func() { middleware.ErrorCache(time.Minute, middleware.ErrorCacheStatus(404, -time.Second)) },
+		"status below 400": func() { middleware.ErrorCache(time.Minute, middleware.ErrorCacheStatus(399, time.Second)) },
+		"status above 599": func() { middleware.ErrorCache(time.Minute, middleware.ErrorCacheStatus(600, time.Second)) },
+		"status given twice": func() {
+			middleware.ErrorCache(time.Minute, middleware.ErrorCacheStatus(404, time.Second), middleware.ErrorCacheStatus(404, 0))
+		},
+	}
+
+	for name, fn := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var got any
+
+			func() {
+				defer func() { got = recover() }()
+
+				fn()
+			}()
+
+			msg, _ := got.(string)
+			ehttptest.True(t, "boot message format", strings.HasPrefix(msg, "ehttp: ") && strings.Contains(msg, "Fix: "), "panic = %v", got)
 		})
 	}
 }
@@ -150,4 +233,16 @@ func TestFlushInsideErrorCacheWorks(t *testing.T) {
 	ehttptest.Eq(t, "ErrorCache contract status kept", rec.Code, 404)
 	ehttptest.Eq(t, "ErrorCache contract cache set before the flush", strings.Contains(rec.Header().Get("Cache-Control"), "max-age=60"), true)
 	ehttptest.Eq(t, "body still sent once", rec.Body.String(), "x")
+}
+
+// A 503 is temporary (RFC 9110 §15.6.4): it gets the default, and an option turns it off.
+func TestErrorCache503(t *testing.T) {
+	t.Parallel()
+
+	rec := ehttptest.Do(fixtures.Handler(fixtures.Status(503, "x"), middleware.ErrorCache(time.Minute)), fixtures.Req("GET", "/x"))
+	ehttptest.Eq(t, "ErrorCache contract: 503 gets the default", rec.Header().Get("Cache-Control"), "max-age=60, stale-while-revalidate=60, stale-if-error=60")
+
+	h := fixtures.Handler(fixtures.Status(503, "x"), middleware.ErrorCache(time.Minute, middleware.ErrorCacheStatus(503, 0)))
+	rec = ehttptest.Do(h, fixtures.Req("GET", "/x"))
+	ehttptest.Eq(t, "ErrorCache contract: zero turns 503 off", rec.Header().Get("Cache-Control"), "")
 }

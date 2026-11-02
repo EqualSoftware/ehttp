@@ -1,5 +1,5 @@
 status: 416
-header Cache-Control: max-age=99, stale-while-revalidate=99, stale-if-error=99
+header Cache-Control: max-age=300, stale-while-revalidate=300, stale-if-error=300
 header Content-Length: 33
 header Content-Range: bytes */332549
 header Content-Type: text/plain; charset=utf-8
