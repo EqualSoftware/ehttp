@@ -15,7 +15,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-const ownBasis = "author decision: the last writer wins; Development warns on an override of a middleware header"
+const ownBasis = "the last writer wins; Development warns on an override of a middleware header"
 
 func bObserved() (*zap.Logger, *observer.ObservedLogs) {
 	core, logs := observer.New(zapcore.DebugLevel)

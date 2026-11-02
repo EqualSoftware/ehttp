@@ -15,7 +15,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-const ownBasis = "author decision: the last writer wins; Development warns on an override of a middleware header"
+const ownBasis = "the last writer wins; Development warns on an override of a middleware header"
 
 // aOwner is a middleware that owns X-Owned and the Vary member Owner.
 func aOwner(next Handler) HandlerFunc {

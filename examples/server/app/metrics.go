@@ -14,7 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// The library has no request metrics (author decision: none in the library). It exposes only the gauge of the
+// The library has no request metrics. It exposes only the gauge of the
 // circuit breaker (BreakerOptions.PrometheusGauge). This file adds a request
 // counter and a latency histogram for the example only, in its own registry.
 // New does not use it, so the golden and perf suites do not pay for it.

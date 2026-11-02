@@ -58,7 +58,7 @@ func TestCache(t *testing.T) {
 		ehttptest.Eq(t, "middleware contract", rec.Body.String(), "ok")
 	})
 
-	t.Run("the handler can override the header (author decision: the last writer wins)", func(t *testing.T) {
+	t.Run("the handler can override the header (the last writer wins)", func(t *testing.T) {
 		t.Parallel()
 
 		h := fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
