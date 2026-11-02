@@ -1,7 +1,9 @@
 package ehttp
 
 import (
+	"io"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -54,5 +56,17 @@ func TestJoinBaseURL(t *testing.T) {
 				t.Errorf("EscapedPath() = %q, RawPath = %q", got.EscapedPath(), got.RawPath)
 			}
 		})
+	}
+}
+
+// A URL in the error that does not parse becomes the mask, never the raw text.
+func TestMaskErrUnparsableURL(t *testing.T) {
+	t.Parallel()
+
+	err := maskErr(&url.Error{Op: "Get", URL: "http://a b/?token=S", Err: io.EOF}, nil)
+	text := err.Error()
+
+	if !strings.Contains(text, "***") || strings.Contains(text, "token=S") {
+		t.Fatalf("error = %q, want the mask and no raw URL", text)
 	}
 }

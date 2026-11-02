@@ -167,8 +167,10 @@ func NewClient(options ...clientOptionFunc) *Client {
 // Execute sends the request. A missing method or URL is an error, not a panic.
 // The returned error of a failed request is a *url.Error that holds the URL
 // path. The userinfo and the sensitive query values are masked (see
-// WithClientRedactNames). Warn and Error logs of the client show only the
-// scheme, the host and the method.
+// WithClientRedactNames). Only the URL of the error is masked: the text of the
+// wrapped error comes from net/http and can quote a value from the server, for
+// example an unparsable redirect Location. Warn and Error logs of the client
+// show only the scheme, the host and the method.
 func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 	var err error
 	var req *http.Request
