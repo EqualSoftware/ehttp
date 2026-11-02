@@ -1,9 +1,7 @@
 status: 304
-header Accept-Ranges: bytes
 header Cache-Control: max-age=300, stale-while-revalidate=300, stale-if-error=300
 header Date: <volatile>
 header Etag: W/"332549-32658cc8"
-header Last-Modified: Tue, 02 Jan 2024 03:04:05 GMT
 header Vary: Accept-Encoding, Origin
 header X-Content-Type-Options: nosniff
 header X-Frame-Options: SAMEORIGIN
