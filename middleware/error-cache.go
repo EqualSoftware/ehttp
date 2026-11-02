@@ -62,8 +62,9 @@ type ErrorCacheOption func(*errorCacheConfig)
 // a global ErrorCache.
 //
 // Each status can be set one time. The call panics at boot for a status
-// outside 400 to 599, a negative lifetime, and 428, 429, 431 and 511: a cache
-// must not store those (RFC 6585).
+// outside 400 to 599, a negative lifetime, a lifetime above 0 and under 1s, and
+// 428, 429, 431 and 511: a cache must not store those (RFC 6585). A lifetime of
+// 1.5s is cut to 1 second.
 func ErrorCacheStatus(status int, duration time.Duration) ErrorCacheOption {
 	return func(cfg *errorCacheConfig) {
 		where := "ErrorCacheStatus"

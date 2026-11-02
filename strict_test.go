@@ -454,41 +454,65 @@ func TestWithPortAccepts(t *testing.T) {
 	ehttptest.Eq(t, "port 0 lets the OS pick a port", NewServer(WithPortInt(0)).port, "0")
 }
 
-// RFC 9111 §1.2.2: max-age is a non-negative integer. A negative duration in a
-// handler is a mistake: Development panics, Production logs and sends no-store.
 // RFC 9111 §1.2.2: max-age takes whole seconds. A duration above 0 and under 1s
-// follows the rule of a negative one: Development panics, Production logs and sends no-store.
+// follows the rule of a negative one: Development panics, Production logs and
+// sends no-store. From 1s up, the seconds are cut to a whole number.
 func TestSetCacheHeaderSubSecondDuration(t *testing.T) {
 	t.Parallel()
 
-	for _, private := range []bool{false, true} {
-		do := func(res *ResponseWriter, _ *Request) {
-			SetCacheHeaderPrivate(res, 500*time.Millisecond, private)
-			res.String("ok")
-		}
+	const noStoreLong = "no-store, no-cache, must-revalidate, proxy-revalidate"
 
-		_, _, msg := aServe(Development, do)
-
-		aPart(t, msg, "ehttp.SetCacheHeader(500ms)", "whole seconds")
-		ehttptest.True(t, "the message names the route", strings.Contains(msg, "GET /x"), "message %q", msg)
-		ehttptest.True(t, "the message names the fix", strings.Contains(msg, "Fix: use 1s or more, or 0"), "message %q", msg)
-
-		rec, logs, msg := aServe(Production, do)
-
-		ehttptest.Eq(t, strictBasis, msg, "")
-		ehttptest.Eq(t, strictBasis, rec.Code, 200)
-		ehttptest.Eq(t, "safe fallback is no-store", rec.Header().Get("Cache-Control"), "no-store, no-cache, must-revalidate, proxy-revalidate")
-		ehttptest.Eq(t, strictBasis, logs.FilterField(zap.String("rule", "sub-second cache duration")).Len(), 1)
-		ehttptest.Eq(t, strictBasis, logs.FilterField(zap.String("rule", "sub-second cache duration")).All()[0].Level, zap.ErrorLevel)
+	tests := []struct {
+		d    time.Duration
+		fail bool
+		want string // Cache-Control, public
+	}{
+		{time.Nanosecond, true, noStoreLong},
+		{500 * time.Millisecond, true, noStoreLong},
+		{999 * time.Millisecond, true, noStoreLong},
+		{time.Second, false, "max-age=1, stale-while-revalidate=1, stale-if-error=1"},
+		{1500 * time.Millisecond, false, "max-age=1, stale-while-revalidate=1, stale-if-error=1"},
 	}
 
-	ok := func(res *ResponseWriter, _ *Request) { SetCacheHeader(res, 1500*time.Millisecond); res.String("ok") }
-	rec, logs, msg := aServe(Production, ok)
+	for _, tt := range tests {
+		for _, private := range []bool{false, true} {
+			t.Run(tt.d.String()+map[bool]string{false: "", true: " private"}[private], func(t *testing.T) {
+				t.Parallel()
 
-	ehttptest.Eq(t, "1.5s is cut to 1s", rec.Header().Get("Cache-Control"), "max-age=1, stale-while-revalidate=1, stale-if-error=1")
-	ehttptest.Eq(t, strictBasis, logs.Len()+len(msg), 0)
+				do := func(res *ResponseWriter, _ *Request) { SetCacheHeaderPrivate(res, tt.d, private); res.String("ok") }
+
+				_, _, msg := aServe(Development, do)
+				rec, logs, prodMsg := aServe(Production, do)
+				rule := logs.FilterField(zap.String("rule", "sub-second cache duration"))
+				want := tt.want
+
+				if private && !tt.fail {
+					want = "private, " + want
+				}
+
+				ehttptest.Eq(t, strictBasis+" (Production: no panic)", prodMsg, "")
+				ehttptest.Eq(t, strictBasis, rec.Code, 200)
+				ehttptest.Eq(t, strictBasis+" (header)", rec.Header().Get("Cache-Control"), want)
+
+				if !tt.fail {
+					ehttptest.Eq(t, strictBasis+" (no panic in Development)", msg, "")
+					ehttptest.Eq(t, strictBasis+" (no log)", logs.Len(), 0)
+
+					return
+				}
+
+				aPart(t, msg, "ehttp.SetCacheHeader("+tt.d.String()+")", "whole seconds")
+				ehttptest.True(t, "the message names the route", strings.Contains(msg, "GET /x"), "message %q", msg)
+				ehttptest.True(t, "the message names the fix", strings.Contains(msg, "Fix: use 1s or more, or 0"), "message %q", msg)
+				ehttptest.Eq(t, strictBasis+" (one log)", rule.Len(), 1)
+				ehttptest.Eq(t, strictBasis+" (error level)", rule.All()[0].Level, zap.ErrorLevel)
+			})
+		}
+	}
 }
 
+// RFC 9111 §1.2.2: max-age is a non-negative integer. A negative duration in a
+// handler is a mistake: Development panics, Production logs and sends no-store.
 func TestSetCacheHeaderNegativeDuration(t *testing.T) {
 	t.Parallel()
 
