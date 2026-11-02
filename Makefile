@@ -56,7 +56,7 @@ golden-update:
 	go test -count=1 -run TestGolden ./test/golden -update
 
 # Pending list: one line per bug name with the count of pending tests, then the
-# total. A test with a combined name ("range-first-byte-returns-whole-file+route-params-not-decoded")
+# total. A test with a combined name ("first-bug+second-bug")
 # counts once for each name in the table and once in the total. Reads the log
 # of `test`.
 known-bugs: test

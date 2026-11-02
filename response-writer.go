@@ -10,6 +10,7 @@ import (
 	"hash/crc32"
 	"html/template"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -21,6 +22,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/EqualSoftware/ehttp/internal/etag"
 	"github.com/EqualSoftware/ehttp/internal/hook"
 )
 
@@ -1264,6 +1266,11 @@ func (res *ResponseWriter) JSON(v interface{}) {
 // SendFile serves the file at the path name. It serves the path that the caller
 // gives, so absolute paths and symbolic links are served. A path with a ".."
 // element gets 404. Do not pass request data without validation.
+//
+// A status set before SendFile other than 200 is the status of the response:
+// the file is the body, and Range and the conditional fields are not used.
+// Otherwise SendFile answers them (RFC 9110 sections 13 and 14), and an
+// If-Match or If-None-Match with an invalid syntax gets 400.
 func (res *ResponseWriter) SendFile(name string) {
 	if res.finished() {
 		return
@@ -1279,8 +1286,16 @@ func (res *ResponseWriter) SendFile(name string) {
 		return
 	}
 
-	if res.code == 0 {
-		res.code = StatusOK
+	code := res.code
+
+	if code == 0 {
+		code = StatusOK
+		res.code = code
+	}
+
+	if code == StatusOK && !etag.ValidRequest(res.request.Header) {
+		res.SendStatus(StatusBadRequest)
+		return
 	}
 
 	file, err := os.Open(name)
@@ -1305,6 +1320,11 @@ func (res *ResponseWriter) SendFile(name string) {
 	file_modtime := file_stat.ModTime()
 	file_name := filepath.Base(name)
 
+	if code != StatusOK {
+		res.sendFileWithStatus(code, file, file_name, file_stat)
+		return
+	}
+
 	hash := crc32.ChecksumIEEE([]byte(file_name + file_modtime.String() + strconv.FormatInt(file_size, 10)))
 	res.Header().Set(HeaderEtag, fmt.Sprintf(`W/"%d-%08x"`, file_size, hash))
 
@@ -1312,63 +1332,182 @@ func (res *ResponseWriter) SendFile(name string) {
 	// section 13 and 14): If-Match, If-None-Match, If-Modified-Since,
 	// If-Unmodified-Since, If-Range and Range with one or more ranges.
 	w := http.ResponseWriter(res)
-	req := res.request
+	req := fileRequest(res.request)
 
 	if req.Header.Get(HeaderRange) != "" {
-		req = fileRangeRequest(req)
 		w = rangeWriter{ResponseWriter: res, size: file_size}
 	}
 
 	http.ServeContent(w, req, file_name, file_modtime, file)
 }
 
-// rangeWriter fixes two answers of http.ServeContent. A 416 gets
-// "Content-Range: bytes */size", also for a Range with an invalid syntax (RFC
-// 9110 section 15.5.17). A single range of no byte, as in "bytes=-0", is not
-// satisfiable: it is 416, not an empty 206 (RFC 9110 section 14.1.2).
+// sendFileWithStatus sends the file as the body of a response with the status
+// code that the handler set. Range and the conditional fields apply to a 2xx
+// response only (RFC 9110 sections 13.2.1 and 14.2).
+func (res *ResponseWriter) sendFileWithStatus(code int, file *os.File, name string, info os.FileInfo) {
+	ctype := mime.TypeByExtension(filepath.Ext(name))
+
+	if ctype == "" {
+		var buf [512]byte
+		n, _ := io.ReadFull(file, buf[:])
+		ctype = http.DetectContentType(buf[:n])
+
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			res.logger().Error("seeker can't seek", zap.Error(err))
+			res.SendStatus(StatusInternalServerError)
+			return
+		}
+	}
+
+	h := res.Header()
+	h.Set(HeaderContentType, ctype)
+	h.Set(HeaderContentLength, strconv.FormatInt(info.Size(), 10))
+	h.Set(HeaderLastModified, info.ModTime().UTC().Format(http.TimeFormat))
+
+	res.writeHeader(code)
+
+	if res.request.Method == MethodHead {
+		return
+	}
+
+	res.bodySent = true
+	_, _ = file.WriteTo(res.w)
+}
+
+// headerIfRange is not public: only SendFile reads it.
+const headerIfRange = "If-Range"
+
+// rangeWriter adds "Content-Range: bytes */size" to each 416 of
+// http.ServeContent, also for a Range with an invalid syntax (RFC 9110
+// section 15.5.17).
 type rangeWriter struct {
 	*ResponseWriter
 	size int64
 }
 
 func (w rangeWriter) WriteHeader(code int) {
-	h := w.Header()
-	empty := code == StatusPartialContent && h.Get(HeaderContentRange) != "" && h.Get(HeaderContentLength) == "0"
-
-	if empty {
-		code = StatusRequestedRangeNotSatisfiable
-		h.Del(HeaderContentRange)
-	}
-
-	if code == StatusRequestedRangeNotSatisfiable && h.Get(HeaderContentRange) == "" {
+	if h := w.Header(); code == StatusRequestedRangeNotSatisfiable && h.Get(HeaderContentRange) == "" {
 		h.Set(HeaderContentRange, "bytes */"+strconv.FormatInt(w.size, 10))
 	}
 
 	w.ResponseWriter.WriteHeader(code)
 }
 
-// fileRangeRequest returns the request that http.ServeContent gets. A Range
-// with a unit that is not "bytes" is ignored (RFC 9110 section 14.2), and the
-// unit is not case-sensitive (section 14.1). Any other value stays: the
-// server answers 416 when the syntax is invalid.
-func fileRangeRequest(req *http.Request) *http.Request {
-	unit, set, ok := strings.Cut(req.Header.Get(HeaderRange), "=")
+// fileRequest returns the request that http.ServeContent gets. Range is
+// defined for GET only, so any other method loses Range and If-Range (RFC 9110
+// section 14.2). A Range with a unit that is not "bytes" is ignored (section
+// 14.2), and the unit is not case-sensitive (section 14.1). The empty
+// members of a range set are dropped, and a set with no member left is
+// invalid: the server answers 416 (sections 14.1.1 and 14.1.2). Any other
+// value stays, and ServeContent answers 416 when the syntax is invalid.
+func fileRequest(req *http.Request) *http.Request {
+	rng := req.Header.Get(HeaderRange)
 
-	if !ok || unit == "" || unit == "bytes" || !isToken(unit) {
+	if rng == "" {
 		return req
 	}
 
+	if req.Method != MethodGet {
+		return fileHeaderEdit(req, "")
+	}
+
+	unit, set, ok := strings.Cut(rng, "=")
+
+	if !ok || unit == "" || !isToken(unit) {
+		return req
+	}
+
+	if !strings.EqualFold(unit, "bytes") {
+		return fileHeaderEdit(req, "")
+	}
+
+	if fixed := "bytes=" + fileRangeSet(set); fixed != rng {
+		return fileHeaderEdit(req, fixed)
+	}
+
+	return req
+}
+
+// fileHeaderEdit returns a copy of req with the Range value set, or without
+// Range and If-Range when value is empty.
+func fileHeaderEdit(req *http.Request, value string) *http.Request {
 	req = req.WithContext(req.Context())
 	req.Header = req.Header.Clone()
 
-	if strings.EqualFold(unit, "bytes") {
-		req.Header.Set(HeaderRange, "bytes="+set)
+	if value == "" {
+		req.Header.Del(HeaderRange)
+		req.Header.Del(headerIfRange)
+
 		return req
 	}
 
-	req.Header.Del(HeaderRange)
+	req.Header.Set(HeaderRange, value)
 
 	return req
+}
+
+// fileRangeSet drops the members of a bytes range set that have no byte: the
+// empty ones and the suffix of length 0 (RFC 9110 section 14.1.2). The set "-"
+// stays when no member is left. It is invalid, so the answer is 416.
+func fileRangeSet(set string) string {
+	kept, drop := 0, false
+
+	for rest := set; rest != ""; {
+		var m string
+		m, rest, _ = strings.Cut(rest, ",")
+
+		if fileRangeHasByte(m) {
+			kept++
+		} else if strings.TrimSpace(m) != "" {
+			drop = true
+		}
+	}
+
+	switch {
+	case kept == 0:
+		return "-"
+	case !drop:
+		return set
+	}
+
+	var b strings.Builder
+
+	for rest := set; rest != ""; {
+		var m string
+		m, rest, _ = strings.Cut(rest, ",")
+
+		if !fileRangeHasByte(m) {
+			continue
+		}
+
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+
+		b.WriteString(m)
+	}
+
+	return b.String()
+}
+
+// fileRangeHasByte reports that the member m is not empty and is not a suffix
+// of length 0.
+func fileRangeHasByte(m string) bool {
+	m = strings.TrimSpace(m)
+
+	if m == "" {
+		return false
+	}
+
+	first, last, ok := strings.Cut(m, "-")
+
+	if !ok || strings.TrimSpace(first) != "" {
+		return true
+	}
+
+	n, err := strconv.ParseInt(strings.TrimSpace(last), 10, 64)
+
+	return err != nil || n != 0
 }
 
 // hasDotDot reports if any element of the path is "..".

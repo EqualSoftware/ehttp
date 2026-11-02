@@ -43,7 +43,7 @@ func True(t testing.TB, basis string, cond bool, format string, args ...any) {
 const PendingEnv = "EHTTP_PENDING"
 
 // KnownBug runs check for the open defect name. The name is a kebab-case
-// description of the defect, for example "range-suffix-returns-416". A test
+// description of the defect, for example "accepts-q0-acceptable". A test
 // that covers two defects joins the names with "+".
 // The check asserts the correct behavior.
 //

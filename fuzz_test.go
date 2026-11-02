@@ -269,7 +269,8 @@ func dRangeValid(header string) bool {
 // dRangeBody is the body of the file that the range targets serve.
 const dRangeBody = "0123456789"
 
-// dRangeServer serves a file of dRangeBody at /f.
+// dRangeServer serves a file of dRangeBody at /f, and at /missing with the
+// status 404 set before SendFile.
 func dRangeServer(tb testing.TB) *Server {
 	tb.Helper()
 
@@ -280,19 +281,34 @@ func dRangeServer(tb testing.TB) *Server {
 
 	s := NewServer()
 	s.GET("/f", func(res *ResponseWriter, _ *Request) { res.SendFile(name) })
+	s.GET("/missing", func(res *ResponseWriter, _ *Request) { res.Status(StatusNotFound); res.SendFile(name) })
 
 	return s
 }
 
-// dSendFile asks /f of s with a Range header and returns the answer.
-func dSendFile(s *Server, header string) *httptest.ResponseRecorder {
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/f", http.NoBody)
-	req.Header.Set(HeaderRange, header)
+// dSend asks path of s and returns the answer. kv are header names and values.
+func dSend(s *Server, method, path string, kv ...string) *httptest.ResponseRecorder {
+	req := httptest.NewRequestWithContext(context.Background(), method, path, http.NoBody)
+
+	for i := 0; i+1 < len(kv); i += 2 {
+		req.Header.Set(kv[i], kv[i+1])
+	}
 
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 
 	return rec
+}
+
+// dSendFile asks /f of s with a Range header and returns the answer.
+func dSendFile(s *Server, header string) *httptest.ResponseRecorder {
+	return dSend(s, http.MethodGet, "/f", HeaderRange, header)
+}
+
+// dBlankSet reports that header is a bytes range with no member but commas and spaces.
+func dBlankSet(header string) bool {
+	set, ok := strings.CutPrefix(header, "bytes=")
+	return ok && strings.Trim(set, ", ") == ""
 }
 
 // dServeContentRange is the oracle: what http.ServeContent answers for header
@@ -331,18 +347,41 @@ func FuzzParseRange(f *testing.F) {
 		"bytes=10-10", "bytes=-1-2", "bytes=0-1,3-4", "", "bytes=", "items=0-1",
 		"bytes=9223372036854775807-9223372036854775807", "bytes=0-9223372036854775807",
 		"bytes=+1-2", "bytes= 1-2", "bytes=1 -2", "bytes=00-01", "Bytes=0-1", "bytes=2-5",
+		"bytes=,", "bytes= ", "bytes=-0", "bytes=-0,1-2", "bytes=0-1,-0", "bytes=-0,-0",
 	} {
-		f.Add(h)
+		f.Add(h, false)
+		f.Add(h, true)
 	}
 
 	s := dRangeServer(f)
 
-	f.Fuzz(func(t *testing.T, header string) {
+	f.Fuzz(func(t *testing.T, header string, head bool) {
 		if header == "" || !validFieldValue(header) {
 			return
 		}
 
+		// invariant 0: a status set before SendFile is the status, with the
+		// full body: Range is not used (RFC 9110 §14.2).
+		missing := dSend(s, http.MethodGet, "/missing", HeaderRange, header, "If-None-Match", "*")
+		ehttptest.Eq(t, "RFC 9110 §13.2.1 "+header, missing.Code, http.StatusNotFound)
+		ehttptest.Eq(t, "RFC 9110 §14.2 "+header, missing.Body.String(), dRangeBody)
+
+		// invariant 5: Range is defined for GET only (RFC 9110 §14.2).
+		if head {
+			rec := dSend(s, http.MethodHead, "/f", HeaderRange, header)
+			ehttptest.Eq(t, "RFC 9110 §14.2 "+header, rec.Code, http.StatusOK)
+			ehttptest.Eq(t, "RFC 9110 §9.3.2 "+header, rec.Header().Get(HeaderContentLength), "10")
+			ehttptest.Eq(t, "RFC 9110 §9.3.2 "+header, rec.Body.Len(), 0)
+
+			return
+		}
+
 		rec := dSendFile(s, header) // invariant 1: no panic
+
+		// invariant 4: a set with no member is not valid (RFC 9110 §14.1.1).
+		if dBlankSet(header) {
+			ehttptest.Eq(t, "RFC 9110 §14.1.1 "+header, rec.Code, http.StatusRequestedRangeNotSatisfiable)
+		}
 
 		// invariant 2 (RFC 9110 §14.2, §15.5.17): the answer is 200, 206 or 416.
 		switch rec.Code {
@@ -361,7 +400,7 @@ func FuzzParseRange(f *testing.F) {
 			ehttptest.Eq(t, "RFC 9110 §14.2 "+header, rec.Code, http.StatusOK)
 		}
 
-		// invariant 4: a valid single range gets the answer of http.ServeContent.
+		// invariant 6: a valid single range gets the answer of http.ServeContent.
 		if !dRangeValid(header) {
 			return
 		}
@@ -605,6 +644,13 @@ func TestSendFileRange(t *testing.T) {
 		{"unit is not case-sensitive", "Bytes=0-1", 206, "bytes 0-1/10", "01"},
 		{"unknown unit is ignored", "items=0-1", 200, "", dRangeBody},
 		{"no unit is invalid", "0-1", 416, "bytes */10", ""},
+		{"empty set", "bytes=", 416, "bytes */10", ""},
+		{"set of commas", "bytes=,", 416, "bytes */10", ""},
+		{"set of a space", "bytes= ", 416, "bytes */10", ""},
+		{"set of suffixes of no byte", "bytes=-0,-0", 416, "bytes */10", ""},
+		{"suffix of no byte is dropped", "bytes=-0,1-2", 206, "bytes 1-2/10", "12"},
+		{"suffix of no byte is dropped at the end", "bytes=1-2,-0", 206, "bytes 1-2/10", "12"},
+		{"empty member is skipped", "bytes=1-2,", 206, "bytes 1-2/10", "12"},
 	}
 
 	for _, tt := range tests {
@@ -691,4 +737,78 @@ func TestFuzzKnownBugs(t *testing.T) {
 		opts := &CorsOptions{Origin: []string{"http://app.example"}}
 		ehttptest.Eq(t, "Fetch §3.2.5", corsAcceptOrigin(req, opts), true)
 	})
+}
+
+// Range is defined for GET only (RFC 9110 §14.2): HEAD answers 200 with the
+// real length and no body.
+func TestSendFileHeadIgnoresRange(t *testing.T) {
+	t.Parallel()
+
+	s := dRangeServer(t)
+	rec := dSend(s, http.MethodHead, "/f", HeaderRange, "bytes=0-0", "If-Range", "*")
+
+	ehttptest.Eq(t, "RFC 9110 §14.2", rec.Code, 200)
+	ehttptest.Eq(t, "RFC 9110 §14.2", rec.Header().Get(HeaderContentRange), "")
+	ehttptest.Eq(t, "RFC 9110 §9.3.2", rec.Header().Get(HeaderContentLength), "10")
+	ehttptest.Eq(t, "RFC 9110 §9.3.2", rec.Body.Len(), 0)
+}
+
+// A status set before SendFile is the status. Range and the conditional
+// fields apply to a 2xx response only (RFC 9110 §13.2.1, §14.2).
+func TestSendFileStatusBefore(t *testing.T) {
+	t.Parallel()
+
+	s := dRangeServer(t)
+
+	t.Run("GET gets the full body", func(t *testing.T) {
+		t.Parallel()
+
+		rec := dSend(s, http.MethodGet, "/missing", HeaderRange, "bytes=0-1", HeaderIfNoneMatch, "*", "If-Match", `"nope"`)
+
+		ehttptest.Eq(t, "RFC 9110 §13.2.1", rec.Code, 404)
+		ehttptest.Eq(t, "RFC 9110 §14.2", rec.Body.String(), dRangeBody)
+		ehttptest.Eq(t, "RFC 9110 §8.6", rec.Header().Get(HeaderContentLength), "10")
+		ehttptest.True(t, "RFC 9110 §8.3", rec.Header().Get(HeaderContentType) != "", "no Content-Type")
+		ehttptest.True(t, "RFC 9110 §8.8.2", rec.Header().Get(HeaderLastModified) != "", "no Last-Modified")
+	})
+
+	t.Run("HEAD has no body", func(t *testing.T) {
+		t.Parallel()
+
+		rec := dSend(s, http.MethodHead, "/missing")
+
+		ehttptest.Eq(t, "RFC 9110 §9.3.2", rec.Code, 404)
+		ehttptest.Eq(t, "RFC 9110 §9.3.2", rec.Header().Get(HeaderContentLength), "10")
+		ehttptest.Eq(t, "RFC 9110 §9.3.2", rec.Body.Len(), 0)
+	})
+}
+
+// An If-Match or If-None-Match with an invalid syntax is 400 (RFC 9110 §13.1.1, §13.1.2).
+func TestSendFileInvalidEtagFields(t *testing.T) {
+	t.Parallel()
+
+	s := dRangeServer(t)
+	tests := []struct{ name, field, value string }{
+		{"If-Match unquoted", "If-Match", "abc"},
+		{"If-None-Match star with a tag", HeaderIfNoneMatch, `*, "a"`},
+		{"If-None-Match empty", HeaderIfNoneMatch, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := dSend(s, http.MethodGet, "/f", tt.field, tt.value)
+			ehttptest.Eq(t, "RFC 9110 §15.5.1", rec.Code, 400)
+		})
+	}
+
+	// Each field line counts.
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/f", http.NoBody)
+	req.Header.Add(HeaderIfNoneMatch, `"a"`)
+	req.Header.Add(HeaderIfNoneMatch, "abc")
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	ehttptest.Eq(t, "RFC 9110 §15.5.1", rec.Code, 400)
 }
