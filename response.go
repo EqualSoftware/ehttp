@@ -2,6 +2,7 @@ package ehttp
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -15,38 +16,58 @@ type Response struct {
 	*http.Response
 }
 
+// maxAgeCap is 2^31 seconds: the value for a max-age that is too large
+// (RFC 9111 section 1.2.2).
+const maxAgeCap = 1 << 31
+
 // Retrieve the response.Header Cache-Control max-age as time.Duration. All
 // the Cache-Control lines are one list (RFC 9110 section 5.3). The directive
 // name is not case-sensitive, and the value can be a quoted-string (RFC 9111
 // section 5.2). The value is delta-seconds: digits only (RFC 9111 section
-// 1.2.2). An invalid value gives zero, which means stale. The first valid
-// max-age wins.
+// 1.2.2), and a value above 2^31 is 2^31. The first max-age directive wins
+// (RFC 9111 section 4.2.1): if its value is invalid the result is zero, which
+// means stale.
 func (res *Response) GetCacheControlMaxAge() time.Duration {
 	for _, line := range res.Header.Values("Cache-Control") {
-		for _, directive := range strings.Split(line, ",") {
-			name, value, ok := strings.Cut(strings.TrimSpace(directive), "=")
+		for rest, more := line, true; more; {
+			var directive string
 
-			if !ok || !strings.EqualFold(strings.TrimSpace(name), "max-age") {
+			var ok bool
+
+			directive, rest, more, ok = cutUnquoted(rest, ',')
+
+			if !ok {
+				break
+			}
+
+			name, value, found := strings.Cut(strings.TrimSpace(directive), "=")
+
+			if !found || !strings.EqualFold(strings.TrimSpace(name), "max-age") {
 				continue
 			}
 
-			value = strings.TrimSpace(value)
-
-			if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
-				value = value[1 : len(value)-1]
-			}
-
-			age, err := strconv.ParseUint(value, 10, 32)
-
-			if err != nil {
-				return 0
-			}
-
-			return time.Duration(age) * time.Second
+			return maxAgeValue(strings.TrimSpace(value))
 		}
 	}
 
 	return 0
+}
+
+// maxAgeValue converts the value of max-age. An invalid value gives zero.
+func maxAgeValue(value string) time.Duration {
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		value = value[1 : len(value)-1]
+	}
+
+	age, err := strconv.ParseUint(value, 10, 64)
+
+	if errors.Is(err, strconv.ErrRange) {
+		age = maxAgeCap // all digits, too large
+	} else if err != nil {
+		return 0
+	}
+
+	return time.Duration(min(age, maxAgeCap)) * time.Second
 }
 
 // Read the response.Body as JSON. It reads the JSON value into memory.

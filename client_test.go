@@ -581,6 +581,12 @@ func TestResponseGetCacheControlMaxAge(t *testing.T) {
 		{"quoted-string form is accepted", "RFC 9111 §5.2", []string{`max-age="60"`}, time.Minute},
 		{"negative value is invalid, treated as stale", "RFC 9111 §1.2.2", []string{"max-age=-5"}, 0},
 		{"multiple header lines are one list", "RFC 9110 §5.3", []string{"public", "max-age=60"}, time.Minute},
+		{"above 2^31 is 2^31", "RFC 9111 §1.2.2", []string{"max-age=2147483649"}, 1 << 31 * time.Second},
+		{"above 32 bits is 2^31", "RFC 9111 §1.2.2", []string{"max-age=4294967296"}, 1 << 31 * time.Second},
+		{"above 64 bits is 2^31", "RFC 9111 §1.2.2", []string{"max-age=99999999999999999999"}, 1 << 31 * time.Second},
+		{"the first max-age wins, even if invalid", "RFC 9111 §4.2.1", []string{"max-age=abc, max-age=30"}, 0},
+		{"a quoted-string hides a comma", "RFC 9110 §5.6.4", []string{`community="a, max-age=5"`}, 0},
+		{"a quoted comma does not split", "RFC 9110 §5.6.4", []string{`ext="x, max-age=5", max-age=7`}, 7 * time.Second},
 	}
 
 	for _, tt := range more {
