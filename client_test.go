@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go.uber.org/zap/zaptest/observer"
 	"io"
 	"net"
 	"net/http"
@@ -259,8 +260,7 @@ func TestClientDefaultTimeout(t *testing.T) {
 	})
 }
 
-// On failure the caller gets (nil, err). Today it gets a *Response
-// wrapping a nil *http.Response, and res.Body panics.
+// On failure the caller gets (nil, err).
 func TestClientErrorReturnsNilResponse(t *testing.T) {
 	t.Parallel()
 
@@ -375,8 +375,23 @@ func TestClientReusesConnection(t *testing.T) {
 	ehttptest.Eq(t, "net/http Response.Body doc: a drained body lets the connection be reused", conns.Load(), 1)
 }
 
-// Tokens often travel in the query string; they must not reach the log.
+// Tokens and credentials often travel in the URL; they must not reach the log.
 func TestClientDoesNotLogQuery(t *testing.T) {
+	const secrets = "pw secret frag"
+
+	assertClean := func(t *testing.T, logs *observer.ObservedLogs) {
+		t.Helper()
+
+		for _, e := range logs.All() {
+			text := e.Message + fmt.Sprint(e.ContextMap())
+			for _, s := range strings.Fields(secrets) {
+				ehttptest.True(t, "the URL secrets stay out of the log", !strings.Contains(text, s), "log %q leaks %q: %v", e.Message, s, e.ContextMap())
+			}
+		}
+
+		ehttptest.True(t, "harness: something was logged", len(logs.All()) > 0, "no log lines captured")
+	}
+
 	logQueryTest := func(t *testing.T, target func(srvURL string) string, closeServer bool) {
 		logs := fixtures.CaptureLogs(t)
 		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
@@ -393,19 +408,44 @@ func TestClientDoesNotLogQuery(t *testing.T) {
 			res.Body.Close()
 		}
 
-		for _, e := range logs.All() {
-			ehttptest.True(t, "the query string stays out of the log", !strings.Contains(fmt.Sprint(e.ContextMap()), "secret-123"), "log %q leaks the query: %v", e.Message, e.ContextMap())
-		}
-
-		ehttptest.True(t, "harness: something was logged", len(logs.All()) > 0, "no log lines captured")
+		assertClean(t, logs)
 	}
 
-	t.Run("success path", func(t *testing.T) {
-		logQueryTest(t, func(u string) string { return u + "/x?token=secret-123" }, false)
+	withSecrets := func(u string) string {
+		return strings.Replace(u, "http://", "http://u:pw@", 1) + "/x?token=secret-123#frag"
+	}
+
+	for _, closed := range []bool{false, true} {
+		name := map[bool]string{false: "success path", true: "failure path"}[closed]
+
+		t.Run(name, func(t *testing.T) {
+			logQueryTest(t, func(u string) string { return u + "/x?token=secret-123" }, closed)
+		})
+		t.Run(name+" with userinfo and fragment", func(t *testing.T) {
+			logQueryTest(t, withSecrets, closed)
+		})
+	}
+
+	t.Run("bad source URL", func(t *testing.T) {
+		logs := fixtures.CaptureLogs(t)
+
+		res, err := ehttp.NewClient().Execute(ehttp.WithSource("GET", "http://u:pw@[::1/x?token=secret-123#frag"))
+
+		ehttptest.True(t, "a bad URL is an error", res == nil && err != nil, "res=%v err=%v", res, err)
+		ehttptest.True(t, "the returned error hides the URL", !strings.Contains(err.Error(), "pw"), "err = %v", err)
+		assertClean(t, logs)
 	})
 
-	t.Run("failure path", func(t *testing.T) {
-		logQueryTest(t, func(u string) string { return u + "/x?token=secret-123" }, true)
+	t.Run("bad base URL panics without the URL in the log", func(t *testing.T) {
+		logs := fixtures.CaptureLogs(t)
+
+		func() {
+			defer func() { _ = recover() }()
+
+			ehttp.NewClient(ehttp.WithBaseUrl("http://u:pw@[::1/x?token=secret-123#frag"))
+		}()
+
+		assertClean(t, logs)
 	})
 }
 

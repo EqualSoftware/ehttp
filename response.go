@@ -48,7 +48,7 @@ func (res *Response) GetCacheControlMaxAge() time.Duration {
 	return duration
 }
 
-// Read the response.Body as JSON
+// Read the response.Body as JSON. It reads the full body into memory.
 func (res *Response) JSON(value interface{}) error {
 	defer res.Body.Close()
 
@@ -60,13 +60,14 @@ func (res *Response) JSON(value interface{}) error {
 		return err
 	}
 
-	// Read to EOF so the connection can be reused.
-	_, _ = io.Copy(io.Discard, res.Body)
+	// Read the rest of a small body so the connection can be reused. A bigger
+	// body closes the connection (same limit as net/http maxPostHandlerReadBytes).
+	_, _ = io.CopyN(io.Discard, res.Body, 256<<10)
 
 	return nil
 }
 
-// Read the response.Body as String
+// Read the response.Body as String. It reads the full body into memory.
 func (res *Response) String() (string, error) {
 	defer res.Body.Close()
 
@@ -81,7 +82,7 @@ func (res *Response) String() (string, error) {
 	return string(bytes), nil
 }
 
-// Read the response.Body as Bytes
+// Read the response.Body as Bytes. It reads the full body into memory.
 func (res *Response) Bytes() ([]byte, error) {
 	defer res.Body.Close()
 

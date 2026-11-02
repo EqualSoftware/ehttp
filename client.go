@@ -35,9 +35,9 @@ type clientRequestConfig struct {
 	err           error
 }
 
-// defaultTimeout bounds a request when the caller sets no timeout. It matches
-// the 30 s dial timeout of http.DefaultTransport.
-// https://pkg.go.dev/net/http#DefaultTransport
+// defaultTimeout is the total limit of a request when the caller sets no
+// timeout. It also covers the read of the body (http.Client.Timeout).
+// https://pkg.go.dev/net/http#Client
 const defaultTimeout = 30 * time.Second
 
 func WithTimeout(value time.Duration) clientOptionFunc {
@@ -52,8 +52,7 @@ func WithBaseUrl(value string) clientOptionFunc {
 
 		if err != nil {
 			zap.L().Panic("invalid fetch base url option",
-				zap.String("url", value),
-				zap.Error(err),
+				zap.Error(logErr(err)),
 			)
 		}
 
@@ -133,6 +132,8 @@ func NewClient(options ...clientOptionFunc) *Client {
 	return c
 }
 
+// Execute sends the request. The returned error can hold the request URL, with
+// its query and credentials. Do not log it as it is.
 func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 	var err error
 	var req *http.Request
@@ -149,9 +150,10 @@ func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 	}
 
 	if cfg.err != nil {
-		zap.L().Error("invalid source url option", zap.Error(logErr(cfg.err)))
+		err = logErr(cfg.err)
+		zap.L().Error("invalid source url option", zap.Error(err))
 
-		return nil, cfg.err
+		return nil, err
 	}
 
 	if cfg.method == "" {
