@@ -1,6 +1,7 @@
 package middleware_test
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
@@ -128,4 +129,25 @@ func TestErrorCacheWithRecover(t *testing.T) {
 
 	ehttptest.Eq(t, "middleware composition", rec.Code, 500)
 	ehttptest.True(t, "middleware composition", rec.Body.Len() > 0, "empty body after recovered panic")
+}
+
+// A flush under ErrorCache commits the response: it works, and the error
+// status still gets its Cache-Control.
+func TestFlushInsideErrorCacheWorks(t *testing.T) {
+	t.Parallel()
+
+	var got error
+
+	h := fixtures.Handler(func(res *ehttp.ResponseWriter, _ *ehttp.Request) {
+		res.Status(404)
+		got = http.NewResponseController(res).Flush()
+		_, _ = res.Write([]byte("x"))
+	}, middleware.ErrorCache(time.Minute))
+
+	rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
+
+	ehttptest.Eq(t, "ResponseController.Flush", got, nil)
+	ehttptest.Eq(t, "ErrorCache contract status kept", rec.Code, 404)
+	ehttptest.Eq(t, "ErrorCache contract cache set before the flush", strings.Contains(rec.Header().Get("Cache-Control"), "max-age=60"), true)
+	ehttptest.Eq(t, "body still sent once", rec.Body.String(), "x")
 }
