@@ -5,7 +5,7 @@
 - Language: ASD-STE100
 - Acceptance check: `make check`. It runs these checks:
   - test: `EHTTP_PENDING=1 go test -race -shuffle=on -count=1 ./...` (pending mode: an open bug is a skip, a fixed bug with a marker fails)
-  - known-bugs: the pending list by bug ID. `make tdd` shows the red view (each open bug fails)
+  - known-bugs: the pending list by bug name. `make tdd` shows the red view (each open bug fails)
   - allocs: `go test -count=1 -run='^TestAllocs' ./test/perf`
   - lint: `golangci-lint run ./...` (0 issues)
   - vuln: `govulncheck ./...`
