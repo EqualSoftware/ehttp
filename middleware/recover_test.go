@@ -73,16 +73,16 @@ func TestRecover(t *testing.T) {
 	})
 }
 
-// S6: the panic value is internal and must not reach the client.
+// The panic value is internal and must not reach the client.
 func TestRecoverDoesNotLeakPanicValue(t *testing.T) {
 	t.Parallel()
 
 	rec := ehttptest.Do(fixtures.Handler(bPanic("db password=hunter2"), middleware.Recover()), fixtures.Req("GET", "/x"))
 
-	ehttptest.True(t, "S6", !strings.Contains(rec.Body.String(), "hunter2"), "body leaks the panic value: %q", rec.Body.String())
+	ehttptest.True(t, "the panic value stays internal", !strings.Contains(rec.Body.String(), "hunter2"), "body leaks the panic value: %q", rec.Body.String())
 }
 
-// S6: http.ErrAbortHandler is net/http's way to abort a response; swallowing
+// http.ErrAbortHandler is net/http's way to abort a response; swallowing
 // it hides the abort from the server.
 func TestRecoverRethrowsAbortHandler(t *testing.T) {
 	t.Parallel()
@@ -99,7 +99,7 @@ func TestRecoverRethrowsAbortHandler(t *testing.T) {
 
 // The "response already started" case (a 500 JSON glued to a chunked body,
 // RFC 9112 §8: the client must see an incomplete message) needs a real
-// server. It lives in test/security (TestCSecurityS6PanicAfterHeadersSent).
+// server. It lives in test/security (TestCSecurityPanicAfterHeadersSent).
 
 // A recovered panic goes to the logger of the server, with the request fields.
 func TestRecoverLogsThroughServerLogger(t *testing.T) {

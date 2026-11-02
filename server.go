@@ -62,7 +62,7 @@ func WithMode(m Mode) serverOption {
 // A nil logger panics. The server never changes the global zap logger.
 func WithLogger(l *zap.Logger) serverOption {
 	if l == nil {
-		bootPanic("WithLogger", "a nil logger", "the server needs a logger for its own messages (author decision)",
+		bootPanic("WithLogger", "a nil logger", "the server needs a logger for its own messages",
 			"pass a *zap.Logger, or remove WithLogger to use the preset of WithMode")
 	}
 

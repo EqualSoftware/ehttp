@@ -40,7 +40,7 @@ func WithTimeout(value time.Duration) clientOptionFunc {
 
 func WithBaseUrl(value string) clientOptionFunc {
 	return func(cfg *Client) {
-		url, err := url.Parse(value)
+		base, err := url.Parse(value)
 
 		if err != nil {
 			zap.L().Panic("invalid fetch base url option",
@@ -49,7 +49,7 @@ func WithBaseUrl(value string) clientOptionFunc {
 			)
 		}
 
-		cfg.baseUrl = url
+		cfg.baseUrl = base
 	}
 }
 
@@ -192,7 +192,7 @@ func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 	}
 
 	if cfg.ctx == nil {
-		req, err = http.NewRequest(cfg.method, req_url.String(), body)
+		req, err = http.NewRequest(cfg.method, req_url.String(), body) //nolint:noctx // no context is set: the caller did not ask for one
 	} else {
 		req, err = http.NewRequestWithContext(cfg.ctx, cfg.method, req_url.String(), body)
 	}
@@ -219,7 +219,7 @@ func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 		req.Header.Set(key, strings.Join(header, ", "))
 	}
 
-	res, err = client.httpClient.Do(req)
+	res, err = client.httpClient.Do(req) //nolint:bodyclose // the caller closes the body through Response
 
 	result := &Response{res}
 

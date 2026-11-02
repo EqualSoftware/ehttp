@@ -64,15 +64,15 @@ func TestResponseHeaderPanics(t *testing.T) {
 		{"Set Vary", "RFC 9110 §12.5.5", "res.Vary(", func(r *ResponseWriter) { r.Set("Vary", "a") }},
 		{"Append Vary", "RFC 9110 §12.5.5", "res.Vary(", func(r *ResponseWriter) { r.Append("vary", "a") }},
 		{"Remove Vary", "RFC 9110 §12.5.5", "res.Vary(", func(r *ResponseWriter) { r.Remove("Vary") }},
-		{"Set after sent", "author decision", "already sent", func(r *ResponseWriter) { sent(r).Set("X-A", "1") }},
-		{"Append after sent", "author decision", "already sent", func(r *ResponseWriter) { sent(r).Append("X-A", "1") }},
-		{"Remove after sent", "author decision", "already sent", func(r *ResponseWriter) { sent(r).Remove("X-A") }},
-		{"Vary after sent", "author decision", "already sent", func(r *ResponseWriter) { sent(r).Vary("Origin") }},
-		{"Cookie after sent", "author decision", "already sent", func(r *ResponseWriter) { sent(r).Cookie(&http.Cookie{Name: "a", Value: "1"}) }},
-		{"ClearCookie after sent", "author decision", "already sent", func(r *ResponseWriter) { sent(r).ClearCookie("a") }},
-		{"Status after sent", "author decision", "already sent", func(r *ResponseWriter) { sent(r).Status(404) }},
-		{"Location after sent", "author decision", "already sent", func(r *ResponseWriter) { sent(r).Location("/") }},
-		{"Cookie nil", "author decision", "nil", func(r *ResponseWriter) { r.Cookie(nil) }},
+		{"Set after sent", "strict API: a write after the response is sent panics", "already sent", func(r *ResponseWriter) { sent(r).Set("X-A", "1") }},
+		{"Append after sent", "strict API: a write after the response is sent panics", "already sent", func(r *ResponseWriter) { sent(r).Append("X-A", "1") }},
+		{"Remove after sent", "strict API: a write after the response is sent panics", "already sent", func(r *ResponseWriter) { sent(r).Remove("X-A") }},
+		{"Vary after sent", "strict API: a write after the response is sent panics", "already sent", func(r *ResponseWriter) { sent(r).Vary("Origin") }},
+		{"Cookie after sent", "strict API: a write after the response is sent panics", "already sent", func(r *ResponseWriter) { sent(r).Cookie(&http.Cookie{Name: "a", Value: "1"}) }},
+		{"ClearCookie after sent", "strict API: a write after the response is sent panics", "already sent", func(r *ResponseWriter) { sent(r).ClearCookie("a") }},
+		{"Status after sent", "strict API: a write after the response is sent panics", "already sent", func(r *ResponseWriter) { sent(r).Status(404) }},
+		{"Location after sent", "strict API: a write after the response is sent panics", "already sent", func(r *ResponseWriter) { sent(r).Location("/") }},
+		{"Cookie nil", "strict API: a nil cookie panics", "nil", func(r *ResponseWriter) { r.Cookie(nil) }},
 		{"Cookie invalid", "RFC 6265 §4.1.1", "invalid", func(r *ResponseWriter) { r.Cookie(&http.Cookie{Name: "bad name", Value: "1"}) }},
 		{"Status 99", "RFC 9110 §15", "99", func(r *ResponseWriter) { r.Status(99) }},
 		{"Status 600", "RFC 9110 §15", "600", func(r *ResponseWriter) { r.Status(600) }},
@@ -204,8 +204,8 @@ func TestResponseHeaderStatusThenBody(t *testing.T) {
 
 	resp, body := aGetBody(t, aRealServer(t, s).URL+"/")
 
-	ehttptest.Eq(t, "S4", resp.StatusCode, 201)
-	ehttptest.Eq(t, "S4", body, "x")
+	ehttptest.Eq(t, "SendStatus then String sends the status and the body", resp.StatusCode, 201)
+	ehttptest.Eq(t, "SendStatus then String sends the status and the body", body, "x")
 }
 
 func TestResponseHeaderWriteHeader1xx(t *testing.T) {
@@ -237,7 +237,7 @@ func TestResponseHeaderNoPanicAfterClientGone(t *testing.T) {
 		res.String("again")
 	})
 
-	ehttptest.Eq(t, "design 2.3: late writes are dropped", msg, "")
+	ehttptest.Eq(t, "cooperative timeout: a late write after the context ends is dropped", msg, "")
 }
 
 func contextCancelled() (ctx context.Context, cancel context.CancelFunc) {
@@ -281,7 +281,7 @@ func TestValidFieldValue(t *testing.T) {
 func TestResponseHeaderOneLine(t *testing.T) {
 	t.Parallel()
 
-	const basis = "RFC 9110 §5.3 (review: always one line)"
+	const basis = "RFC 9110 §5.3 (a list field is always one line)"
 
 	t.Run("Append without news", func(t *testing.T) {
 		t.Parallel()
@@ -326,13 +326,13 @@ func TestResponseWriterInterceptorBodySent(t *testing.T) {
 
 	msg := aPanics(func() { outer.String("y") })
 
-	ehttptest.True(t, "author decision 2026-11-01 (review: SendResponse is a body)", strings.Contains(msg, "already sent a body"), "message %q", msg)
+	ehttptest.True(t, "SendResponse sends a body, so a second body panics", strings.Contains(msg, "already sent a body"), "message %q", msg)
 }
 
 func TestBootValidation(t *testing.T) {
 	t.Parallel()
 
-	const basis = "author decision 2026-11-01 (invalid developer input panics at boot)"
+	const basis = "invalid developer input panics at boot"
 
 	cors := func(o CorsOptions) func() {
 		return func() { NewServer(WithCors(o)) }

@@ -120,8 +120,8 @@ func TestRouterEncodedSlashStaysInOneSegment(t *testing.T) {
 
 	ehttptest.Eq(t, "RFC 3986 §2.2 (%2F is data, not a separator)", rec.Code, 200)
 
-	ehttptest.KnownBug(t, "C10", func(t testing.TB) {
-		ehttptest.Eq(t, "C10 + RFC 3986 §2.1 (the param value is decoded)", rec.Body.String(), "file:a/b")
+	ehttptest.KnownBug(t, "route-params-not-decoded", func(t testing.TB) {
+		ehttptest.Eq(t, "RFC 3986 §2.1 (the param value is decoded)", rec.Body.String(), "file:a/b")
 	})
 }
 
@@ -146,7 +146,7 @@ func TestRouterRegexAnchoring(t *testing.T) {
 			t.Parallel()
 
 			rec := aDo(s, "GET", target)
-			ehttptest.Eq(t, "S12: regex must match the whole segment", rec.Code, 404)
+			ehttptest.Eq(t, "regex must match the whole segment", rec.Code, 404)
 		})
 	}
 }
@@ -261,7 +261,7 @@ func TestRouterMethods(t *testing.T) {
 	t.Run("OPTIONS response advertises Allow", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "NA-1", func(t testing.TB) {
+		ehttptest.KnownBug(t, "options-response-lacks-allow", func(t testing.TB) {
 			rec := aDo(h, "OPTIONS", "/get-only")
 			ehttptest.Eq(t, "RFC 9110 §9.3.7 (SHOULD send Allow)", aAllow(rec), "GET,HEAD,OPTIONS")
 		})
@@ -275,7 +275,7 @@ func TestRouterMethods(t *testing.T) {
 	t.Run("explicit HEAD route wins over GET registered first", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "NA-2", func(t testing.TB) {
+		ehttptest.KnownBug(t, "explicit-head-route-shadowed-by-get", func(t testing.TB) {
 			ehttptest.Eq(t, "net/http ServeMux: HEAD pattern is more specific than GET", aDo(h, "HEAD", "/with-head").Body.String(), "h")
 		})
 	})
@@ -337,18 +337,18 @@ func TestRouterMethodOrder(t *testing.T) {
 	t.Run("method registered later on the same path", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "C1", func(t testing.TB) {
+		ehttptest.KnownBug(t, "second-method-on-path-returns-405", func(t testing.TB) {
 			rec := aDo(h, "POST", "/x")
-			ehttptest.Eq(t, "C1: the route of the right method must be found", rec.Code, 200)
-			ehttptest.Eq(t, "C1", rec.Body.String(), "post")
+			ehttptest.Eq(t, "the route of the right method must be found", rec.Code, 200)
+			ehttptest.Eq(t, "the route of the right method must be found", rec.Body.String(), "post")
 		})
 	})
 
 	t.Run("static route of another method behind a param route", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "C1", func(t testing.TB) {
-			ehttptest.Eq(t, "C1", aDo(h, "POST", "/a/new").Body.String(), "post-static")
+		ehttptest.KnownBug(t, "second-method-on-path-returns-405", func(t testing.TB) {
+			ehttptest.Eq(t, "a static route of the right method wins over a param route", aDo(h, "POST", "/a/new").Body.String(), "post-static")
 		})
 	})
 
@@ -372,8 +372,8 @@ func TestRouterPathParamsCommittedOnlyOnFullMatch(t *testing.T) {
 
 	ehttptest.Eq(t, "route's own param is set", strings.Contains(rec.Body.String(), "name=5"), true)
 
-	ehttptest.KnownBug(t, "C12", func(t testing.TB) {
-		ehttptest.Eq(t, "C12: a route that did not match must not leave its params", rec.Body.String(), "id=;name=5")
+	ehttptest.KnownBug(t, "params-leak-from-unmatched-route", func(t testing.TB) {
+		ehttptest.Eq(t, "a route that did not match must not leave its params", rec.Body.String(), "id=;name=5")
 	})
 }
 
@@ -397,8 +397,8 @@ func TestRouterParamDecoding(t *testing.T) {
 		t.Run(tt.target, func(t *testing.T) {
 			t.Parallel()
 
-			ehttptest.KnownBug(t, "C10", func(t testing.TB) {
-				ehttptest.Eq(t, "C10: params are decoded (Express, net/http PathValue)", aDo(h, "GET", tt.target).Body.String(), tt.want)
+			ehttptest.KnownBug(t, "route-params-not-decoded", func(t testing.TB) {
+				ehttptest.Eq(t, "params are decoded (Express, net/http PathValue)", aDo(h, "GET", tt.target).Body.String(), tt.want)
 			})
 		})
 	}
@@ -438,7 +438,7 @@ func TestRouterMiddlewareScopeAndOrder(t *testing.T) {
 
 		aDo(s, "GET", "/api/x")
 
-		ehttptest.Eq(t, "S1: Route(prefix, mw...) applies mw to the group", strings.Join(log, ">"), "global>group>route>handler")
+		ehttptest.Eq(t, "Route(prefix, mw...) applies mw to the group", strings.Join(log, ">"), "global>group>route>handler")
 	})
 
 	t.Run("middleware that does not call next stops the chain", func(t *testing.T) {
@@ -510,7 +510,7 @@ func TestRouterGroups(t *testing.T) {
 		ehttptest.Eq(t, "Express Router mount path", aDo(h, "GET", "/v1/users").Code, 404)
 	})
 
-	t.Run("S1 group middleware runs", func(t *testing.T) {
+	t.Run("group middleware runs", func(t *testing.T) {
 		t.Parallel()
 
 		ran := false
@@ -522,10 +522,10 @@ func TestRouterGroups(t *testing.T) {
 
 		aDo(s, "GET", "/api/x")
 
-		ehttptest.True(t, "S1", ran, "group middleware never ran")
+		ehttptest.True(t, "group middleware runs", ran, "group middleware never ran")
 	})
 
-	t.Run("S1 nested group middleware runs", func(t *testing.T) {
+	t.Run("nested group middleware runs", func(t *testing.T) {
 		t.Parallel()
 
 		var log []string
@@ -536,10 +536,10 @@ func TestRouterGroups(t *testing.T) {
 
 		aDo(s, "GET", "/a/b/x")
 
-		ehttptest.Eq(t, "S1: nested Route keeps outer and inner mw", strings.Join(log, ">"), "outer>inner")
+		ehttptest.Eq(t, "nested Route keeps outer and inner mw", strings.Join(log, ">"), "outer>inner")
 	})
 
-	t.Run("S1 auth middleware on a group protects its routes", func(t *testing.T) {
+	t.Run("auth middleware on a group protects its routes", func(t *testing.T) {
 		t.Parallel()
 
 		auth := func(next Handler) HandlerFunc {
@@ -558,7 +558,7 @@ func TestRouterGroups(t *testing.T) {
 
 		rec := aDo(s, "GET", "/admin/secret")
 
-		ehttptest.Eq(t, "S1: unauthenticated request must be rejected", rec.Code, 401)
+		ehttptest.Eq(t, "unauthenticated request must be rejected", rec.Code, 401)
 	})
 
 	t.Run("group middleware does not leak to routes outside the group", func(t *testing.T) {
@@ -570,10 +570,10 @@ func TestRouterGroups(t *testing.T) {
 		s.GET("/outside", aText("outside"))
 
 		aDo(s, "GET", "/outside")
-		ehttptest.Eq(t, "S1", len(log), 0)
+		ehttptest.Eq(t, "group middleware does not run for routes outside the group", len(log), 0)
 	})
 
-	t.Run("S2 sub.Use runs for routes of the group", func(t *testing.T) {
+	t.Run("sub.Use runs for routes of the group", func(t *testing.T) {
 		t.Parallel()
 
 		var log []string
@@ -583,10 +583,10 @@ func TestRouterGroups(t *testing.T) {
 		g.GET("/x", aText("x"))
 
 		aDo(s, "GET", "/api/x")
-		ehttptest.Eq(t, "S2", len(log), 1)
+		ehttptest.Eq(t, "sub.Use runs for routes of the group", len(log), 1)
 	})
 
-	t.Run("S2 sub.Use does not run for routes outside the group", func(t *testing.T) {
+	t.Run("sub.Use does not run for routes outside the group", func(t *testing.T) {
 		t.Parallel()
 
 		var log []string
@@ -598,10 +598,10 @@ func TestRouterGroups(t *testing.T) {
 
 		aDo(s, "GET", "/outside")
 
-		ehttptest.Eq(t, "S2: sub.Use is scoped to the group", len(log), 0)
+		ehttptest.Eq(t, "sub.Use is scoped to the group", len(log), 0)
 	})
 
-	t.Run("S2 sub.Use does not run for 404", func(t *testing.T) {
+	t.Run("sub.Use does not run for 404", func(t *testing.T) {
 		t.Parallel()
 
 		var log []string
@@ -611,10 +611,10 @@ func TestRouterGroups(t *testing.T) {
 
 		aDo(s, "GET", "/unknown")
 
-		ehttptest.Eq(t, "S2: sub.Use is scoped to the group", len(log), 0)
+		ehttptest.Eq(t, "sub.Use is scoped to the group", len(log), 0)
 	})
 
-	t.Run("S2 nested sub.Use does not run outside the nested group", func(t *testing.T) {
+	t.Run("nested sub.Use does not run outside the nested group", func(t *testing.T) {
 		t.Parallel()
 
 		var log []string
@@ -627,6 +627,6 @@ func TestRouterGroups(t *testing.T) {
 
 		aDo(s, "GET", "/a/y")
 
-		ehttptest.Eq(t, "S2: inner.Use must not affect the outer group", len(log), 0)
+		ehttptest.Eq(t, "inner.Use must not affect the outer group", len(log), 0)
 	})
 }

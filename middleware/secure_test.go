@@ -33,15 +33,15 @@ func TestSecureDefaults(t *testing.T) {
 	}
 }
 
-// C9: OWASP recommends `X-XSS-Protection: 0`; the "1; mode=block" auditor
+// OWASP recommends `X-XSS-Protection: 0`; the "1; mode=block" auditor
 // was removed from browsers and had its own information leaks.
 func TestSecureXSSProtectionDefault(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "C9", func(t testing.TB) {
+	ehttptest.KnownBug(t, "xss-protection-not-zero", func(t testing.TB) {
 		rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Secure(middleware.DefaultSecureConfig)), fixtures.Req("GET", "/x"))
 
-		ehttptest.Eq(t, "C9 (OWASP Secure Headers)", rec.Header().Get("X-XSS-Protection"), "0")
+		ehttptest.Eq(t, "OWASP Secure Headers: X-XSS-Protection is 0", rec.Header().Get("X-XSS-Protection"), "0")
 	})
 }
 
@@ -99,7 +99,7 @@ func TestSecureHSTS(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// S7: X-Forwarded-Proto counts only from a trusted peer (httptest peer 192.0.2.1).
+			// X-Forwarded-Proto counts only from a trusted peer (httptest peer 192.0.2.1).
 			s := ehttp.NewServer(ehttp.WithTrustedProxies("192.0.2.1"))
 			s.GET("/x", fixtures.OK, middleware.Secure(tt.opt))
 
@@ -131,7 +131,7 @@ func TestSecureHSTSOverDirectTLS(t *testing.T) {
 	}
 	defer res.Body.Close()
 
-	// NB-6 is the same bug as S7 (Protocol() ignores r.TLS).
+	// Protocol() reads r.TLS, so HSTS works on direct TLS.
 	ehttptest.Eq(t, "RFC 9110 §15.3.1", res.StatusCode, http.StatusOK)
 	ehttptest.True(t, "RFC 6797 §7.2", res.Header.Get("Strict-Transport-Security") != "",
 		"no Strict-Transport-Security on a direct TLS connection")

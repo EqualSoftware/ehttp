@@ -69,11 +69,11 @@ func TestRequestId(t *testing.T) {
 	})
 }
 
-// bValidID is the C11 rule (author decision): an incoming id is kept only when
+// bValidID is the rule for an incoming id: it is kept only when
 // it has 1 to 128 characters, all in [A-Za-z0-9._-].
 var bValidID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
-// C11: an id from the client is echoed back, so its length and charset are
+// An id from the client is echoed back, so its length and charset are
 // limited. An id that breaks the rule is replaced by a generated one that
 // follows the same rule.
 func TestRequestIdUntrustedInput(t *testing.T) {
@@ -87,7 +87,7 @@ func TestRequestIdUntrustedInput(t *testing.T) {
 		id := strings.Repeat("aZ09._-", 19)[:128]
 		rec := ehttptest.Do(h, fixtures.Req("GET", "/x", "X-Request-Id", id))
 
-		ehttptest.Eq(t, "C11 (1 to 128 characters of [A-Za-z0-9._-])", rec.Header().Get("X-Request-Id"), id)
+		ehttptest.Eq(t, "a valid id (1 to 128 characters of [A-Za-z0-9._-]) is kept", rec.Header().Get("X-Request-Id"), id)
 	})
 
 	t.Run("replaces an empty id", func(t *testing.T) {
@@ -96,7 +96,7 @@ func TestRequestIdUntrustedInput(t *testing.T) {
 		rec := ehttptest.Do(h, fixtures.Req("GET", "/x", "X-Request-Id", ""))
 		got := rec.Header().Get("X-Request-Id")
 
-		ehttptest.True(t, "C11 (1 to 128 characters)", bValidID.MatchString(got), "response id %q breaks the rule", got)
+		ehttptest.True(t, "the response id has 1 to 128 characters", bValidID.MatchString(got), "response id %q breaks the rule", got)
 	})
 
 	tests := []struct{ name, id string }{
@@ -117,12 +117,12 @@ func TestRequestIdUntrustedInput(t *testing.T) {
 		t.Run("replaces "+tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			ehttptest.KnownBug(t, "C11", func(t testing.TB) {
+			ehttptest.KnownBug(t, "request-id-echoed-unvalidated", func(t testing.TB) {
 				rec := ehttptest.Do(h, fixtures.Req("GET", "/x", "X-Request-Id", tt.id))
 				got := rec.Header().Get("X-Request-Id")
 
-				ehttptest.True(t, "C11", got != tt.id, "untrusted id echoed back unchanged (len %d)", len(got))
-				ehttptest.True(t, "C11 (the new id follows the same rule)", bValidID.MatchString(got), "response id %q breaks the rule", got)
+				ehttptest.True(t, "an invalid id is replaced", got != tt.id, "untrusted id echoed back unchanged (len %d)", len(got))
+				ehttptest.True(t, "the new id follows the same rule", bValidID.MatchString(got), "response id %q breaks the rule", got)
 			})
 		})
 	}

@@ -16,10 +16,6 @@ import (
 	"github.com/EqualSoftware/ehttp/middleware"
 )
 
-// RFC 6265 (Set-Cookie): ehttp has no cookie API today (only the HeaderSetCookie
-// constant), so there is nothing to test. Proposal 2.1 adds Cookie/ClearCookie;
-// its cases belong with that change.
-
 type cResp struct {
 	Status int
 	Header http.Header
@@ -29,12 +25,12 @@ type cResp struct {
 
 type cWant func(t testing.TB, basis string, r *cResp)
 
-// conformanceCase is one row of the C3 table. basis must name the exact
-// section (or proposal ID) that makes want the correct behavior.
+// conformanceCase is one row of the conformance table. basis must name the exact
+// spec section that makes want the correct behavior.
 type conformanceCase struct {
 	name     string
 	basis    string
-	knownBug string // proposal ID or NC-n while the bug reproduces
+	knownBug string // name of the open defect while the bug reproduces
 	fixture  string
 	method   string
 	path     string
@@ -302,7 +298,7 @@ func cFixture(t testing.TB, name string) (srv *ehttp.Server, frac string) {
 }
 
 // cReference serves the same file with http.ServeContent, the behavior the
-// proposal (C2) wants SendFile to match.
+// target for SendFile to match.
 func cReference(t testing.TB, frac, etag string) *httptest.Server {
 	h := func(w http.ResponseWriter, r *http.Request) {
 		p := frac
@@ -369,7 +365,7 @@ func cRun(t testing.TB, base, path, method string, hdr http.Header) *cResp {
 }
 
 func TestCConformance(t *testing.T) {
-	// Not parallel: cors-* fixtures mutate the global DefaultCorsOptions (S3).
+	// Not parallel: cors-* fixtures mutate the global DefaultCorsOptions.
 	for _, tc := range conformanceCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.basis == "" {
@@ -452,11 +448,11 @@ func conformanceCases() []conformanceCase {
 			want: cAll(cStatus(405), cHasHdr("Allow"), cHasToken("Allow", "GET"))},
 		{name: "405 Allow lists every method on the path", basis: h1556, fixture: "main", method: http.MethodDelete, path: "/shared",
 			want: cAll(cStatus(405), cHasToken("Allow", "GET"), cHasToken("Allow", "POST"))},
-		{name: "method registered after another on same path is routed", basis: "C1; " + h1556, knownBug: "C1", fixture: "main", method: http.MethodPost, path: "/shared",
+		{name: "method registered after another on same path is routed", basis: h1556, knownBug: "second-method-on-path-returns-405", fixture: "main", method: http.MethodPost, path: "/shared",
 			want: cAll(cStatus(200), cBody("post"))},
 		{name: "OPTIONS answers 2xx", basis: h937, fixture: "main", method: opts, path: "/only",
 			want: cStatus(200, 204)},
-		{name: "OPTIONS advertises Allow (SHOULD)", basis: h937 + " (NA-1)", knownBug: "NA-1", fixture: "main", method: opts, path: "/only",
+		{name: "OPTIONS advertises Allow (SHOULD)", basis: h937, knownBug: "options-response-lacks-allow", fixture: "main", method: opts, path: "/only",
 			want: cAll(cHasToken("Allow", "GET"), cHasToken("Allow", "OPTIONS"))},
 
 		// ---- SendFile: Range (RFC 9110 §14) ---------------------------------------
@@ -464,21 +460,21 @@ func conformanceCases() []conformanceCase {
 			want: cAll(cStatus(200), cHdr("Accept-Ranges", "bytes"), cBody(cFileBody))},
 		{name: "file: bytes=10-19", basis: h1411, fixture: "file", method: get, path: "/file", hdr: rng("bytes=10-19"), ref: true,
 			want: cAll(cStatus(206), cHdr("Content-Range", "bytes 10-19/100"), cBody("0123456789"))},
-		{name: "file: bytes=0-0 is the first byte only", basis: h1411 + " (C2)", knownBug: "C2", fixture: "file", method: get, path: "/file", hdr: rng("bytes=0-0"), ref: true,
+		{name: "file: bytes=0-0 is the first byte only", basis: h1411, knownBug: "range-first-byte-returns-whole-file", fixture: "file", method: get, path: "/file", hdr: rng("bytes=0-0"), ref: true,
 			want: cAll(cStatus(206), cHdr("Content-Range", "bytes 0-0/100"), cBody("0"))},
-		{name: "file: bytes=90- open-ended", basis: h1411 + " (C2)", knownBug: "C2", fixture: "file", method: get, path: "/file", hdr: rng("bytes=90-"), ref: true,
+		{name: "file: bytes=90- open-ended", basis: h1411, knownBug: "range-suffix-returns-416", fixture: "file", method: get, path: "/file", hdr: rng("bytes=90-"), ref: true,
 			want: cAll(cStatus(206), cHdr("Content-Range", "bytes 90-99/100"), cBody("0123456789"))},
-		{name: "file: bytes=-5 suffix", basis: h1411 + " (C2)", knownBug: "C2", fixture: "file", method: get, path: "/file", hdr: rng("bytes=-5"), ref: true,
+		{name: "file: bytes=-5 suffix", basis: h1411, knownBug: "range-suffix-returns-416", fixture: "file", method: get, path: "/file", hdr: rng("bytes=-5"), ref: true,
 			want: cAll(cStatus(206), cHdr("Content-Range", "bytes 95-99/100"), cBody("56789"))},
 		{name: "file: last-pos beyond size is clamped", basis: h1411, fixture: "file", method: get, path: "/file", hdr: rng("bytes=95-999"), ref: true,
 			want: cAll(cStatus(206), cHdr("Content-Range", "bytes 95-99/100"), cBody("56789"))},
 		{name: "file: first-pos beyond size is 416", basis: h1417, fixture: "file", method: get, path: "/file", hdr: rng("bytes=100-110"), ref: true,
 			want: cStatus(416)},
-		{name: "file: 416 has Content-Range bytes */size", basis: h1417 + " (C2)", knownBug: "C2", fixture: "file", method: get, path: "/file", hdr: rng("bytes=100-110"), ref: true,
+		{name: "file: 416 has Content-Range bytes */size", basis: h1417, knownBug: "range-416-lacks-content-range", fixture: "file", method: get, path: "/file", hdr: rng("bytes=100-110"), ref: true,
 			want: cAll(cStatus(416), cHdr("Content-Range", "bytes */100"))},
 		{name: "file: last-pos < first-pos is invalid, ignore (200) or 416", basis: "RFC 9110 §14.2 invalid ranges-specifier", fixture: "file", method: get, path: "/file", hdr: rng("bytes=5-2"),
 			want: cStatus(200, 416)},
-		{name: "file: several ranges answered whole or multipart", basis: h146 + " (C2)", knownBug: "C2", fixture: "file", method: get, path: "/file", hdr: rng("bytes=0-9,20-29"), ref: true,
+		{name: "file: several ranges answered whole or multipart", basis: h146, knownBug: "multi-range-returns-first-only", fixture: "file", method: get, path: "/file", hdr: rng("bytes=0-9,20-29"), ref: true,
 			want: cMultiOrFull(cFileBody)},
 		{name: "file: HEAD has Content-Length, no body", basis: h932, fixture: "file", method: head, path: "/file", ref: true,
 			want: cAll(cStatus(200), cBody(""), cHdr("Content-Length", "100"), cHdr("Accept-Ranges", "bytes"))},
@@ -486,9 +482,9 @@ func conformanceCases() []conformanceCase {
 		// ---- SendFile: If-Range (§13.1.5) -----------------------------------------
 		{name: "file: If-Range date equal to Last-Modified honors Range", basis: h1315, fixture: "file", method: get, path: "/file", hdr: map[string]string{"Range": "bytes=0-4", "If-Range": "{lm}"}, ref: true,
 			want: cAll(cStatus(206), cBody("01234"))},
-		{name: "file: If-Range stale date ignores Range", basis: h1315 + " (C2)", knownBug: "C2", fixture: "file", method: get, path: "/file", hdr: map[string]string{"Range": "bytes=0-4", "If-Range": "{lm-1h}"}, ref: true,
+		{name: "file: If-Range stale date ignores Range", basis: h1315, knownBug: "if-range-ignored", fixture: "file", method: get, path: "/file", hdr: map[string]string{"Range": "bytes=0-4", "If-Range": "{lm-1h}"}, ref: true,
 			want: cAll(cStatus(200), cBody(cFileBody))},
-		{name: "file: If-Range with weak validator ignores Range", basis: h1315 + " strong comparison (C2)", knownBug: "C2", fixture: "file", method: get, path: "/file", hdr: map[string]string{"Range": "bytes=0-4", "If-Range": "{etag}"}, ref: true,
+		{name: "file: If-Range with weak validator ignores Range", basis: h1315 + " strong comparison", knownBug: "if-range-ignored", fixture: "file", method: get, path: "/file", hdr: map[string]string{"Range": "bytes=0-4", "If-Range": "{etag}"}, ref: true,
 			want: cAll(cStatus(200), cBody(cFileBody))},
 
 		// ---- SendFile: conditionals (§13.1, §13.2.2) ------------------------------
@@ -496,13 +492,13 @@ func conformanceCases() []conformanceCase {
 			want: cAll(cStatus(304), cBody(""), cHasHdr("Etag"))},
 		{name: "file: If-None-Match different tag is 200", basis: h1312, fixture: "file", method: get, path: "/file", hdr: hd("If-None-Match", `W/"other"`), ref: true,
 			want: cAll(cStatus(200), cBody(cFileBody))},
-		{name: "file: If-None-Match uses weak comparison (strong form of same tag)", basis: h1312 + " weak comparison (C2)", knownBug: "C2", fixture: "file", method: get, path: "/file", hdr: hd("If-None-Match", "{etag-strong}"), ref: true,
+		{name: "file: If-None-Match uses weak comparison (strong form of same tag)", basis: h1312 + " weak comparison", knownBug: "file-conditional-headers-ignored", fixture: "file", method: get, path: "/file", hdr: hd("If-None-Match", "{etag-strong}"), ref: true,
 			want: cStatus(304)},
-		{name: "file: If-None-Match list containing the tag", basis: h1312 + " list (C2)", knownBug: "C2", fixture: "file", method: get, path: "/file", hdr: hd("If-None-Match", `"zzz", {etag}`), ref: true,
+		{name: "file: If-None-Match list containing the tag", basis: h1312 + " list", knownBug: "file-conditional-headers-ignored", fixture: "file", method: get, path: "/file", hdr: hd("If-None-Match", `"zzz", {etag}`), ref: true,
 			want: cStatus(304)},
-		{name: "file: If-None-Match * on existing resource", basis: h1312 + " * (C2)", knownBug: "C2", fixture: "file", method: get, path: "/file", hdr: hd("If-None-Match", "*"), ref: true,
+		{name: "file: If-None-Match * on existing resource", basis: h1312 + " *", knownBug: "file-conditional-headers-ignored", fixture: "file", method: get, path: "/file", hdr: hd("If-None-Match", "*"), ref: true,
 			want: cStatus(304)},
-		{name: "file: If-Modified-Since == Last-Modified (fractional mtime) is 304", basis: h1313 + " (C2)", knownBug: "C2", fixture: "file", method: get, path: "/file", hdr: hd("If-Modified-Since", "{lm}"), ref: true,
+		{name: "file: If-Modified-Since == Last-Modified (fractional mtime) is 304", basis: h1313, knownBug: "if-modified-since-subsecond-mtime", fixture: "file", method: get, path: "/file", hdr: hd("If-Modified-Since", "{lm}"), ref: true,
 			want: cStatus(304)},
 		{name: "file: If-Modified-Since == Last-Modified (whole-second mtime) is 304", basis: h1313, fixture: "file", method: get, path: "/file-sec", hdr: hd("If-Modified-Since", "{lm}"), ref: true,
 			want: cStatus(304)},
@@ -512,13 +508,13 @@ func conformanceCases() []conformanceCase {
 			want: cAll(cStatus(200), cBody(cFileBody))},
 		{name: "file: invalid If-Modified-Since is ignored", basis: h1313 + " (invalid date ignored)", fixture: "file", method: get, path: "/file", hdr: hd("If-Modified-Since", "yesterday"), ref: true,
 			want: cStatus(200)},
-		{name: "file: If-None-Match wins over If-Modified-Since", basis: h1322 + " (C2)", knownBug: "C2", fixture: "file", method: get, path: "/file", hdr: map[string]string{"If-None-Match": `W/"other"`, "If-Modified-Since": "{lm+1h}"}, ref: true,
+		{name: "file: If-None-Match wins over If-Modified-Since", basis: h1322, knownBug: "file-conditional-headers-ignored", fixture: "file", method: get, path: "/file", hdr: map[string]string{"If-None-Match": `W/"other"`, "If-Modified-Since": "{lm+1h}"}, ref: true,
 			want: cAll(cStatus(200), cBody(cFileBody))},
-		{name: "file: If-Match that does not match is 412", basis: h1311 + " (C2)", knownBug: "C2", fixture: "file", method: get, path: "/file", hdr: hd("If-Match", `"nope"`), ref: true,
+		{name: "file: If-Match that does not match is 412", basis: h1311, knownBug: "file-conditional-headers-ignored", fixture: "file", method: get, path: "/file", hdr: hd("If-Match", `"nope"`), ref: true,
 			want: cStatus(412)},
 		{name: "file: If-Match * on existing resource is 200", basis: h1311, fixture: "file", method: get, path: "/file", hdr: hd("If-Match", "*"), ref: true,
 			want: cStatus(200)},
-		{name: "file: If-Unmodified-Since before Last-Modified is 412", basis: h1314 + " (C2)", knownBug: "C2", fixture: "file", method: get, path: "/file-sec", hdr: hd("If-Unmodified-Since", "{lm-1h}"), ref: true,
+		{name: "file: If-Unmodified-Since before Last-Modified is 412", basis: h1314, knownBug: "file-conditional-headers-ignored", fixture: "file", method: get, path: "/file-sec", hdr: hd("If-Unmodified-Since", "{lm-1h}"), ref: true,
 			want: cStatus(412)},
 		{name: "file: If-Unmodified-Since after Last-Modified is 200", basis: h1314, fixture: "file", method: get, path: "/file-sec", hdr: hd("If-Unmodified-Since", "{lm+1h}"), ref: true,
 			want: cStatus(200)},
@@ -534,9 +530,9 @@ func conformanceCases() []conformanceCase {
 			want: cStatus(304)},
 		{name: "WeakEtag: If-None-Match different tag is 200", basis: h1312, fixture: "main", method: get, path: "/etag", hdr: hd("If-None-Match", `W/"other"`),
 			want: cAll(cStatus(200), cBody("etag-body"))},
-		{name: "WeakEtag: If-None-Match list containing the tag", basis: h1312 + " list (C3)", knownBug: "C3", fixture: "main", method: get, path: "/etag", hdr: hd("If-None-Match", `"zzz", {etag}`),
+		{name: "WeakEtag: If-None-Match list containing the tag", basis: h1312 + " list", knownBug: "if-none-match-list-ignored", fixture: "main", method: get, path: "/etag", hdr: hd("If-None-Match", `"zzz", {etag}`),
 			want: cStatus(304)},
-		{name: "WeakEtag: If-None-Match * on existing resource", basis: h1312 + " * (C3)", knownBug: "C3", fixture: "main", method: get, path: "/etag", hdr: hd("If-None-Match", "*"),
+		{name: "WeakEtag: If-None-Match * on existing resource", basis: h1312 + " *", knownBug: "if-none-match-list-ignored", fixture: "main", method: get, path: "/etag", hdr: hd("If-None-Match", "*"),
 			want: cStatus(304)},
 		{name: "LastModified: Last-Modified on 200", basis: "RFC 9110 §8.8.2 Last-Modified", fixture: "main", method: get, path: "/lm",
 			want: cAll(cStatus(200), cHdr("Last-Modified", cLastMod.Format(http.TimeFormat)), cBody("lm-body"))},
@@ -544,11 +540,11 @@ func conformanceCases() []conformanceCase {
 			want: cAll(cStatus(304), cBody(""))},
 		{name: "LastModified: If-Modified-Since older is 200", basis: h1313, fixture: "main", method: get, path: "/lm", hdr: hd("If-Modified-Since", "{lm-1h}"),
 			want: cAll(cStatus(200), cBody("lm-body"))},
-		{name: "LastModified+WeakEtag: INM mismatch beats IMS match", basis: h1322 + " (NB-3)", knownBug: "NB-3", fixture: "main", method: get, path: "/lmetag", hdr: map[string]string{"If-None-Match": `W/"other"`, "If-Modified-Since": "{lm+1h}"},
+		{name: "LastModified+WeakEtag: INM mismatch beats IMS match", basis: h1322, knownBug: "last-modified-ignores-if-none-match", fixture: "main", method: get, path: "/lmetag", hdr: map[string]string{"If-None-Match": `W/"other"`, "If-Modified-Since": "{lm+1h}"},
 			want: cAll(cStatus(200), cBody("lmetag-body"))},
 
 		// ---- Vary (§12.5.5) -------------------------------------------------------
-		{name: "Vary keeps Accept next to Accept-Encoding", basis: h1255 + " (S11)", fixture: "main", method: get, path: "/vary-ae-then-accept",
+		{name: "Vary keeps Accept next to Accept-Encoding", basis: h1255, fixture: "main", method: get, path: "/vary-ae-then-accept",
 			want: cAll(cHasToken("Vary", "Accept-Encoding"), cHasToken("Vary", "Accept"))},
 		{name: "Vary: Accept then Accept-Encoding keeps both", basis: h1255, fixture: "main", method: get, path: "/vary-accept-then-ae",
 			want: cAll(cHasToken("Vary", "Accept"), cHasToken("Vary", "Accept-Encoding"))},
@@ -569,11 +565,11 @@ func conformanceCases() []conformanceCase {
 			want: cHasToken("Cache-Control", "max-age=60")},
 		{name: "Cache(0) sets no-store", basis: h9111 + ".2.5 no-store", fixture: "main", method: get, path: "/nocache",
 			want: cHasToken("Cache-Control", "no-store")},
-		{name: "Cache without Authorization stays cacheable", basis: "S10 (what keeps working)", fixture: "main", method: get, path: "/cache",
+		{name: "Cache without Authorization stays cacheable", basis: "RFC 9111 §3.5 (a request without Authorization stays cacheable)", fixture: "main", method: get, path: "/cache",
 			want: cAll(cHasToken("Cache-Control", "max-age=60"), cHasToken("Cache-Control", "stale-if-error=60"))},
-		{name: "Cache with Authorization is not public", basis: "RFC 9111 §3.5 + S10", fixture: "main", method: get, path: "/cache", hdr: hd("Authorization", "Bearer x"),
+		{name: "Cache with Authorization is not public", basis: "RFC 9111 §3.5", fixture: "main", method: get, path: "/cache", hdr: hd("Authorization", "Bearer x"),
 			want: cLacksToken("Cache-Control", "public")},
-		{name: "ErrorCache caches 404", basis: "S10 (what keeps working)", fixture: "main", method: get, path: "/err404",
+		{name: "ErrorCache caches 404", basis: "RFC 9110 §15.5.5 (404 is cacheable by default)", fixture: "main", method: get, path: "/err404",
 			want: cAll(cStatus(404), cHasToken("Cache-Control", "max-age=60"))},
 		{name: "ErrorCache leaves 2xx alone", basis: "ErrorCache contract", fixture: "main", method: get, path: "/ok-errcache",
 			want: cAll(cStatus(200), cNoHdr("Cache-Control"))},
@@ -587,13 +583,13 @@ func conformanceCases() []conformanceCase {
 			want: cAll(cStatus(200), cHdr("Access-Control-Allow-Origin", fixtures.OriginA))},
 		{name: "CORS list: second allowed origin is echoed", basis: fetch, fixture: "cors-list", method: get, path: "/api", hdr: cors(fixtures.OriginB),
 			want: cHdr("Access-Control-Allow-Origin", fixtures.OriginB)},
-		{name: "CORS list: Vary: Origin on CORS response", basis: fcach + " (S3)", fixture: "cors-list", method: get, path: "/api", hdr: cors(fixtures.OriginA),
+		{name: "CORS list: Vary: Origin on CORS response", basis: fcach, fixture: "cors-list", method: get, path: "/api", hdr: cors(fixtures.OriginA),
 			want: cHasToken("Vary", "Origin")},
-		{name: "CORS list: Vary: Origin even without Origin header", basis: fcach + " (S3)", fixture: "cors-list", method: get, path: "/api",
+		{name: "CORS list: Vary: Origin even without Origin header", basis: fcach, fixture: "cors-list", method: get, path: "/api",
 			want: cHasToken("Vary", "Origin")},
-		{name: "CORS list: origin outside the list gets no ACAO", basis: fetch + " (S3)", fixture: "cors-list", method: get, path: "/api", hdr: cors(fixtures.OriginEvil),
+		{name: "CORS list: origin outside the list gets no ACAO", basis: fetch, fixture: "cors-list", method: get, path: "/api", hdr: cors(fixtures.OriginEvil),
 			want: cNoHdr("Access-Control-Allow-Origin")},
-		{name: "CORS star: static * or echo+Vary", basis: fcach + " (S3)", fixture: "cors-star", method: get, path: "/api", hdr: cors(fixtures.OriginA),
+		{name: "CORS star: static * or echo+Vary", basis: fcach, fixture: "cors-star", method: get, path: "/api", hdr: cors(fixtures.OriginA),
 			want: func(t testing.TB, b string, r *cResp) {
 				acao := r.Header.Get("Access-Control-Allow-Origin")
 				if acao == "*" {
@@ -601,7 +597,7 @@ func conformanceCases() []conformanceCase {
 				}
 				cAll(cHdr("Access-Control-Allow-Origin", fixtures.OriginA), cHasToken("Vary", "Origin"))(t, b, r)
 			}},
-		{name: "CORS: Allow-Credentials only ever \"true\"", basis: fcred + " (NC-2)", knownBug: "NC-2", fixture: "cors-list", method: get, path: "/api", hdr: cors(fixtures.OriginA),
+		{name: "CORS: Allow-Credentials only ever \"true\"", basis: fcred, knownBug: "cors-credentials-false-sent", fixture: "cors-list", method: get, path: "/api", hdr: cors(fixtures.OriginA),
 			want: func(t testing.TB, b string, r *cResp) {
 				if v, ok := r.Header["Access-Control-Allow-Credentials"]; ok {
 					ehttptest.Eq(t, b, v[0], "true")
@@ -611,12 +607,12 @@ func conformanceCases() []conformanceCase {
 			want: cAll(cHdr("Access-Control-Allow-Origin", fixtures.OriginA), cHdr("Access-Control-Allow-Credentials", "true"))},
 		{name: "CORS preflight: allowed origin and method", basis: "Fetch §4.8 CORS-preflight fetch (ok status)", fixture: "cors-list", method: opts, path: "/api", hdr: preflight(fixtures.OriginA, "GET"),
 			want: cAll(cStatus(200, 204), cHdr("Access-Control-Allow-Origin", fixtures.OriginA), cHasHdr("Access-Control-Allow-Methods"))},
-		{name: "CORS preflight: listed origin without Sec-Fetch-Site", basis: "Fetch §3.2.2 + allowlist (S3, was NC-4/ND-1)", fixture: "cors-list", method: opts, path: "/api",
+		{name: "CORS preflight: listed origin without Sec-Fetch-Site", basis: "Fetch §3.2.2 + the origin allowlist", fixture: "cors-list", method: opts, path: "/api",
 			hdr:  map[string]string{"Origin": fixtures.OriginA, "Access-Control-Request-Method": "GET"},
 			want: cStatus(200, 204)},
 		{name: "CORS preflight: Vary lists request-dependent headers", basis: fcach, fixture: "cors-list", method: opts, path: "/api", hdr: preflight(fixtures.OriginA, "GET"),
 			want: cAll(cHasToken("Vary", "Origin"), cHasToken("Vary", "Access-Control-Request-Method"), cHasToken("Vary", "Access-Control-Request-Headers"))},
-		{name: "CORS preflight: foreign origin is rejected", basis: "Fetch §4.8 + S3", fixture: "cors-list", method: opts, path: "/api", hdr: preflight(fixtures.OriginEvil, "GET"),
+		{name: "CORS preflight: foreign origin is rejected", basis: "Fetch §4.8 + the origin allowlist", fixture: "cors-list", method: opts, path: "/api", hdr: preflight(fixtures.OriginEvil, "GET"),
 			want: cStatus(403)},
 		{name: "CORS preflight: method outside Allow-Methods rejected", basis: "Fetch §4.8 CORS-preflight fetch", fixture: "cors-restricted", method: opts, path: "/api", hdr: preflight(fixtures.OriginA, "DELETE"),
 			want: cStatus(403)},
@@ -626,7 +622,7 @@ func conformanceCases() []conformanceCase {
 		{name: "CORS preflight: disallowed request header rejected", basis: "Fetch §4.8 CORS-preflight fetch", fixture: "cors-restricted", method: opts, path: "/api",
 			hdr:  map[string]string{"Origin": fixtures.OriginA, "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "x-evil", "Sec-Fetch-Site": "cross-site"},
 			want: cStatus(403)},
-		{name: "CORS preflight: Max-Age from CacheDuration", basis: fetch + " Access-Control-Max-Age (S3)", fixture: "cors-maxage", method: opts, path: "/api", hdr: preflight(fixtures.OriginA, "GET"),
+		{name: "CORS preflight: Max-Age from CacheDuration", basis: fetch + " Access-Control-Max-Age", fixture: "cors-maxage", method: opts, path: "/api", hdr: preflight(fixtures.OriginA, "GET"),
 			want: cHdr("Access-Control-Max-Age", fmt.Sprint(int((10 * time.Minute).Seconds())))},
 	}
 }

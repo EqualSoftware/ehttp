@@ -22,7 +22,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// C2 lifecycle tests: always a real server.
+// Lifecycle tests: always a real server.
 // ---------------------------------------------------------------------------
 
 // cTimeoutServer wires Timeout (and optionally an outer probe) around h.
@@ -35,7 +35,7 @@ func cTimeoutServer(t testing.TB, d time.Duration, h ehttp.HandlerFunc, outer ..
 	return fixtures.Start(t, srv)
 }
 
-// The timeout is cooperative (design 2.3 option A; Echo ContextTimeout and chi).
+// The timeout is cooperative (as Echo ContextTimeout and chi).
 // The handler runs in the request goroutine. Timeout only sets the deadline on
 // the context. A handler that ignores the context keeps its response, because
 // a header is sent before Timeout checks the deadline.
@@ -52,12 +52,12 @@ func TestCLifecycleTimeoutNonCooperativeHandler(t *testing.T) {
 
 	resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/t", nil)
 
-	ehttptest.Eq(t, "design 2.3 option A; Echo ContextTimeout and chi: the timeout is cooperative", resp.StatusCode, http.StatusOK)
-	ehttptest.Eq(t, "design 2.3 option A; Echo ContextTimeout and chi: the timeout is cooperative", body, "late")
+	ehttptest.Eq(t, "cooperative timeout: a handler that ignores the context sends its late response", resp.StatusCode, http.StatusOK)
+	ehttptest.Eq(t, "cooperative timeout: a handler that ignores the context sends its late response", body, "late")
 
 	select {
 	case err := <-done:
-		ehttptest.True(t, "S5 trace: handler reads ctx1 (deadline), not r0",
+		ehttptest.True(t, "the handler context carries the deadline",
 			errors.Is(err, context.DeadlineExceeded), "handler ctx err = %v", err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("handler never finished")
@@ -72,7 +72,7 @@ func TestCLifecycleTimeoutStatus(t *testing.T) {
 	start := time.Now()
 	resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/t", nil)
 
-	ehttptest.True(t, "S5: answers at the deadline without waiting for the handler",
+	ehttptest.True(t, "answers at the deadline without waiting for the handler",
 		time.Since(start) < 2*time.Second, "took %v", time.Since(start))
 
 	// 408 means the CLIENT was slow (RFC 9110 §15.5.9); a server timeout is 503 (§15.6.4).
@@ -101,7 +101,7 @@ func TestCLifecycleTimeoutRestoresOuterContext(t *testing.T) {
 
 	err := <-seen
 
-	ehttptest.True(t, "S5: Timeout restores req.Request for outer middlewares",
+	ehttptest.True(t, "Timeout restores req.Request for outer middlewares",
 		err == nil, "outer middleware sees context error after Timeout: %v", err)
 }
 
@@ -114,7 +114,7 @@ func TestCLifecycleTimeoutPanicKillsProcess(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	survived := strings.Contains(string(out), "CHILD-SURVIVED status=500")
 
-	ehttptest.True(t, "S5 + S6: Recover outside Timeout catches the handler panic; process survives",
+	ehttptest.True(t, "Recover outside Timeout catches the handler panic; the process survives",
 		survived && err == nil, "child died (err=%v)", err)
 }
 
@@ -224,7 +224,7 @@ func TestCLifecycleRecoverKeepsConnectionAlive(t *testing.T) {
 
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
-		ehttptest.Eq(t, "S6: panic becomes 500 (path "+tc.path+")", resp.StatusCode, tc.want)
+		ehttptest.Eq(t, "panic becomes 500 (path "+tc.path+")", resp.StatusCode, tc.want)
 	}
 
 	ehttptest.Eq(t, "RFC 9112 §9.3: keep-alive survives a recovered panic (one connection)", conns.Load(), int32(1))
@@ -250,13 +250,13 @@ func TestCLifecycleListenCancelStopsServer(t *testing.T) {
 
 	select {
 	case err := <-l.Result:
-		ehttptest.Eq(t, "S8: clean cancel returns nil", err, nil)
+		ehttptest.Eq(t, "clean cancel returns nil", err, nil)
 	case <-time.After(3 * time.Second):
 		t.Fatal("Listen did not return after ctx cancel")
 	}
 
 	_, err := (&net.Dialer{Timeout: 200 * time.Millisecond}).DialContext(t.Context(), "tcp", "127.0.0.1:"+l.Port)
-	ehttptest.True(t, "S8: listener is closed after shutdown", err != nil, "port still accepts")
+	ehttptest.True(t, "listener is closed after shutdown", err != nil, "port still accepts")
 }
 
 func TestCLifecycleListenReturnsBindError(t *testing.T) {
@@ -284,7 +284,7 @@ func TestCLifecycleListenReturnsBindError(t *testing.T) {
 		t.Fatal("Listen hung on a busy port")
 	}
 
-	ehttptest.True(t, "S8: bind failure must be returned, not swallowed",
+	ehttptest.True(t, "bind failure must be returned, not swallowed",
 		listenErr != nil, "Listen returned nil on busy port %s", port)
 }
 
@@ -354,7 +354,7 @@ func TestCLifecycleListenShutdownWaitsForInflight(t *testing.T) {
 		t.Fatal("client never got its response")
 	}
 
-	ehttptest.True(t, "S8: graceful shutdown waits for in-flight requests (net/http Server.Shutdown)",
+	ehttptest.True(t, "graceful shutdown waits for in-flight requests (net/http Server.Shutdown)",
 		!returnedBeforeHandler, "Listen returned while the handler was still running")
 }
 
@@ -384,7 +384,7 @@ func TestCLifecycleHeadHasNoBodyOnTheWire(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// S8 over a real Listen
+// Server timeouts over a real Listen
 // ---------------------------------------------------------------------------
 
 func TestCLifecycleReadHeaderTimeoutDropsSlowClient(t *testing.T) {
@@ -406,7 +406,7 @@ func TestCLifecycleReadHeaderTimeoutDropsSlowClient(t *testing.T) {
 	var nerr net.Error
 
 	closed := readErr != nil && (!errors.As(readErr, &nerr) || !nerr.Timeout())
-	ehttptest.True(t, "S8 row: WithReadHeaderTimeout drops a connection that never ends its headers", closed, "connection still open: %v", readErr)
+	ehttptest.True(t, "WithReadHeaderTimeout drops a connection that never ends its headers", closed, "connection still open: %v", readErr)
 }
 
 func TestCLifecycleShutdownTimeoutStopsWaiting(t *testing.T) {
@@ -437,7 +437,7 @@ func TestCLifecycleShutdownTimeoutStopsWaiting(t *testing.T) {
 
 	select {
 	case err := <-l.Result:
-		ehttptest.True(t, "S8 row: Listen returns the deadline error", errors.Is(err, context.DeadlineExceeded), "got %v", err)
+		ehttptest.True(t, "Listen returns the deadline error", errors.Is(err, context.DeadlineExceeded), "got %v", err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("Listen ignored WithShutdownTimeout")
 	}

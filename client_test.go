@@ -196,7 +196,7 @@ func TestClientJSONPayloadContentType(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { ct.Store(r.Header.Get("Content-Type")) }))
 	t.Cleanup(srv.Close)
 
-	ehttptest.KnownBug(t, "NB-7", func(t testing.TB) {
+	ehttptest.KnownBug(t, "json-payload-lacks-content-type", func(t testing.TB) {
 		_, err := ehttp.NewClient().Execute(ehttp.WithSource("POST", srv.URL), ehttp.WithJsonPayload(map[string]int{"n": 1}))
 		if err != nil {
 			t.Fatal(err)
@@ -235,7 +235,7 @@ func bDeadlineSeen(t *testing.T, mk func(tr *http.Transport) *ehttp.Client) (tim
 	return time.Duration(left.Load()), has.Load()
 }
 
-// C7: a client without a timeout hangs forever on a silent server.
+// A client without a timeout hangs forever on a silent server.
 func TestClientDefaultTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -256,14 +256,14 @@ func TestClientDefaultTimeout(t *testing.T) {
 			return ehttp.NewClient(ehttp.WithTransport(tr))
 		})
 
-		ehttptest.KnownBug(t, "C7", func(t testing.TB) {
-			ehttptest.True(t, "C7", has, "no deadline: a silent server blocks the caller forever")
-			ehttptest.True(t, "C7", has && left <= 5*time.Minute, "deadline %v is not bounded", left)
+		ehttptest.KnownBug(t, "client-no-default-timeout", func(t testing.TB) {
+			ehttptest.True(t, "a client has a default deadline", has, "no deadline: a silent server blocks the caller forever")
+			ehttptest.True(t, "the default deadline is bounded", has && left <= 5*time.Minute, "deadline %v is not bounded", left)
 		})
 	})
 }
 
-// C7: on failure the caller gets (nil, err). Today it gets a *Response
+// On failure the caller gets (nil, err). Today it gets a *Response
 // wrapping a nil *http.Response, and res.Body panics.
 func TestClientErrorReturnsNilResponse(t *testing.T) {
 	t.Parallel()
@@ -272,22 +272,22 @@ func TestClientErrorReturnsNilResponse(t *testing.T) {
 	addr := srv.URL
 	srv.Close()
 
-	ehttptest.KnownBug(t, "C7", func(t testing.TB) {
+	ehttptest.KnownBug(t, "client-error-returns-non-nil-response", func(t testing.TB) {
 		res, err := ehttp.NewClient().Execute(ehttp.WithSource("GET", addr))
 
 		ehttptest.True(t, "net/http Client.Do contract", err != nil, "no error from a closed server")
-		ehttptest.True(t, "C7", res == nil, "response is non-nil (%T) alongside an error", res)
+		ehttptest.True(t, "net/http convention: a response is nil when an error is returned", res == nil, "response is non-nil (%T) alongside an error", res)
 	})
 }
 
-// C7: a bad URL is a runtime input error, not a reason to panic the caller.
+// A bad URL is a runtime input error, not a reason to panic the caller.
 func TestClientInvalidURLIsAnError(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "C7", func(t testing.TB) {
+	ehttptest.KnownBug(t, "client-invalid-url-panics", func(t testing.TB) {
 		_, err := ehttp.NewClient().Execute(ehttp.WithSource("GET", "http://[::1"))
 
-		ehttptest.True(t, "C7", err != nil, "no error for an unparsable URL")
+		ehttptest.True(t, "a bad URL is an error, not a panic", err != nil, "no error for an unparsable URL")
 	})
 }
 
@@ -308,7 +308,7 @@ func (b *bTrackBody) Read(p []byte) (int, error) {
 
 func (b *bTrackBody) Close() error { b.closed = true; return nil }
 
-// C7: Response helpers consume the body, so they must close it, otherwise
+// Response helpers consume the body, so they must close it, otherwise
 // the connection never goes back to the pool.
 func TestResponseHelpersCloseBody(t *testing.T) {
 	t.Parallel()
@@ -323,7 +323,7 @@ func TestResponseHelpersCloseBody(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			ehttptest.KnownBug(t, "C7", func(t testing.TB) {
+			ehttptest.KnownBug(t, "client-helpers-leave-body-open", func(t testing.TB) {
 				body := &bTrackBody{r: strings.NewReader(`{"a":1}`)}
 				res := &ehttp.Response{Response: &http.Response{Body: body}}
 
@@ -331,7 +331,7 @@ func TestResponseHelpersCloseBody(t *testing.T) {
 					t.Fatal(err)
 				}
 
-				ehttptest.True(t, "C7", body.closed, "%s left the body open", name)
+				ehttptest.True(t, "net/http Response.Body doc: the reader closes the body", body.closed, "%s left the body open", name)
 			})
 		})
 	}
@@ -339,7 +339,7 @@ func TestResponseHelpersCloseBody(t *testing.T) {
 	t.Run("JSON reads to EOF so the connection can be reused", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "C7", func(t testing.TB) {
+		ehttptest.KnownBug(t, "client-json-stops-before-eof", func(t testing.TB) {
 			body := &bTrackBody{r: strings.NewReader(`{"a":1}` + strings.Repeat(" ", 4096))}
 			res := &ehttp.Response{Response: &http.Response{Body: body}}
 
@@ -348,12 +348,12 @@ func TestResponseHelpersCloseBody(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			ehttptest.True(t, "C7 / net/http Response.Body doc", body.eof, "JSON stopped before EOF")
+			ehttptest.True(t, "net/http Response.Body doc: read to EOF to reuse the connection", body.eof, "JSON stopped before EOF")
 		})
 	})
 }
 
-// C7 end to end: sequential calls through String/JSON should share one
+// Sequential calls through String/JSON should share one
 // connection.
 func TestClientReusesConnection(t *testing.T) {
 	t.Parallel()
@@ -370,7 +370,7 @@ func TestClientReusesConnection(t *testing.T) {
 	srv.Start()
 	t.Cleanup(srv.Close)
 
-	ehttptest.KnownBug(t, "C7", func(t testing.TB) {
+	ehttptest.KnownBug(t, "client-helpers-do-not-reuse-connection", func(t testing.TB) {
 		c := ehttp.NewClient(ehttp.WithTransport(&http.Transport{}))
 
 		for range 3 {
@@ -385,11 +385,11 @@ func TestClientReusesConnection(t *testing.T) {
 			}
 		}
 
-		ehttptest.Eq(t, "C7 / net/http Response.Body doc", conns.Load(), 1)
+		ehttptest.Eq(t, "net/http Response.Body doc: a drained body lets the connection be reused", conns.Load(), 1)
 	})
 }
 
-// C7: tokens often travel in the query string; they must not reach the log.
+// Tokens often travel in the query string; they must not reach the log.
 func TestClientDoesNotLogQuery(t *testing.T) {
 	logQueryTest := func(t *testing.T, target func(srvURL string) string, closeServer bool) {
 		logs := fixtures.CaptureLogs(t)
@@ -402,7 +402,7 @@ func TestClientDoesNotLogQuery(t *testing.T) {
 			t.Cleanup(srv.Close)
 		}
 
-		ehttptest.KnownBug(t, "C7", func(tb testing.TB) {
+		ehttptest.KnownBug(t, "client-logs-query-token", func(tb testing.TB) {
 			res, _ := ehttp.NewClient().Execute(ehttp.WithSource("GET", url))
 			if res != nil && res.Response != nil {
 				res.Body.Close()
@@ -410,10 +410,10 @@ func TestClientDoesNotLogQuery(t *testing.T) {
 
 			for _, e := range logs.All() {
 				tb.(interface{ Helper() }).Helper()
-				ehttptest.True(tb, "C7", !strings.Contains(fmt.Sprint(e.ContextMap()), "secret-123"), "log %q leaks the query: %v", e.Message, e.ContextMap())
+				ehttptest.True(tb, "the query string stays out of the log", !strings.Contains(fmt.Sprint(e.ContextMap()), "secret-123"), "log %q leaks the query: %v", e.Message, e.ContextMap())
 			}
 
-			ehttptest.True(tb, "C7 (harness: something was logged)", len(logs.All()) > 0, "no log lines captured")
+			ehttptest.True(tb, "harness: something was logged", len(logs.All()) > 0, "no log lines captured")
 		})
 	}
 
@@ -426,7 +426,7 @@ func TestClientDoesNotLogQuery(t *testing.T) {
 	})
 }
 
-// S14: the base URL is a prefix. A request path must stay under it, keep its
+// The base URL is a prefix. A request path must stay under it, keep its
 // percent-encoding, and keep repeated query keys.
 func TestClientBaseURLJoin(t *testing.T) {
 	t.Parallel()
@@ -553,10 +553,10 @@ func TestResponseGetCacheControlMaxAge(t *testing.T) {
 		lines           []string
 		want            time.Duration
 	}{
-		{"NB-8", "directive names are case-insensitive", "RFC 9111 §5.2", []string{"MAX-AGE=60"}, time.Minute},
-		{"NB-8", "quoted-string form is accepted", "RFC 9111 §5.2", []string{`max-age="60"`}, time.Minute},
-		{"NB-9", "negative value is invalid, treated as stale", "RFC 9111 §1.2.2", []string{"max-age=-5"}, 0},
-		{"NB-10", "multiple header lines are one list", "RFC 9110 §5.3", []string{"public", "max-age=60"}, time.Minute},
+		{"cache-control-max-age-case-and-quotes", "directive names are case-insensitive", "RFC 9111 §5.2", []string{"MAX-AGE=60"}, time.Minute},
+		{"cache-control-max-age-case-and-quotes", "quoted-string form is accepted", "RFC 9111 §5.2", []string{`max-age="60"`}, time.Minute},
+		{"cache-control-negative-max-age", "negative value is invalid, treated as stale", "RFC 9111 §1.2.2", []string{"max-age=-5"}, 0},
+		{"cache-control-multiple-lines", "multiple header lines are one list", "RFC 9110 §5.3", []string{"public", "max-age=60"}, time.Minute},
 	}
 
 	for _, tt := range known {
@@ -637,7 +637,7 @@ func TestResponseBodyHelpers(t *testing.T) {
 	t.Run("JSON into a non-pointer reports an error", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "NB-11", func(t testing.TB) {
+		ehttptest.KnownBug(t, "json-into-non-pointer-returns-nil", func(t testing.TB) {
 			var v struct{ A int }
 			err := mk(`{"A":3}`).JSON(v)
 

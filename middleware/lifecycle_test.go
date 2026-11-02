@@ -37,7 +37,7 @@ func bGet(t *testing.T, c *http.Client, url string) (*http.Response, string, err
 	return resp, string(b), err
 }
 
-// S5: a handler that writes before the deadline keeps its response.
+// A handler that writes before the deadline keeps its response.
 func TestTimeoutKeepsResponseWrittenBeforeDeadline(t *testing.T) {
 	t.Parallel()
 
@@ -57,11 +57,11 @@ func TestTimeoutKeepsResponseWrittenBeforeDeadline(t *testing.T) {
 		t.Fatalf("get: %v", err)
 	}
 
-	ehttptest.Eq(t, "design 2.3 option A (author decision)", resp.StatusCode, http.StatusCreated)
-	ehttptest.Eq(t, "design 2.3 option A (author decision)", body, "early")
+	ehttptest.Eq(t, "cooperative timeout: a response written before the deadline is kept", resp.StatusCode, http.StatusCreated)
+	ehttptest.Eq(t, "cooperative timeout: a response written before the deadline is kept", body, "early")
 }
 
-// S6: after the headers are sent, Recover aborts the connection (HTTP/1 and HTTP/2).
+// After the headers are sent, Recover aborts the connection (HTTP/1 and HTTP/2).
 func TestRecoverAbortsAfterHeadersSent(t *testing.T) {
 	t.Parallel()
 
@@ -98,13 +98,13 @@ func TestRecoverAbortsAfterHeadersSent(t *testing.T) {
 			t.Cleanup(ts.Close)
 
 			resp, body, err := bGet(t, ts.Client(), ts.URL+"/p")
-			ehttptest.True(t, "S6 / net/http ErrAbortHandler", err != nil, "no connection error: status %v body %q", resp, body)
-			ehttptest.True(t, "S6", !strings.Contains(body, `"code"`), "error JSON glued to the body: %q", body)
+			ehttptest.True(t, "net/http ErrAbortHandler: the connection aborts", err != nil, "no connection error: status %v body %q", resp, body)
+			ehttptest.True(t, "the error JSON is not appended to a sent response", !strings.Contains(body, `"code"`), "error JSON glued to the body: %q", body)
 		})
 	}
 }
 
-// S6: a panic before any write gives 500 without the panic value.
+// A panic before any write gives 500 without the panic value.
 func TestRecoverBeforeWriteOverNetwork(t *testing.T) {
 	t.Parallel()
 
@@ -120,21 +120,21 @@ func TestRecoverBeforeWriteOverNetwork(t *testing.T) {
 		t.Fatalf("get: %v", err)
 	}
 
-	ehttptest.Eq(t, "S6", resp.StatusCode, http.StatusInternalServerError)
-	ehttptest.True(t, "S6", !strings.Contains(body, "hunter2"), "body leaks the panic value: %q", body)
+	ehttptest.Eq(t, "a panic before any write gives 500", resp.StatusCode, http.StatusInternalServerError)
+	ehttptest.True(t, "the panic value stays internal", !strings.Contains(body, "hunter2"), "body leaks the panic value: %q", body)
 }
 
-// S10(b): Cache with Authorization sends one private Cache-Control line.
+// Cache with Authorization sends one private Cache-Control line.
 func TestCacheAuthorizationIsPrivate(t *testing.T) {
 	t.Parallel()
 
 	rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Cache(time.Minute)), fixtures.Req("GET", "/x", "Authorization", "Bearer t"))
 
-	ehttptest.Eq(t, "S10(b)", rec.Header().Get("Cache-Control"), "private, max-age=60, stale-while-revalidate=60, stale-if-error=60")
-	ehttptest.Eq(t, "S10(b)", len(rec.Header().Values("Cache-Control")), 1)
+	ehttptest.Eq(t, "Cache with Authorization is private", rec.Header().Get("Cache-Control"), "private, max-age=60, stale-while-revalidate=60, stale-if-error=60")
+	ehttptest.Eq(t, "Cache sends one Cache-Control line", len(rec.Header().Values("Cache-Control")), 1)
 }
 
-// Scenario A: the handler sets Cache-Control itself on an error and the request has Authorization.
+// The handler sets Cache-Control itself on an error and the request has Authorization.
 func TestErrorCacheAuthorizationWithHandlerCacheControl(t *testing.T) {
 	t.Parallel()
 
@@ -145,8 +145,8 @@ func TestErrorCacheAuthorizationWithHandlerCacheControl(t *testing.T) {
 	}, middleware.ErrorCache(time.Minute))
 	rec := ehttptest.Do(h, fixtures.Req("GET", "/x", "Authorization", "Bearer t"))
 
-	ehttptest.Eq(t, "S10(b)", rec.Code, http.StatusNotFound)
-	ehttptest.True(t, "S10(b)", strings.HasPrefix(rec.Header().Get("Cache-Control"), "private,"), "Cache-Control = %q", rec.Header().Get("Cache-Control"))
+	ehttptest.Eq(t, "ErrorCache keeps the status", rec.Code, http.StatusNotFound)
+	ehttptest.True(t, "ErrorCache with Authorization is private", strings.HasPrefix(rec.Header().Get("Cache-Control"), "private,"), "Cache-Control = %q", rec.Header().Get("Cache-Control"))
 }
 
 func bTimeoutServer(t *testing.T, outer ehttp.MiddlewareHandlerFunc, h ehttp.HandlerFunc) *httptest.Server {
@@ -195,7 +195,7 @@ func TestErrorCacheSkips503FromHandler(t *testing.T) {
 	ehttptest.Eq(t, "RFC 9110 §15.6.4", rec.Header().Get("Cache-Control"), "")
 }
 
-// Scenario B: the client is gone after the handler sent a status. The context
+// The client is gone after the handler sent a status. The context
 // is cancelled before ErrorCache sets the cache header, and the request has
 // Authorization. res.Header() is then an empty map: no panic is allowed.
 func TestErrorCacheAuthorizationClientGone(t *testing.T) {
@@ -218,5 +218,5 @@ func TestErrorCacheAuthorizationClientGone(t *testing.T) {
 		ehttptest.Do(h, req)
 	}()
 
-	ehttptest.True(t, "S10(b)", got == nil, "ErrorCache panicked: %v", got)
+	ehttptest.True(t, "ErrorCache does not panic", got == nil, "ErrorCache panicked: %v", got)
 }

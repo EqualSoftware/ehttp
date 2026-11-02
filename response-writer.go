@@ -94,7 +94,8 @@ func (i *ResponseWriterInterceptor) SendResponse(res *ResponseWriter) {
 	res.bodySent = true
 
 	i.ResponseWriter.WriteHeader(i.Code)
-	i.ResponseWriter.Write(i.Buffer.Bytes())
+	// The write error means the client is gone. There is nobody to tell.
+	_, _ = i.ResponseWriter.Write(i.Buffer.Bytes())
 }
 
 // WithResponseWriter creates a new ResponseWriter with an interceptor as
@@ -1038,7 +1039,7 @@ func (res *ResponseWriter) checkCookie(cookie *http.Cookie) bool {
 // ClearCookie asks the client to delete the cookie name (Path "/").
 func (res *ResponseWriter) ClearCookie(name string) {
 	// The cookie is deleted, so it needs no Secure, HttpOnly or SameSite.
-	res.Cookie(&http.Cookie{Name: name, Path: "/", MaxAge: -1}) //nolint:gosec // G124
+	res.Cookie(&http.Cookie{Name: name, Path: "/", MaxAge: -1}) //nolint:gosec // a deletion cookie has no value to protect
 }
 
 // Location sets the Location field. See Set.
@@ -1142,14 +1143,14 @@ func (res *ResponseWriter) Error(e error) {
 		res.code = StatusInternalServerError
 	}
 
-	bytes := []byte(e.Error())
+	payload := []byte(e.Error())
 
-	res.Header().Set(HeaderContentLength, strconv.Itoa(len(bytes)))
+	res.Header().Set(HeaderContentLength, strconv.Itoa(len(payload)))
 	res.defaultContentType(MIMETextPlainCharsetUTF8)
 
 	res.writeHeader(res.code)
 	res.bodySent = true
-	_, _ = res.w.Write(bytes)
+	_, _ = res.w.Write(payload)
 }
 
 func (res *ResponseWriter) Redirect(value string) {
@@ -1212,7 +1213,7 @@ func (res *ResponseWriter) JSON(v interface{}) {
 		return
 	}
 
-	bytes, err := json.Marshal(v)
+	payload, err := json.Marshal(v)
 
 	if err != nil {
 		panic(err)
@@ -1222,14 +1223,17 @@ func (res *ResponseWriter) JSON(v interface{}) {
 		res.code = StatusOK
 	}
 
-	res.Header().Set(HeaderContentLength, strconv.Itoa(len(bytes)))
+	res.Header().Set(HeaderContentLength, strconv.Itoa(len(payload)))
 	res.defaultContentType(MIMEApplicationJSONCharsetUTF8)
 
 	res.writeHeader(res.code)
 	res.bodySent = true
-	_, _ = res.w.Write(bytes)
+	_, _ = res.w.Write(payload)
 }
 
+// SendFile serves the file at the path name. It serves the path that the caller
+// gives, so absolute paths and symbolic links are served. A path with a ".."
+// element gets 404. Do not pass request data without validation.
 func (res *ResponseWriter) SendFile(name string) {
 	if res.finished() {
 		return

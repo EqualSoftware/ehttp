@@ -1,28 +1,28 @@
-// C6 - golden files of end-to-end responses.
+// Golden files of end-to-end responses.
 //
 // IMPORTANT: a golden file holds the CORRECT response, never a snapshot of a
-// bug. A scenario with a `bug` ID has a hand-written golden file and its
+// bug. A scenario with a `bug` name has a hand-written golden file and its
 // compare runs inside ehttptest.KnownBug: it is skipped while the response
 // differs and fails once the response matches, so the marker must go. The
 // update mode (`-update`, `make golden-update`) never writes those files; it
 // rewrites only the scenarios with no known bug. When a fix lands, remove the
-// `bug` ID of the scenario; the file is already right.
+// `bug` name of the scenario; the file is already right.
 //
-// Corrections applied to every golden file (and their IDs):
-//   - S3  : no Access-Control-Allow-Origin/Credentials without Origin, no
+// Corrections applied to every golden file:
+//   - CORS: no Access-Control-Allow-Origin/Credentials without Origin, no
 //     literal `*` Allow-Headers with credentials, `Vary: Origin` on every
 //     response (the allowlist is specific), Access-Control-Max-Age on an
-//     allowed preflight, an allowed preflight is 200 (ND-1 is absorbed by S3);
+//     allowed preflight, an allowed preflight is 200;
 //     no Access-Control-* header at all when there is no Origin or the origin
 //     is not allowed; Access-Control-Allow-Methods only on an allowed
 //     preflight (Fetch §3.2.3, §3.2.5);
-//   - S10 : no `public`; no Cache-Control at all on a 403 preflight;
-//   - S11 : `Vary: Accept` on the routes that switch on Accept;
-//   - C9  : X-XSS-Protection is 0;
-//   - C2  : 206 for bytes=0-0 and bytes=-5, 416 carries Content-Range;
-//   - C10 : the :name route parameter is decoded;
-//   - C14 : a 304 repeats the ETag and Vary of the 200
-//     (RFC 9110 §15.4.5). The baseline report has no ID for it.
+//   - Cache: no `public`; no Cache-Control at all on a 403 preflight;
+//   - Vary: `Vary: Accept` on the routes that switch on Accept;
+//   - Security: X-XSS-Protection is 0;
+//   - Range: 206 for bytes=0-0 and bytes=-5, 416 carries Content-Range;
+//   - Params: the :name route parameter is decoded;
+//   - Conditional: a 304 repeats the ETag and Vary of the 200
+//     (RFC 9110 §15.4.5).
 //
 // The Vary field is rendered as a sorted list of names: its order carries no
 // meaning (RFC 9110 §12.5.5).
@@ -101,7 +101,7 @@ func goldenCopy(t *testing.T, dir string) {
 func goldenServer(t *testing.T) *httptest.Server {
 	t.Helper()
 
-	// WithCors mutates the global DefaultCorsOptions (S3): restore it so other
+	// WithCors mutates the global DefaultCorsOptions: restore it so other
 	// tests of this package are not affected.
 	saved := *ehttp.DefaultCorsOptions
 	t.Cleanup(func() { *ehttp.DefaultCorsOptions = saved })
@@ -117,7 +117,7 @@ func goldenServer(t *testing.T) *httptest.Server {
 
 type goldenScenario struct {
 	name string
-	// bug lists the known-bug IDs ("S3+S10") while the golden file differs
+	// bug lists the known-bug names ("xss-protection-not-zero+range-suffix-returns-416") while the golden file differs
 	// from the response. Empty: the file is a plain regression snapshot.
 	bug     string
 	method  string
@@ -240,51 +240,51 @@ func goldenETag(t *testing.T, base string) map[string]string {
 	return map[string]string{"If-None-Match": resp.Header.Get("Etag")}
 }
 
-func TestGolden(t *testing.T) { //nolint:paralleltest // WithCors mutates a global (S3)
+func TestGolden(t *testing.T) {
 	ts := goldenServer(t)
 
 	htmlAccept := map[string]string{"Accept": "text/html"}
 	origin := map[string]string{"Origin": "http://localhost:3000"}
 
 	scenarios := []goldenScenario{
-		{name: "get_root_html", bug: "C9", method: "GET", path: "/", headers: htmlAccept},
-		{name: "get_root_json", bug: "C9", method: "GET", path: "/", headers: map[string]string{"Accept": "application/json"}},
-		{name: "get_root_plain_default", bug: "C9", method: "GET", path: "/"},
-		{name: "head_root", bug: "C9", method: "HEAD", path: "/", headers: htmlAccept},
-		{name: "cors_simple_allowed_origin", bug: "C9", method: "GET", path: "/healthcheck", headers: origin},
-		{name: "cors_simple_foreign_origin", bug: "C9", method: "GET", path: "/healthcheck", headers: map[string]string{"Origin": "http://evil.example"}},
-		{name: "cors_preflight_allowed", bug: "C9", method: "OPTIONS", path: "/body", headers: map[string]string{
+		{name: "get_root_html", bug: "xss-protection-not-zero", method: "GET", path: "/", headers: htmlAccept},
+		{name: "get_root_json", bug: "xss-protection-not-zero", method: "GET", path: "/", headers: map[string]string{"Accept": "application/json"}},
+		{name: "get_root_plain_default", bug: "xss-protection-not-zero", method: "GET", path: "/"},
+		{name: "head_root", bug: "xss-protection-not-zero", method: "HEAD", path: "/", headers: htmlAccept},
+		{name: "cors_simple_allowed_origin", bug: "xss-protection-not-zero", method: "GET", path: "/healthcheck", headers: origin},
+		{name: "cors_simple_foreign_origin", bug: "xss-protection-not-zero", method: "GET", path: "/healthcheck", headers: map[string]string{"Origin": "http://evil.example"}},
+		{name: "cors_preflight_allowed", bug: "xss-protection-not-zero", method: "OPTIONS", path: "/body", headers: map[string]string{
 			"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST",
 		}},
-		{name: "cors_preflight_allowed_with_sec_fetch_site", bug: "C9", method: "OPTIONS", path: "/body", headers: map[string]string{
+		{name: "cors_preflight_allowed_with_sec_fetch_site", bug: "xss-protection-not-zero", method: "OPTIONS", path: "/body", headers: map[string]string{
 			"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST", "Sec-Fetch-Site": "cross-site",
 		}},
-		{name: "cors_preflight_foreign", bug: "C9", method: "OPTIONS", path: "/body", headers: map[string]string{
+		{name: "cors_preflight_foreign", bug: "xss-protection-not-zero", method: "OPTIONS", path: "/body", headers: map[string]string{
 			"Origin": "http://evil.example", "Access-Control-Request-Method": "POST", "Sec-Fetch-Site": "cross-site",
 		}},
-		{name: "conditional_etag_304", bug: "C9", method: "GET", path: "/", headers: htmlAccept, before: goldenETag},
-		{name: "conditional_if_modified_since_root", bug: "C9+C14", method: "GET", path: "/", headers: map[string]string{
+		{name: "conditional_etag_304", bug: "xss-protection-not-zero", method: "GET", path: "/", headers: htmlAccept, before: goldenETag},
+		{name: "conditional_if_modified_since_root", bug: "xss-protection-not-zero+304-drops-validators", method: "GET", path: "/", headers: map[string]string{
 			"If-Modified-Since": goldenFixedTime.Format(http.TimeFormat),
 		}},
-		{name: "file_full", bug: "C9", method: "GET", path: "/file"},
-		{name: "file_head", bug: "C9", method: "HEAD", path: "/file"},
-		{name: "file_range_0_9", bug: "C9", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-9"}},
-		{name: "file_range_0_0", bug: "C9+C2", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-0"}},
-		{name: "file_range_suffix", bug: "C9+C2", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=-5"}},
-		{name: "file_range_unsatisfiable", bug: "C9+C2", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=99999999-"}},
-		{name: "file_if_modified_since", bug: "C9", method: "GET", path: "/file", headers: map[string]string{
+		{name: "file_full", bug: "xss-protection-not-zero", method: "GET", path: "/file"},
+		{name: "file_head", bug: "xss-protection-not-zero", method: "HEAD", path: "/file"},
+		{name: "file_range_0_9", bug: "xss-protection-not-zero", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-9"}},
+		{name: "file_range_0_0", bug: "xss-protection-not-zero+range-first-byte-returns-whole-file", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-0"}},
+		{name: "file_range_suffix", bug: "xss-protection-not-zero+range-suffix-returns-416", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=-5"}},
+		{name: "file_range_unsatisfiable", bug: "xss-protection-not-zero+range-416-lacks-content-range", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=99999999-"}},
+		{name: "file_if_modified_since", bug: "xss-protection-not-zero", method: "GET", path: "/file", headers: map[string]string{
 			"If-Modified-Since": goldenFixedTime.Format(http.TimeFormat),
 		}},
-		{name: "not_found", bug: "C9", method: "GET", path: "/nope"},
-		{name: "method_not_allowed", bug: "C9", method: "POST", path: "/healthcheck"},
-		{name: "body_created", bug: "C9", method: "POST", path: "/body", body: "hello"},
-		{name: "body_over_limit_declared", bug: "C9", method: "POST", path: "/body", body: strings.Repeat("a", 5000)},
-		{name: "param_route_encoded", bug: "C9+C10", method: "GET", path: "/api/v1/hello/John%20Doe"},
-		{name: "native_handler", bug: "C9", method: "GET", path: "/native"},
-		{name: "request_id_echo", bug: "C9", method: "GET", path: "/healthcheck", headers: map[string]string{"X-Request-Id": "fixed-id-1"}},
+		{name: "not_found", bug: "xss-protection-not-zero", method: "GET", path: "/nope"},
+		{name: "method_not_allowed", bug: "xss-protection-not-zero", method: "POST", path: "/healthcheck"},
+		{name: "body_created", bug: "xss-protection-not-zero", method: "POST", path: "/body", body: "hello"},
+		{name: "body_over_limit_declared", bug: "xss-protection-not-zero", method: "POST", path: "/body", body: strings.Repeat("a", 5000)},
+		{name: "param_route_encoded", bug: "xss-protection-not-zero+route-params-not-decoded", method: "GET", path: "/api/v1/hello/John%20Doe"},
+		{name: "native_handler", bug: "xss-protection-not-zero", method: "GET", path: "/native"},
+		{name: "request_id_echo", bug: "xss-protection-not-zero", method: "GET", path: "/healthcheck", headers: map[string]string{"X-Request-Id": "fixed-id-1"}},
 	}
 
-	for _, sc := range scenarios { //nolint:paralleltest // shares one server
+	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
 			got := goldenDo(t, ts.URL, sc) // setup and request: a failure here is a real FAIL
 			path := filepath.Join("testdata", "golden", sc.name+".txt")
@@ -305,13 +305,13 @@ func TestGolden(t *testing.T) { //nolint:paralleltest // WithCors mutates a glob
 
 			want, err := os.ReadFile(path)
 			if err != nil {
-				t.Fatalf("[C6] missing golden %s (run with -update): %v", path, err)
+				t.Fatalf("missing golden %s (run with -update): %v", path, err)
 			}
 			compare := func(t testing.TB) {
 				t.Helper()
 
 				if string(want) != got {
-					t.Errorf("[C6] %s differs from golden.\n--- want\n%s--- got\n%s", sc.name, want, got)
+					t.Errorf("%s differs from golden.\n--- want\n%s--- got\n%s", sc.name, want, got)
 				}
 			}
 

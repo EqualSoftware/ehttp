@@ -29,7 +29,7 @@ func TestErrorCache(t *testing.T) {
 		{400, true},
 		{404, true},
 		{500, true},
-		{503, false}, // author decision: 503 is temporary (RFC 9110 §15.6.4), never cached
+		{503, false}, // 503 is temporary (RFC 9110 §15.6.4), never cached
 	}
 
 	for _, tt := range tests {
@@ -84,12 +84,12 @@ func TestErrorCache(t *testing.T) {
 
 func bStatusName(code int) string { return "status " + strconv.Itoa(code) }
 
-// C4: ErrorCache only needs the status. Buffering every body keeps whole
+// ErrorCache only needs the status. Buffering every body keeps whole
 // responses in memory and defeats streaming and Range.
 func TestErrorCacheDoesNotBufferBody(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "C4", func(t testing.TB) {
+	ehttptest.KnownBug(t, "error-cache-buffers-body", func(t testing.TB) {
 		rec := httptest.NewRecorder()
 		seen := -1
 		h := fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
@@ -99,11 +99,11 @@ func TestErrorCacheDoesNotBufferBody(t *testing.T) {
 
 		h.ServeHTTP(rec, fixtures.Req("GET", "/x"))
 
-		ehttptest.True(t, "C4", seen > 0, "handler wrote a body but %d bytes reached the underlying writer before it returned", seen)
+		ehttptest.True(t, "ErrorCache streams the body to the client", seen > 0, "handler wrote a body but %d bytes reached the underlying writer before it returned", seen)
 	})
 }
 
-// S10(c): statuses that depend on who asked must not be cached by URL.
+// Statuses that depend on who asked must not be cached by URL.
 func TestErrorCacheClientDependentStatuses(t *testing.T) {
 	t.Parallel()
 
@@ -114,7 +114,7 @@ func TestErrorCacheClientDependentStatuses(t *testing.T) {
 			rec := ehttptest.Do(fixtures.Handler(fixtures.Status(code, "x"), middleware.ErrorCache(time.Minute)), fixtures.Req("GET", "/x"))
 			cc := rec.Header().Get("Cache-Control")
 
-			ehttptest.True(t, "S10(c)", !strings.Contains(cc, "max-age=60"), "status %d is cached: %q", code, cc)
+			ehttptest.True(t, "a status that depends on the caller is not cached by URL", !strings.Contains(cc, "max-age=60"), "status %d is cached: %q", code, cc)
 		})
 	}
 }

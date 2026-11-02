@@ -104,7 +104,7 @@ func TestLog(t *testing.T) {
 }
 
 // A handler that answers through net/http's implicit 200 (nothing written
-// via ehttp) is logged with the sent code (NB-5).
+// via ehttp) is logged with the sent code.
 func TestLogImplicitStatus(t *testing.T) {
 	logger, logs := fixtures.ObservedLogger()
 

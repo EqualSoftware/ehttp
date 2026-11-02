@@ -31,21 +31,21 @@ func TestKnownBugModes(t *testing.T) {
 		kind    verdictKind
 		prefix  string
 	}{
-		{"default fails on assertion", failEq, false, verdictFail, "pending SELF-1: "},
-		{"default fails on fatal", failFatal, false, verdictFail, "pending SELF-1: "},
-		{"default fails on panic", failPanic, false, verdictFail, "pending SELF-1: "},
+		{"default fails on assertion", failEq, false, verdictFail, "pending sample-bug: "},
+		{"default fails on fatal", failFatal, false, verdictFail, "pending sample-bug: "},
+		{"default fails on panic", failPanic, false, verdictFail, "pending sample-bug: "},
 		{"default passes when fixed", passing, false, verdictPass, ""},
-		{"pending skips on assertion", failEq, true, verdictSkip, "pending SELF-1: "},
-		{"pending skips on fatal", failFatal, true, verdictSkip, "pending SELF-1: "},
-		{"pending skips on panic", failPanic, true, verdictSkip, "pending SELF-1: "},
-		{"pending fails when fixed", passing, true, verdictFail, "known bug SELF-1 no longer reproduces"},
+		{"pending skips on assertion", failEq, true, verdictSkip, "pending sample-bug: "},
+		{"pending skips on fatal", failFatal, true, verdictSkip, "pending sample-bug: "},
+		{"pending skips on panic", failPanic, true, verdictSkip, "pending sample-bug: "},
+		{"pending fails when fixed", passing, true, verdictFail, "known bug sample-bug no longer reproduces"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			v := decide(t, "SELF-1", tc.check, tc.pending)
+			v := decide(t, "sample-bug", tc.check, tc.pending)
 			Eq(t, "KnownBug modes", v.kind, tc.kind)
 			True(t, "KnownBug modes", strings.HasPrefix(v.msg, tc.prefix), "message %q, want prefix %q", v.msg, tc.prefix)
 		})
@@ -55,15 +55,15 @@ func TestKnownBugModes(t *testing.T) {
 func TestKnownBugPendingReportsFirstMessage(t *testing.T) {
 	t.Parallel()
 
-	v := decide(t, "SELF-2", func(t testing.TB) {
+	v := decide(t, "sample-bug-2", func(t testing.TB) {
 		t.Errorf("one")
 		t.Errorf("two")
 	}, true)
-	Eq(t, "KnownBug modes", v.msg, "pending SELF-2: one")
+	Eq(t, "KnownBug modes", v.msg, "pending sample-bug-2: one")
 
-	v = decide(t, "SELF-2", func(t testing.TB) {
+	v = decide(t, "sample-bug-2", func(t testing.TB) {
 		t.Errorf("one")
 		t.Errorf("two")
 	}, false)
-	Eq(t, "KnownBug modes", v.msg, "pending SELF-2: one; two")
+	Eq(t, "KnownBug modes", v.msg, "pending sample-bug-2: one; two")
 }

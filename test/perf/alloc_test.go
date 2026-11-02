@@ -1,6 +1,6 @@
-// C7 gate - allocation ceilings per hot path. testing.AllocsPerRun is
-// deterministic, so this test blocks. Each ceiling is the value measured on
-// 2026-11-01 (go1.27.3, darwin/arm64). A fix that lowers allocations may lower
+// Allocation ceilings per hot path. testing.AllocsPerRun is
+// deterministic, so this test blocks. Each ceiling is the value measured with
+// go1.27.3 on darwin/arm64. A fix that lowers allocations may lower
 // the ceiling in the same PR; a change that raises it must justify it.
 //
 // Not parallel: AllocsPerRun reads global runtime counters.
@@ -17,7 +17,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func TestAllocsHotPaths(t *testing.T) { //nolint:paralleltest // AllocsPerRun is global
+func TestAllocsHotPaths(t *testing.T) {
 	if raceEnabled {
 		t.Skip("allocation gate runs without -race: make allocs")
 	}
@@ -58,9 +58,9 @@ func TestAllocsHotPaths(t *testing.T) { //nolint:paralleltest // AllocsPerRun is
 		{"router 1 param", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/users/octocat", http.NoBody), 3},
 		{"router 3 params", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/repos/o/r/issues/42/comments", http.NoBody), 3},
 		{"router wildcard", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/repos/o/r/contents/a/b/c.txt", http.NoBody), 4},
-		{"router regex (compiled per request, S12)", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/regex/12345", http.NoBody), 3},
+		{"router regex (compiled per request)", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/regex/12345", http.NoBody), 3},
 		{"router 404", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/this/path/does/not/exist", http.NoBody), 4},
-		{"router 405 (C1 path)", gh, httptest.NewRequestWithContext(context.Background(), "DELETE", "/user/keys/1", http.NoBody), 8},
+		{"router 405 (wrong method path)", gh, httptest.NewRequestWithContext(context.Background(), "DELETE", "/user/keys/1", http.NoBody), 8},
 		{"cors simple", cors, simple, 5},
 		{"cors preflight", cors, preflight, 7},
 		{"route with Log middleware (nop logger)", logSrv, httptest.NewRequestWithContext(context.Background(), "GET", "/", http.NoBody), 6},
@@ -76,7 +76,7 @@ func TestAllocsHotPaths(t *testing.T) { //nolint:paralleltest // AllocsPerRun is
 		t.Logf("%-45s allocs/op=%v ceiling=%v", c.name, got, c.ceiling)
 
 		if got > c.ceiling {
-			t.Errorf("[C7] %s: %v allocs/op, ceiling %v", c.name, got, c.ceiling)
+			t.Errorf("%s: %v allocs/op, ceiling %v", c.name, got, c.ceiling)
 		}
 	}
 }

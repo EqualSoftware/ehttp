@@ -57,7 +57,7 @@ func aWaitReady(t *testing.T, url string) {
 }
 
 // aRestoreCors puts the global DefaultCorsOptions back after a test that
-// mutates it (S3). Tests that call WithCors must not be parallel.
+// mutates it. Tests that call WithCors must not be parallel.
 func aRestoreCors(t *testing.T) {
 	t.Helper()
 
@@ -78,7 +78,7 @@ func TestNewServerDefaults(t *testing.T) {
 	t.Run("server gets its own CORS options", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.True(t, "S3: NewServer must not share the DefaultCorsOptions pointer", s.router.cors != DefaultCorsOptions, "router.cors is the global")
+		ehttptest.True(t, "NewServer must not share the DefaultCorsOptions pointer", s.router.cors != DefaultCorsOptions, "router.cors is the global")
 	})
 }
 
@@ -135,17 +135,17 @@ func TestServerWithTemplatesInvalidGlob(t *testing.T) {
 
 			out, code := run()
 
-			ehttptest.True(t, "principle 5: bad config stops the boot", code != 0, "child exited 0, output: %s", out)
+			ehttptest.True(t, "fail fast: bad config stops the boot", code != 0, "child exited 0, output: %s", out)
 
 			t.Run("fails with a panic", func(t *testing.T) {
-				ehttptest.True(t, "principle 5: panic at boot (recoverable, testable), not os.Exit", strings.Contains(out, "panic:"),
+				ehttptest.True(t, "fail fast: panic at boot (recoverable, testable), not os.Exit", strings.Contains(out, "panic:"),
 					"child exit code %d without a panic, output: %q", code, out)
 			})
 		})
 	}
 }
 
-// WithCors tests mutate the global DefaultCorsOptions (S3), so they are serial.
+// WithCors tests mutate the global DefaultCorsOptions, so they are serial.
 func TestServerWithCors(t *testing.T) {
 	aRestoreCors(t)
 
@@ -180,8 +180,8 @@ func TestServerWithCors(t *testing.T) {
 		second := NewServer()
 		rec := aDo(second, "OPTIONS", "/x", HeaderOrigin, "https://a.example", HeaderAccessControlRequestMethod, "GET")
 
-		ehttptest.Eq(t, "S3: WithCors must not mutate DefaultCorsOptions", rec.Header().Get(HeaderAccessControlAllowMethods), "*")
-		ehttptest.Eq(t, "S3: WithCors must not mutate DefaultCorsOptions", rec.Header().Get(HeaderAccessControlAllowCredentials), "false")
+		ehttptest.Eq(t, "WithCors must not mutate DefaultCorsOptions", rec.Header().Get(HeaderAccessControlAllowMethods), "*")
+		ehttptest.Eq(t, "WithCors must not mutate DefaultCorsOptions", rec.Header().Get(HeaderAccessControlAllowCredentials), "false")
 	})
 
 	t.Run("NewServer copies the slices of the default options", func(t *testing.T) {
@@ -190,7 +190,7 @@ func TestServerWithCors(t *testing.T) {
 		s := NewServer()
 		s.router.cors.Origin[0] = "https://changed.example"
 
-		ehttptest.Eq(t, "S3: the server must not share the slices of DefaultCorsOptions", DefaultCorsOptions.Origin[0], "*")
+		ehttptest.Eq(t, "the server must not share the slices of DefaultCorsOptions", DefaultCorsOptions.Origin[0], "*")
 	})
 
 	// An OPTIONS response is not cacheable (RFC 9110 §9.3.7), so the preflight
@@ -201,7 +201,7 @@ func TestServerWithCors(t *testing.T) {
 		s := NewServer(WithCors(CorsOptions{CacheDuration: time.Hour}))
 		rec := aDo(s, "OPTIONS", "/x", HeaderOrigin, "https://a.example", HeaderAccessControlRequestMethod, "GET")
 
-		ehttptest.Eq(t, "S3 / Fetch §3.2.2 (preflight cache)", rec.Header().Get(HeaderAccessControlMaxAge), "3600")
+		ehttptest.Eq(t, "Fetch §3.2.2 (preflight cache)", rec.Header().Get(HeaderAccessControlMaxAge), "3600")
 	})
 }
 
@@ -295,7 +295,7 @@ func TestServerListenReturnsBindError(t *testing.T) {
 		t.Fatal("Listen hung on a busy port")
 	}
 
-	ehttptest.True(t, "S8: Listen returns the real error", got != nil, "Listen returned nil for a busy port")
+	ehttptest.True(t, "Listen returns the real error", got != nil, "Listen returned nil for a busy port")
 }
 
 func TestServerListenWaitsForInFlightRequests(t *testing.T) {
@@ -375,6 +375,6 @@ func TestServerListenWaitsForInFlightRequests(t *testing.T) {
 		t.Fatal("client never got its response")
 	}
 
-	ehttptest.True(t, "S8: shutdown waits for in-flight requests (up to a deadline)", handlerFinishedBeforeListenReturned,
+	ehttptest.True(t, "shutdown waits for in-flight requests (up to a deadline)", handlerFinishedBeforeListenReturned,
 		"Listen returned while the handler was still running")
 }

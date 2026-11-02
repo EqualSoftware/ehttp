@@ -15,7 +15,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-const ownBasis = "author decision 2026-11-01 (header ownership)"
+const ownBasis = "a middleware owns the header: the handler cannot change it"
 
 func bObserved() (*zap.Logger, *observer.ObservedLogs) {
 	core, logs := observer.New(zapcore.DebugLevel)

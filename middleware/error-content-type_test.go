@@ -10,7 +10,7 @@ import (
 	"github.com/EqualSoftware/ehttp/middleware"
 )
 
-const ctBasis = "author decision 2026-11-01 (review: an error the library writes sets its own Content-Type)"
+const ctBasis = "an error the library writes sets its own Content-Type"
 
 func TestRecoverSetsOwnContentType(t *testing.T) {
 	t.Parallel()

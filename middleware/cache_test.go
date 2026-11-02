@@ -52,7 +52,7 @@ func TestCache(t *testing.T) {
 		ehttptest.Eq(t, "middleware contract", rec.Body.String(), "ok")
 	})
 
-	t.Run("the handler cannot override the header (author decision: header ownership)", func(t *testing.T) {
+	t.Run("the handler cannot override the header (a middleware owns the header)", func(t *testing.T) {
 		t.Parallel()
 
 		h := fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
@@ -100,8 +100,8 @@ func TestCachePublic(t *testing.T) {
 		rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Cache(time.Minute)), fixtures.Req("GET", "/x", "Authorization", "Bearer t"))
 		cc := rec.Header().Get("Cache-Control")
 
-		ehttptest.True(t, "S10(b)", strings.Contains(cc, "private"), "Cache-Control %q lacks private for an authenticated request", cc)
-		ehttptest.True(t, "S10(b)", !strings.Contains(cc, "public"), "Cache-Control %q has public for an authenticated request", cc)
+		ehttptest.True(t, "Cache with Authorization is private", strings.Contains(cc, "private"), "Cache-Control %q lacks private for an authenticated request", cc)
+		ehttptest.True(t, "Cache with Authorization is not public", !strings.Contains(cc, "public"), "Cache-Control %q has public for an authenticated request", cc)
 	})
 }
 
@@ -109,7 +109,7 @@ func TestCachePublic(t *testing.T) {
 func TestCacheNegativeDuration(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "NB-2", func(t testing.TB) {
+	ehttptest.KnownBug(t, "cache-negative-duration", func(t testing.TB) {
 		rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Cache(-time.Minute)), fixtures.Req("GET", "/x"))
 		cc := rec.Header().Get("Cache-Control")
 

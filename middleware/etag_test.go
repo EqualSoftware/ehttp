@@ -149,7 +149,7 @@ func TestWeakEtagHead(t *testing.T) {
 	ehttptest.Eq(t, "RFC 9110 §9.3.2", len(b), 0)
 }
 
-// C3: If-None-Match is a list or "*" (RFC 9110 §13.1.2). The middleware only
+// If-None-Match is a list or "*" (RFC 9110 §13.1.2). The middleware only
 // compares the whole header with a single tag.
 func TestWeakEtagIfNoneMatchList(t *testing.T) {
 	t.Parallel()
@@ -168,7 +168,7 @@ func TestWeakEtagIfNoneMatchList(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			ehttptest.KnownBug(t, "C3", func(t testing.TB) {
+			ehttptest.KnownBug(t, "if-none-match-list-ignored", func(t testing.TB) {
 				rec := ehttptest.Do(fixtures.Handler(bString(body), middleware.WeakEtag()), fixtures.Req("GET", "/x", "If-None-Match", tt.inm))
 
 				ehttptest.Eq(t, "RFC 9110 §13.1.2", rec.Code, 304)
@@ -177,12 +177,12 @@ func TestWeakEtagIfNoneMatchList(t *testing.T) {
 	}
 }
 
-// C3: 413 is for request bodies (RFC 9110 §15.5.14); a large response is not
+// 413 is for request bodies (RFC 9110 §15.5.14); a large response is not
 // an error. The size is faked through the exported interceptor field.
 func TestWeakEtagLargeResponseIsNot413(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "C3", func(t testing.TB) {
+	ehttptest.KnownBug(t, "large-response-returns-413", func(t testing.TB) {
 		h := fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
 			res.String("x")
 			res.Unwrap().(*ehttp.ResponseWriterInterceptor).Size = math.MaxUint32 + 1
@@ -195,7 +195,7 @@ func TestWeakEtagLargeResponseIsNot413(t *testing.T) {
 	})
 }
 
-// Composition with ErrorCache, in both orders (C4 aside, the pair must work).
+// Composition with ErrorCache, in both orders (the pair must work).
 func TestWeakEtagWithErrorCache(t *testing.T) {
 	t.Parallel()
 

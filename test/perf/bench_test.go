@@ -1,4 +1,4 @@
-// C7 - benchmarks. Baseline numbers for the router, the middleware stack of
+// Benchmarks. Baseline numbers for the router, the middleware stack of
 // examples/server and a few hot middlewares. ns/op is noisy and only reported;
 // the deterministic gate is alloc_test.go.
 //
@@ -65,7 +65,7 @@ func githubServer(tb testing.TB) *ehttp.Server {
 }
 
 // exampleApp is the real examples/server app. WithCors mutates the global
-// shared by every server (S3). The global is restored at once, so the app
+// shared by every server. The global is restored at once, so the app
 // and the other servers of this package run with the default CORS options.
 func exampleApp(tb testing.TB) *ehttp.Server {
 	tb.Helper()
@@ -93,7 +93,7 @@ func BenchmarkRouter(b *testing.B) {
 		{"static_first", "GET", "/authorizations"},
 		{"static_mid", "GET", "/gists/public"},
 		{"static_deep", "GET", "/user/keys"},                // near the end of ~236 routes: worst case of the linear scan
-		{"c1_wrong_method_first", "DELETE", "/user/keys/1"}, // GET registered first -> 405 today (C1)
+		{"c1_wrong_method_first", "DELETE", "/user/keys/1"}, // GET registered first -> 405
 		{"param_1", "GET", "/users/octocat"},
 		{"param_2", "GET", "/repos/octocat/hello/stargazers"},
 		{"param_3", "GET", "/repos/octocat/hello/issues/42/comments"},

@@ -86,7 +86,7 @@ func TestTrustedProxyPeers(t *testing.T) {
 				want = "https|example.com|example.com"
 			}
 
-			ehttptest.Eq(t, "design 2.2: X-Forwarded-* only from a peer in a trusted range", got, want)
+			ehttptest.Eq(t, "X-Forwarded-* counts only from a peer in a trusted range", got, want)
 		})
 	}
 }
@@ -99,7 +99,7 @@ func TestTrustedProxiesInvalidPanics(t *testing.T) {
 			t.Parallel()
 
 			defer func() {
-				ehttptest.True(t, "design 2.2: an invalid value panics at boot", recover() != nil, "no panic for %q", v)
+				ehttptest.True(t, "an invalid value panics at boot", recover() != nil, "no panic for %q", v)
 			}()
 
 			WithTrustedProxies(v)
@@ -117,15 +117,15 @@ func TestForwardedHeaders(t *testing.T) {
 		peer              string
 		kv                []string
 	}{
-		{"default trusts nobody", "design 2.2", "http|example.com|example.com", peer, []string{"X-Forwarded-Proto", "https", "X-Forwarded-Host", "x.com"}},
-		{"untrusted peer", "design 2.2", "http|example.com|example.com", "1.1.1.1:1", []string{"X-Forwarded-Proto", "https", "X-Forwarded-Host", "x.com"}},
-		{"proto https", "design 2.2", "https|example.com|example.com", peer, []string{"X-Forwarded-Proto", "HTTPS"}},
-		{"protocol header", "design 2.2", "https|example.com|example.com", peer, []string{"X-Forwarded-Protocol", "https"}},
-		{"proto http", "design 2.2", "http|example.com|example.com", peer, []string{"X-Forwarded-Proto", "http"}},
-		{"proto list first", "design 2.2 (Express)", "https|example.com|example.com", peer, []string{"X-Forwarded-Proto", "https, http"}},
+		{"default trusts nobody", "X-Forwarded-* counts only from a trusted peer", "http|example.com|example.com", peer, []string{"X-Forwarded-Proto", "https", "X-Forwarded-Host", "x.com"}},
+		{"untrusted peer", "X-Forwarded-* counts only from a trusted peer", "http|example.com|example.com", "1.1.1.1:1", []string{"X-Forwarded-Proto", "https", "X-Forwarded-Host", "x.com"}},
+		{"proto https", "X-Forwarded-* counts only from a trusted peer", "https|example.com|example.com", peer, []string{"X-Forwarded-Proto", "HTTPS"}},
+		{"protocol header", "X-Forwarded-* counts only from a trusted peer", "https|example.com|example.com", peer, []string{"X-Forwarded-Protocol", "https"}},
+		{"proto http", "X-Forwarded-* counts only from a trusted peer", "http|example.com|example.com", peer, []string{"X-Forwarded-Proto", "http"}},
+		{"proto list first", "Express: the first list member wins", "https|example.com|example.com", peer, []string{"X-Forwarded-Proto", "https, http"}},
 		{"proto other value ignored", "author premise: strict", "http|example.com|example.com", peer, []string{"X-Forwarded-Proto", "javascript"}},
 		{"proto scheme form ignored", "author premise: strict", "http|example.com|example.com", peer, []string{"X-Forwarded-Proto", "https://"}},
-		{"host list first", "design 2.2 (Express)", "http|a.com|a.com", peer, []string{"X-Forwarded-Host", "a.com, b.com"}},
+		{"host list first", "Express: the first list member wins", "http|a.com|a.com", peer, []string{"X-Forwarded-Host", "a.com, b.com"}},
 		{"host with port", "RFC 9110 §7.2", "http|a.com:8443|a.com", peer, []string{"X-Forwarded-Host", "a.com:8443"}},
 		{"host ipv6 with port", "RFC 3986 §3.2.2", "http|[::1]:8080|::1", peer, []string{"X-Forwarded-Host", "[::1]:8080"}},
 		{"host upper case", "RFC 3986 §3.2.2", "http|A.COM|a.com", peer, []string{"X-Forwarded-Host", "A.COM"}},
@@ -158,9 +158,9 @@ func TestServerOptionsReachHTTPServer(t *testing.T) {
 	t.Parallel()
 
 	def := NewServer().httpServer()
-	ehttptest.Eq(t, "S8 row: default ReadHeaderTimeout is 10 s", def.ReadHeaderTimeout, 10*time.Second)
-	ehttptest.Eq(t, "S8 row: other options keep the stdlib default", def.ReadTimeout, time.Duration(0))
-	ehttptest.Eq(t, "S8 row: other options keep the stdlib default", def.MaxHeaderBytes, 0)
+	ehttptest.Eq(t, "default ReadHeaderTimeout is 10 s", def.ReadHeaderTimeout, 10*time.Second)
+	ehttptest.Eq(t, "other options keep the stdlib default", def.ReadTimeout, time.Duration(0))
+	ehttptest.Eq(t, "other options keep the stdlib default", def.MaxHeaderBytes, 0)
 
 	s := NewServer(
 		WithReadHeaderTimeout(1*time.Second), WithReadTimeout(2*time.Second), WithWriteTimeout(3*time.Second),
@@ -168,12 +168,12 @@ func TestServerOptionsReachHTTPServer(t *testing.T) {
 	)
 	h := s.httpServer()
 
-	ehttptest.Eq(t, "S8 row", h.ReadHeaderTimeout, 1*time.Second)
-	ehttptest.Eq(t, "S8 row", h.ReadTimeout, 2*time.Second)
-	ehttptest.Eq(t, "S8 row", h.WriteTimeout, 3*time.Second)
-	ehttptest.Eq(t, "S8 row", h.IdleTimeout, 4*time.Second)
-	ehttptest.Eq(t, "S8 row", h.MaxHeaderBytes, 5)
-	ehttptest.Eq(t, "S8 row", s.shutdownTimeout, 6*time.Second)
+	ehttptest.Eq(t, "the option reaches http.Server", h.ReadHeaderTimeout, 1*time.Second)
+	ehttptest.Eq(t, "the option reaches http.Server", h.ReadTimeout, 2*time.Second)
+	ehttptest.Eq(t, "the option reaches http.Server", h.WriteTimeout, 3*time.Second)
+	ehttptest.Eq(t, "the option reaches http.Server", h.IdleTimeout, 4*time.Second)
+	ehttptest.Eq(t, "the option reaches http.Server", h.MaxHeaderBytes, 5)
+	ehttptest.Eq(t, "the option reaches http.Server", s.shutdownTimeout, 6*time.Second)
 }
 
 func TestServerNegativeOptionsPanic(t *testing.T) {
@@ -193,7 +193,7 @@ func TestServerNegativeOptionsPanic(t *testing.T) {
 			t.Parallel()
 
 			defer func() {
-				ehttptest.True(t, "author premise (2026-11-01): invalid boot input panics", recover() != nil, "no panic")
+				ehttptest.True(t, "an invalid boot input panics", recover() != nil, "no panic")
 			}()
 
 			f()
@@ -201,7 +201,7 @@ func TestServerNegativeOptionsPanic(t *testing.T) {
 	}
 }
 
-// S8 row: the shutdown has its own deadline. At the deadline it closes the
+// The shutdown has its own deadline. At the deadline it closes the
 // connections and returns the error.
 func TestServerShutdownDeadlineClosesAndReturnsError(t *testing.T) {
 	t.Parallel()
@@ -244,6 +244,6 @@ func TestServerShutdownDeadlineClosesAndReturnsError(t *testing.T) {
 	got := s.shutdown(context.Background(), server, serveErr)
 	close(release)
 
-	ehttptest.Eq(t, "S8 row: the deadline error is returned", got, context.DeadlineExceeded)
-	ehttptest.True(t, "S8 row: Close ends the connection of the stuck request", <-clientErr != nil, "client got a response")
+	ehttptest.Eq(t, "the deadline error is returned", got, context.DeadlineExceeded)
+	ehttptest.True(t, "Close ends the connection of the stuck request", <-clientErr != nil, "client got a response")
 }

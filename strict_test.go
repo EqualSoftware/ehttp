@@ -13,7 +13,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-const strictBasis = "author decision 2026-11-01 (strict errors by mode)"
+const strictBasis = "strict errors by mode: Development panics, Production logs"
 
 // aServe serves one GET /x request through a server in mode, with h as the
 // handler and mws as route middlewares. It returns the response and the

@@ -22,15 +22,14 @@ import (
 	"github.com/EqualSoftware/ehttp/middleware"
 )
 
-// One test per attack. The ID in the name is the proposal ID (S*, C*) or the
-// new finding (NC-*). A KnownBug test skips while the attack still works.
+// One test per attack. A KnownBug test skips while the attack still works.
 
 const cSecret = "TOP-SECRET-OUTSIDE-ROOT"
 
 func cHost(ts *httptest.Server) string { return strings.TrimPrefix(ts.URL, "http://") }
 
 // ---------------------------------------------------------------------------
-// S9: path traversal in SendFile
+// Path traversal in SendFile
 // ---------------------------------------------------------------------------
 
 func cStaticServer(t testing.TB) (ts *httptest.Server, root string) {
@@ -63,7 +62,7 @@ func cStaticServer(t testing.TB) (ts *httptest.Server, root string) {
 	return fixtures.Start(t, srv), root
 }
 
-func TestCSecurityS9PathTraversal(t *testing.T) {
+func TestCSecurityPathTraversal(t *testing.T) {
 	ts, _ := cStaticServer(t)
 
 	cases := []struct {
@@ -74,7 +73,7 @@ func TestCSecurityS9PathTraversal(t *testing.T) {
 	}{
 		{"dotdot", "/static/../secret.txt", "", "net/http does not clean the path for custom handlers"},
 		{"nested-dotdot", "/static/a/../../secret.txt", "", "dot segments in the middle"},
-		{"encoded-dots", "/static/%2e%2e/secret.txt", "", "stays encoded today; becomes ../ once C10 decodes params, so S9 must live inside SendFile"},
+		{"encoded-dots", "/static/%2e%2e/secret.txt", "", "stays encoded today; becomes ../ once params are decoded, so the guard must live inside SendFile"},
 		{"encoded-slash", "/static/..%2fsecret.txt", "", "same as above"},
 		{"fully-encoded", "/static/%2e%2e%2fsecret.txt", "", "same as above"},
 	}
@@ -85,7 +84,7 @@ func TestCSecurityS9PathTraversal(t *testing.T) {
 				t.Helper()
 
 				resp := fixtures.Raw(t, cHost(ts), "GET "+tc.rawPath+" HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-				ehttptest.True(t, "S9 ("+tc.note+")", !strings.Contains(resp, cSecret),
+				ehttptest.True(t, "the path stays inside the root ("+tc.note+")", !strings.Contains(resp, cSecret),
 					"file outside the served root was returned for %s", tc.rawPath)
 			}
 
@@ -100,14 +99,14 @@ func TestCSecurityS9PathTraversal(t *testing.T) {
 
 	t.Run("control: file inside root is served", func(t *testing.T) {
 		resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/static/ok.txt", nil)
-		ehttptest.Eq(t, "S9 control", resp.StatusCode, 200)
-		ehttptest.Eq(t, "S9 control", body, "public-file")
+		ehttptest.Eq(t, "control: a file inside the root is served", resp.StatusCode, 200)
+		ehttptest.Eq(t, "control: a file inside the root is served", body, "public-file")
 	})
 }
 
-// A symlink inside the root pointing outside is NOT covered by the S9 fix
-// (reject ".."). The reference behavior (http.Dir) follows symlinks too.
-func TestCSecurityS9SymlinkMatchesHttpDir(t *testing.T) {
+// A symlink inside the root pointing outside is NOT covered by the
+// ".." check. The reference behavior (http.Dir) follows symlinks too.
+func TestCSecuritySymlinkMatchesHttpDir(t *testing.T) {
 	ts, root := cStaticServer(t)
 
 	if err := os.Symlink(filepath.Join(filepath.Dir(root), "secret.txt"), filepath.Join(root, "link.txt")); err != nil {
@@ -125,7 +124,7 @@ func TestCSecurityS9SymlinkMatchesHttpDir(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// S7: X-Forwarded-* from a peer nobody declared trusted
+// X-Forwarded-* from a peer nobody declared trusted
 // ---------------------------------------------------------------------------
 
 func cForwardServer(t testing.TB, mw ...ehttp.MiddlewareHandlerFunc) *httptest.Server {
@@ -151,28 +150,28 @@ func cWho(t testing.TB, ts *httptest.Server, hdr http.Header) (proto, host, host
 	return strings.TrimPrefix(parts[0], "proto="), strings.TrimPrefix(parts[1], "host="), strings.TrimPrefix(parts[2], "hostname=")
 }
 
-func TestCSecurityS7SpoofedForwardedHeaders(t *testing.T) {
+func TestCSecuritySpoofedForwardedHeaders(t *testing.T) {
 	ts := cForwardServer(t)
 	spoof := http.Header{"X-Forwarded-Proto": {"https"}, "X-Forwarded-Host": {"evil.example"}, "X-Forwarded-For": {"6.6.6.6"}}
 
 	t.Run("Protocol ignores X-Forwarded-Proto", func(t *testing.T) {
 		proto, _, _ := cWho(t, ts, spoof)
-		ehttptest.Eq(t, "S7: untrusted peer cannot claim https", proto, "http")
+		ehttptest.Eq(t, "untrusted peer cannot claim https", proto, "http")
 	})
 
 	t.Run("Host ignores X-Forwarded-Host", func(t *testing.T) {
 		_, host, _ := cWho(t, ts, spoof)
-		ehttptest.Eq(t, "S7: password-reset links must not use a forged host", host, cHost(ts))
+		ehttptest.Eq(t, "password-reset links must not use a forged host", host, cHost(ts))
 	})
 
 	t.Run("Hostname is the request host without port", func(t *testing.T) {
 		_, _, hostname := cWho(t, ts, nil)
-		ehttptest.Eq(t, "S7 (Hostname() is empty on server requests)", hostname, "127.0.0.1")
+		ehttptest.Eq(t, "Hostname() comes from the request on a server", hostname, "127.0.0.1")
 	})
 
 	t.Run("Protocol without proxy headers is http", func(t *testing.T) {
 		proto, _, _ := cWho(t, ts, nil)
-		ehttptest.Eq(t, "S7 (Protocol() is empty on server requests)", proto, "http")
+		ehttptest.Eq(t, "Protocol() comes from the request on a server", proto, "http")
 	})
 
 	t.Run("Host without proxy headers is the Host header", func(t *testing.T) {
@@ -183,22 +182,22 @@ func TestCSecurityS7SpoofedForwardedHeaders(t *testing.T) {
 
 // RFC 6797 §7.2: a server must not send HSTS over a non-secure transport.
 // (Severity is low: §8.1 makes user agents ignore it there.)
-func TestCSecurityS7SpoofedProtoTriggersHSTS(t *testing.T) {
+func TestCSecuritySpoofedProtoTriggersHSTS(t *testing.T) {
 	ts := cForwardServer(t, middleware.Secure(middleware.SecureOptions{HSTSMaxAge: 3600}))
 
 	resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/who", http.Header{"X-Forwarded-Proto": {"https"}})
 
-	ehttptest.Eq(t, "RFC 6797 §7.2 + S7", resp.Header.Get("Strict-Transport-Security"), "")
+	ehttptest.Eq(t, "RFC 6797 §7.2 (HSTS only over a secure transport)", resp.Header.Get("Strict-Transport-Security"), "")
 
 	plain, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/who", nil)
 	ehttptest.Eq(t, "RFC 6797 §7.2: plain HTTP gets no HSTS", plain.Header.Get("Strict-Transport-Security"), "")
 }
 
 // ---------------------------------------------------------------------------
-// S3: CORS attacks (not parallel: WithCors mutates the global)
+// CORS attacks (not parallel: WithCors mutates the global)
 // ---------------------------------------------------------------------------
 
-func TestCSecurityS3CorsReflection(t *testing.T) {
+func TestCSecurityCorsReflection(t *testing.T) {
 	cases := []struct {
 		name   string
 		origin string
@@ -220,13 +219,13 @@ func TestCSecurityS3CorsReflection(t *testing.T) {
 			acao := resp.Header.Get("Access-Control-Allow-Origin")
 			acac := resp.Header.Get("Access-Control-Allow-Credentials")
 
-			ehttptest.True(t, "S3 + Fetch §3.2.5: authenticated cross-origin read must not be granted",
+			ehttptest.True(t, "Fetch §3.2.5: authenticated cross-origin read must not be granted",
 				acao != tc.origin || acac != "true", "ACAO=%q ACAC=%q for Origin %q", acao, acac, tc.origin)
 		})
 	}
 }
 
-func TestCSecurityS3WildcardWithCredentials(t *testing.T) {
+func TestCSecurityWildcardWithCredentials(t *testing.T) {
 	t.Run("evil origin gets credentials", func(t *testing.T) {
 		ts := fixtures.Start(t, fixtures.CorsServer(t, &ehttp.CorsOptions{Origin: []string{fixtures.OriginA}, Credentials: true}))
 
@@ -249,11 +248,11 @@ func TestCSecurityS3WildcardWithCredentials(t *testing.T) {
 			return false
 		}()
 
-		ehttptest.True(t, "S3 + proposal principle 5 (fail fast)", panicked, "Credentials:true with wildcard origin did not panic")
+		ehttptest.True(t, "fail fast at boot: Credentials true with a wildcard origin", panicked, "Credentials:true with wildcard origin did not panic")
 	})
 }
 
-func TestCSecurityS3PreflightRejectsLookalikes(t *testing.T) {
+func TestCSecurityPreflightRejectsLookalikes(t *testing.T) {
 	for _, origin := range []string{fixtures.OriginEvil, "null", fixtures.OriginA + ".evil.com", "https://evil-app.example"} {
 		t.Run(origin, func(t *testing.T) {
 			ts := fixtures.Start(t, fixtures.CorsServer(t, &ehttp.CorsOptions{Origin: []string{fixtures.OriginA}}))
@@ -272,7 +271,7 @@ func TestCSecurityS3PreflightRejectsLookalikes(t *testing.T) {
 // Sec-Fetch-Site is a forbidden header name for browsers (Fetch §2.2.1), so only
 // non-browser clients can forge it, and they do not need CORS. Reproduced, but
 // not exploitable cross-site: severity downgraded.
-func TestCSecurityS3ForgedSecFetchSite(t *testing.T) {
+func TestCSecurityForgedSecFetchSite(t *testing.T) {
 	ts := fixtures.Start(t, fixtures.CorsServer(t, &ehttp.CorsOptions{Origin: []string{fixtures.OriginA}}))
 
 	resp, _ := fixtures.Fetch(t, http.MethodOptions, ts.URL+"/api", http.Header{
@@ -281,11 +280,11 @@ func TestCSecurityS3ForgedSecFetchSite(t *testing.T) {
 		"Sec-Fetch-Site":                {"same-origin"},
 	})
 
-	ehttptest.Eq(t, "S3: allowlist must not be bypassed by a self-declared Sec-Fetch-Site", resp.StatusCode, 403)
+	ehttptest.Eq(t, "allowlist must not be bypassed by a self-declared Sec-Fetch-Site", resp.StatusCode, 403)
 }
 
 // NewServer keeps a pointer to the global; WithCors writes through it.
-func TestCSecurityS3GlobalCorsLeaksAcrossServers(t *testing.T) {
+func TestCSecurityGlobalCorsLeaksAcrossServers(t *testing.T) {
 	orig := *ehttp.DefaultCorsOptions
 
 	t.Cleanup(func() { *ehttp.DefaultCorsOptions = orig })
@@ -303,11 +302,11 @@ func TestCSecurityS3GlobalCorsLeaksAcrossServers(t *testing.T) {
 		"Sec-Fetch-Site":                {"cross-site"},
 	})
 
-	ehttptest.Eq(t, "S3: a second server must not inherit the first server's allowlist", resp.StatusCode, 200)
+	ehttptest.Eq(t, "a second server must not inherit the first server's allowlist", resp.StatusCode, 200)
 }
 
 // ---------------------------------------------------------------------------
-// S1 / S2: group middleware
+// Group middleware
 // ---------------------------------------------------------------------------
 
 func cAuth() ehttp.MiddlewareHandlerFunc {
@@ -334,15 +333,15 @@ func cMark(name string) ehttp.MiddlewareHandlerFunc {
 
 func cSecretHandler(res *ehttp.ResponseWriter, req *ehttp.Request) { res.String("secret") }
 
-func TestCSecurityS1GroupAuthBypass(t *testing.T) {
+func TestCSecurityGroupAuthBypass(t *testing.T) {
 	t.Run("Route(prefix, auth) protects the group", func(t *testing.T) {
 		srv := ehttp.NewServer()
 		srv.Route("/admin", cAuth()).GET("/secret", cSecretHandler)
 		ts := fixtures.Start(t, srv)
 
 		resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/admin/secret", nil)
-		ehttptest.Eq(t, "S1: group middleware must run", resp.StatusCode, 401)
-		ehttptest.True(t, "S1", !strings.Contains(body, "secret"), "secret body leaked: %q", body)
+		ehttptest.Eq(t, "group middleware must run", resp.StatusCode, 401)
+		ehttptest.True(t, "group middleware rejects the request before the handler", !strings.Contains(body, "secret"), "secret body leaked: %q", body)
 	})
 
 	t.Run("nested Route keeps parent and own middleware", func(t *testing.T) {
@@ -353,12 +352,12 @@ func TestCSecurityS1GroupAuthBypass(t *testing.T) {
 
 		t.Run("inherits the parent auth", func(t *testing.T) {
 			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/admin/users/1", nil)
-			ehttptest.Eq(t, "S1: nested group inherits auth", resp.StatusCode, 401)
+			ehttptest.Eq(t, "nested group inherits auth", resp.StatusCode, 401)
 		})
 
 		t.Run("runs its own middleware", func(t *testing.T) {
 			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/admin/users/1", http.Header{"Authorization": {"x"}})
-			ehttptest.Eq(t, "S1: nested group's own middleware runs", resp.Header.Get("X-Nested"), "1")
+			ehttptest.Eq(t, "nested group's own middleware runs", resp.Header.Get("X-Nested"), "1")
 		})
 	})
 
@@ -384,7 +383,7 @@ func TestCSecurityS1GroupAuthBypass(t *testing.T) {
 	})
 
 	// Express semantic (app.use only affects what is registered after it).
-	// Pinned so the S1/S2 fix does not change it by accident.
+	// Pinned so a change to group middleware does not alter it by accident.
 	t.Run("Use after a route does not wrap that route (Express order)", func(t *testing.T) {
 		srv := ehttp.NewServer()
 		srv.GET("/early", cSecretHandler)
@@ -400,7 +399,7 @@ func TestCSecurityS1GroupAuthBypass(t *testing.T) {
 	})
 }
 
-func TestCSecurityS2GroupUseLeaksToWholeServer(t *testing.T) {
+func TestCSecurityGroupUseLeaksToWholeServer(t *testing.T) {
 	srv := ehttp.NewServer()
 	srv.GET("/public", cSecretHandler)
 
@@ -418,7 +417,7 @@ func TestCSecurityS2GroupUseLeaksToWholeServer(t *testing.T) {
 	t.Run("route outside the group", func(t *testing.T) {
 		// public was registered before api.Use, so only 404/405/OPTIONS expose the leak.
 		resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/missing", nil)
-		ehttptest.Eq(t, "S2: group middleware must not run on unrelated 404s", resp.Header.Get("X-Group"), "")
+		ehttptest.Eq(t, "group middleware must not run on unrelated 404s", resp.Header.Get("X-Group"), "")
 	})
 
 	t.Run("route registered after Use outside the group", func(t *testing.T) {
@@ -429,12 +428,12 @@ func TestCSecurityS2GroupUseLeaksToWholeServer(t *testing.T) {
 		ts := fixtures.Start(t, srv)
 
 		resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/later", nil)
-		ehttptest.Eq(t, "S2: sub.Use is scoped to the group", resp.Header.Get("X-Group"), "")
+		ehttptest.Eq(t, "sub.Use is scoped to the group", resp.Header.Get("X-Group"), "")
 	})
 }
 
 // ---------------------------------------------------------------------------
-// S6: Recover
+// Recover
 // ---------------------------------------------------------------------------
 
 func cRecoverServer(t testing.TB) *httptest.Server {
@@ -455,16 +454,16 @@ func cRecoverServer(t testing.TB) *httptest.Server {
 	return fixtures.Start(t, srv)
 }
 
-func TestCSecurityS6PanicDoesNotLeakToClient(t *testing.T) {
+func TestCSecurityPanicDoesNotLeakToClient(t *testing.T) {
 	ts := cRecoverServer(t)
 
 	resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/leak", nil)
-	ehttptest.Eq(t, "S6: panic becomes 500", resp.StatusCode, 500)
+	ehttptest.Eq(t, "panic becomes 500", resp.StatusCode, 500)
 
-	ehttptest.True(t, "S6: panic value is internal data", !strings.Contains(body, "hunter2"), "body leaks panic value: %s", body)
+	ehttptest.True(t, "panic value is internal data", !strings.Contains(body, "hunter2"), "body leaks panic value: %s", body)
 }
 
-func TestCSecurityS6AbortHandlerIsRethrown(t *testing.T) {
+func TestCSecurityAbortHandlerIsRethrown(t *testing.T) {
 	ts := cRecoverServer(t)
 
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/abort", http.NoBody)
@@ -485,13 +484,13 @@ func respStatus(r *http.Response) int {
 	return r.StatusCode
 }
 
-func TestCSecurityS6PanicAfterHeadersSent(t *testing.T) {
+func TestCSecurityPanicAfterHeadersSent(t *testing.T) {
 	ts := cRecoverServer(t)
 
 	t.Run("sized body: net/http Content-Length protects the client", func(t *testing.T) {
 		resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/partial", nil)
-		ehttptest.Eq(t, "premise check S6", resp.StatusCode, 200)
-		ehttptest.Eq(t, "premise check S6: only what was sent before the panic", body, "partial")
+		ehttptest.Eq(t, "premise: the first body is sent", resp.StatusCode, 200)
+		ehttptest.Eq(t, "premise: only what was sent before the panic", body, "partial")
 	})
 
 	// The correct fix aborts the stream (re-panic http.ErrAbortHandler): the
@@ -516,22 +515,22 @@ func TestCSecurityS6PanicAfterHeadersSent(t *testing.T) {
 		incomplete := errors.Is(readErr, io.ErrUnexpectedEOF)
 		cleanWithoutJSON := readErr == nil && !strings.Contains(string(b), `"code"`)
 
-		ehttptest.True(t, "RFC 9112 §8 + S6: incomplete message (io.ErrUnexpectedEOF), or a complete one without the error JSON",
+		ehttptest.True(t, "RFC 9112 §8: incomplete message (io.ErrUnexpectedEOF), or a complete one without the error JSON",
 			incomplete || cleanWithoutJSON, "body = %q, read error = %v", b, readErr)
 	})
 }
 
 // ---------------------------------------------------------------------------
-// C11: X-Request-Id
+// X-Request-Id
 // ---------------------------------------------------------------------------
 
-func TestCSecurityC11RequestId(t *testing.T) {
+func TestCSecurityRequestId(t *testing.T) {
 	srv := ehttp.NewServer()
 	srv.Use(middleware.RequestId())
 	srv.GET("/", func(res *ehttp.ResponseWriter, req *ehttp.Request) { res.String("ok") })
 	ts := fixtures.Start(t, srv)
 
-	// C11 (author decision): an incoming id is kept only with 1 to 128
+	// An incoming id is kept only with 1 to 128
 	// characters of [A-Za-z0-9._-]; otherwise a new id that follows the same rule.
 	validID := regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
@@ -542,12 +541,12 @@ func TestCSecurityC11RequestId(t *testing.T) {
 		"with slash": "a/b",
 	} {
 		t.Run(name+" is replaced by a valid id", func(t *testing.T) {
-			ehttptest.KnownBug(t, "C11", func(t testing.TB) {
+			ehttptest.KnownBug(t, "request-id-echoed-unvalidated", func(t testing.TB) {
 				resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL, http.Header{"X-Request-Id": {id}})
 				got := resp.Header.Get("X-Request-Id")
 
-				ehttptest.True(t, "C11: the untrusted id is not echoed", got != id, "echoed %d bytes", len(got))
-				ehttptest.True(t, "C11: the new id follows the same rule", validID.MatchString(got), "id = %q", got)
+				ehttptest.True(t, "the untrusted id is not echoed", got != id, "echoed %d bytes", len(got))
+				ehttptest.True(t, "the new id follows the same rule", validID.MatchString(got), "id = %q", got)
 			})
 		})
 	}
@@ -555,7 +554,7 @@ func TestCSecurityC11RequestId(t *testing.T) {
 	t.Run("a valid 128-char id is kept", func(t *testing.T) {
 		id := strings.Repeat("a", 128)
 		resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL, http.Header{"X-Request-Id": {id}})
-		ehttptest.Eq(t, "C11: 1 to 128 characters are kept", resp.Header.Get("X-Request-Id"), id)
+		ehttptest.Eq(t, "1 to 128 characters are kept", resp.Header.Get("X-Request-Id"), id)
 	})
 
 	t.Run("missing id gets a generated one", func(t *testing.T) {
@@ -602,28 +601,28 @@ func TestCSecurityC11RequestId(t *testing.T) {
 	t.Run("control byte in id never reaches the response", func(t *testing.T) {
 		raw := fixtures.Raw(t, cHost(ts), "GET / HTTP/1.1\r\nHost: x\r\nX-Request-Id: a\x01b\r\nConnection: close\r\n\r\n")
 
-		ehttptest.True(t, "C11 premise: net/http rejects control bytes (400) or the id is dropped",
+		ehttptest.True(t, "premise: net/http rejects control bytes (400) or the id is dropped",
 			strings.HasPrefix(raw, "HTTP/1.1 400") || !strings.Contains(raw, "\x01"), "response: %q", raw)
 	})
 }
 
 // ---------------------------------------------------------------------------
-// S12: route regex
+// Route regex
 // ---------------------------------------------------------------------------
 
-func TestCSecurityS12UnanchoredRouteRegex(t *testing.T) {
+func TestCSecurityUnanchoredRouteRegex(t *testing.T) {
 	srv := ehttp.NewServer()
 	srv.GET("/items/:id|[0-9]+", func(res *ehttp.ResponseWriter, req *ehttp.Request) { res.String("id=" + req.Param("id")) })
 	ts := fixtures.Start(t, srv)
 
 	resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/items/42", nil)
-	ehttptest.Eq(t, "S12 control", resp.StatusCode, 200)
-	ehttptest.Eq(t, "S12 control", body, "id=42")
+	ehttptest.Eq(t, "control: a matching segment is served", resp.StatusCode, 200)
+	ehttptest.Eq(t, "control: a matching segment is served", body, "id=42")
 
 	for _, bad := range []string{"abc1x", "5;drop", "x9", "9x"} {
 		t.Run("rejects "+bad, func(t *testing.T) {
 			resp, body := fixtures.Fetch(t, http.MethodGet, ts.URL+"/items/"+bad, nil)
-			ehttptest.Eq(t, "S12: regex param must match the whole segment ("+body+")", resp.StatusCode, 404)
+			ehttptest.Eq(t, "regex param must match the whole segment ("+body+")", resp.StatusCode, 404)
 		})
 	}
 
@@ -635,12 +634,12 @@ func TestCSecurityS12UnanchoredRouteRegex(t *testing.T) {
 			return false
 		}()
 
-		ehttptest.True(t, "S12 + principle 5 (fail fast at boot)", panicked, "invalid regexp registered without panic")
+		ehttptest.True(t, "fail fast at boot: an invalid regex panics", panicked, "invalid regexp registered without panic")
 	})
 }
 
 // ---------------------------------------------------------------------------
-// C5: BodyLimit
+// BodyLimit
 // ---------------------------------------------------------------------------
 
 // cBodyServer returns the server, the count of handler calls and the count
@@ -683,13 +682,13 @@ func cPost(t testing.TB, url string, body io.Reader, length int64) (resp *http.R
 	return resp, string(b)
 }
 
-func TestCSecurityC5BodyLimit(t *testing.T) {
+func TestCSecurityBodyLimit(t *testing.T) {
 	ts, called, tooLarge := cBodyServer(t, "1KB")
 
 	t.Run("declared length above limit is 413 without running the handler", func(t *testing.T) {
 		resp, _ := cPost(t, ts.URL+"/up", strings.NewReader(strings.Repeat("a", 2048)), 2048)
 		ehttptest.Eq(t, "RFC 9110 §15.5.14 413", resp.StatusCode, 413)
-		ehttptest.Eq(t, "C5: handler not reached", called.Load(), int32(0))
+		ehttptest.Eq(t, "handler not reached", called.Load(), int32(0))
 	})
 
 	// BodyLimit cannot reject a chunked body up front. Its contract is that
@@ -704,12 +703,12 @@ func TestCSecurityC5BodyLimit(t *testing.T) {
 
 	t.Run("body at the limit passes", func(t *testing.T) {
 		resp, body := cPost(t, ts.URL+"/up", strings.NewReader(strings.Repeat("a", 1024)), 1024)
-		ehttptest.Eq(t, "C5 boundary", resp.StatusCode, 200)
-		ehttptest.Eq(t, "C5 boundary", body, "1024")
+		ehttptest.Eq(t, "a body at the limit is accepted", resp.StatusCode, 200)
+		ehttptest.Eq(t, "a body at the limit is accepted", body, "1024")
 	})
 
 	t.Run("limit with a space silently becomes 4 bytes", func(t *testing.T) {
-		ehttptest.KnownBug(t, "C5", func(t testing.TB) {
+		ehttptest.KnownBug(t, "body-limit-accepts-invalid-value", func(t testing.TB) {
 			panicked := func() (p bool) {
 				defer func() { p = recover() != nil }()
 				middleware.BodyLimit("4 KB")
@@ -717,21 +716,21 @@ func TestCSecurityC5BodyLimit(t *testing.T) {
 				return false
 			}()
 
-			ehttptest.True(t, "C5: invalid limit must fail at boot", panicked, `BodyLimit("4 KB") accepted`)
+			ehttptest.True(t, "invalid limit must fail at boot", panicked, `BodyLimit("4 KB") accepted`)
 		})
 	})
 
 	t.Run("limit with a space rejects a 100-byte body", func(t *testing.T) {
 		spaced, _, _ := cBodyServer(t, "4 KB")
 
-		ehttptest.KnownBug(t, "C5", func(t testing.TB) {
+		ehttptest.KnownBug(t, "body-limit-accepts-invalid-value", func(t testing.TB) {
 			resp, _ := cPost(t, spaced.URL+"/up", strings.NewReader(strings.Repeat("a", 100)), 100)
-			ehttptest.Eq(t, "C5: \"4 KB\" must not mean 4 bytes", resp.StatusCode, 200)
+			ehttptest.Eq(t, "\"4 KB\" must not mean 4 bytes", resp.StatusCode, 200)
 		})
 	})
 
 	t.Run("unparsable limit fails at boot", func(t *testing.T) {
-		ehttptest.KnownBug(t, "C5", func(t testing.TB) {
+		ehttptest.KnownBug(t, "body-limit-accepts-invalid-value", func(t testing.TB) {
 			panicked := func() (p bool) {
 				defer func() { p = recover() != nil }()
 				middleware.BodyLimit("lots")
@@ -739,19 +738,19 @@ func TestCSecurityC5BodyLimit(t *testing.T) {
 				return false
 			}()
 
-			ehttptest.True(t, "C5: invalid limit must fail at boot", panicked, `BodyLimit("lots") accepted`)
+			ehttptest.True(t, "invalid limit must fail at boot", panicked, `BodyLimit("lots") accepted`)
 		})
 	})
 }
 
 // ---------------------------------------------------------------------------
-// S8: slowloris (ReadHeaderTimeout)
+// Slowloris (ReadHeaderTimeout)
 // ---------------------------------------------------------------------------
 
 // The default ReadHeaderTimeout is 10s, and the probe is a half-open
 // connection that never ends its headers, so the test needs ~12s:
 // opt in with EHTTP_SLOW_TESTS=1 (nightly), skipped otherwise to keep the suite fast.
-func TestCSecurityS8Slowloris(t *testing.T) {
+func TestCSecuritySlowloris(t *testing.T) {
 	if os.Getenv("EHTTP_SLOW_TESTS") == "" {
 		t.Skip("testability: needs >10s (proposed ReadHeaderTimeout default); set EHTTP_SLOW_TESTS=1")
 	}
@@ -778,6 +777,6 @@ func TestCSecurityS8Slowloris(t *testing.T) {
 
 	closedByServer := readErr != nil && (!errors.As(readErr, &nerr) || !nerr.Timeout())
 
-	ehttptest.True(t, "S8 (gosec G112): server drops a connection that never finishes its headers",
+	ehttptest.True(t, "the server drops a connection that never finishes its headers",
 		closedByServer, "connection still open after 13s")
 }

@@ -43,7 +43,7 @@ func parseProxyPrefix(v string) netip.Prefix {
 
 	addr, err := netip.ParseAddr(v)
 	if err != nil {
-		bootPanic("WithTrustedProxies", "proxy "+quoteValue(v), "it is not a CIDR, an IP or a preset name (author decision)",
+		bootPanic("WithTrustedProxies", "proxy "+quoteValue(v), "it is not a CIDR, an IP or a preset name",
 			"use a CIDR such as \"10.0.0.0/8\", an IP such as \"10.0.0.1\", or loopback, linklocal, uniquelocal")
 	}
 

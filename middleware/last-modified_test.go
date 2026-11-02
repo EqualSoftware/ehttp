@@ -92,7 +92,7 @@ func TestLastModified(t *testing.T) {
 func TestLastModifiedIgnoredWithIfNoneMatch(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "NB-3", func(t testing.TB) {
+	ehttptest.KnownBug(t, "last-modified-ignores-if-none-match", func(t testing.TB) {
 		rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.LastModified(bModified)),
 			fixtures.Req("GET", "/x", "If-None-Match", `"no-match"`, "If-Modified-Since", bModifiedHeader))
 
@@ -114,7 +114,7 @@ func TestLastModifiedObsoleteDateFormats(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			ehttptest.KnownBug(t, "NB-4", func(t testing.TB) {
+			ehttptest.KnownBug(t, "last-modified-ignores-obsolete-date-formats", func(t testing.TB) {
 				rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.LastModified(bModified)), fixtures.Req("GET", "/x", "If-Modified-Since", ims))
 
 				ehttptest.Eq(t, "RFC 9110 §5.6.7", rec.Code, 304)

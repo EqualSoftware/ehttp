@@ -12,7 +12,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-const ownBasis = "author decision 2026-11-01 (header ownership)"
+const ownBasis = "a middleware owns the header: the handler cannot change it"
 
 // aOwner is a middleware that owns X-Owned and the Vary member Owner.
 func aOwner(next Handler) HandlerFunc {

@@ -14,7 +14,7 @@ import (
 
 // Handler builds a server that serves h on GET /x (and HEAD) with the
 // given route middlewares, in order (first = outermost). It registers one
-// method only: GET plus POST on the same path answers 405 for POST (C1).
+// method only: GET plus POST on the same path answers 405 for POST.
 func Handler(h ehttp.HandlerFunc, mws ...ehttp.MiddlewareHandlerFunc) http.Handler {
 	s := ehttp.NewServer()
 	s.GET("/x", h, mws...)

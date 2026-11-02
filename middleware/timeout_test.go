@@ -72,7 +72,7 @@ func TestTimeoutSlowHandler(t *testing.T) {
 			ehttptest.Eq(t, "context contract", (<-seen).Error(), "context deadline exceeded")
 
 			// 408 is for a slow request read (RFC 9110 §15.5.9), not for a slow handler.
-			// S5 decision (option A in todo.md): 503; 504 is also valid (§15.6.5).
+			// A server timeout is 503; 504 is also valid (§15.6.5).
 			ehttptest.True(t, "RFC 9110 §15.6.4/§15.6.5 (not 408, §15.5.9)", rec.Code == 503 || rec.Code == 504, "status = %d", rec.Code)
 		})
 	})
@@ -84,12 +84,12 @@ func TestTimeoutSlowHandler(t *testing.T) {
 			seen := make(chan error, 1)
 			rec := ehttptest.Do(fixtures.Handler(slow(seen), middleware.Timeout(time.Second)), fixtures.Req("GET", "/x"))
 
-			ehttptest.Eq(t, "S5 / RFC 9110 §15.6.4 (408 is for slow request reads)", rec.Code, 503)
+			ehttptest.Eq(t, "RFC 9110 §15.6.4 (408 is for slow request reads)", rec.Code, 503)
 		})
 	})
 }
 
-// S5: Request.WithContext mutates the shared *Request, so an outer
+// Request.WithContext mutates the shared *Request, so an outer
 // middleware sees an already-cancelled context after Timeout returns.
 func TestTimeoutRestoresRequestContext(t *testing.T) {
 	t.Parallel()
@@ -104,5 +104,5 @@ func TestTimeoutRestoresRequestContext(t *testing.T) {
 
 	ehttptest.Do(fixtures.Handler(fixtures.OK, outer, middleware.Timeout(time.Second)), fixtures.Req("GET", "/x"))
 
-	ehttptest.True(t, "S5", after == nil, "outer middleware sees ctx error %v after a successful request", after)
+	ehttptest.True(t, "the request context is restored after Timeout returns", after == nil, "outer middleware sees ctx error %v after a successful request", after)
 }

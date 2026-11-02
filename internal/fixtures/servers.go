@@ -142,7 +142,7 @@ func Listen(t testing.TB, mk func(port string) *ehttp.Server) *Listening {
 }
 
 // CorsServer builds a server with WithCors. WithCors mutates the global
-// DefaultCorsOptions (S3), so the global is restored when the test ends.
+// DefaultCorsOptions, so the global is restored when the test ends.
 func CorsServer(t testing.TB, opts *ehttp.CorsOptions) *ehttp.Server {
 	orig := *ehttp.DefaultCorsOptions
 	*ehttp.DefaultCorsOptions = orig

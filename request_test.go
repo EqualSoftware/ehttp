@@ -85,18 +85,18 @@ func TestRequestAccepts(t *testing.T) {
 		{"type wildcard", "application/*", "application/json", true, "", "RFC 9110 §12.5.1"},
 		{"type wildcard, other type", "application/*", "text/html", false, "", "RFC 9110 §12.5.1"},
 		{"subtype wildcard", "text/*", "text/html", true, "", "RFC 9110 §12.5.1"},
-		{"text/* must not match application/text", "text/*", "application/text", false, "C8", "RFC 9110 §12.5.1"},
-		{"structured suffix is literal", "application/vnd.api+json", "application/vnd.api+json", true, "C8", "RFC 6838 §4.2.8"},
-		{"list, first member", "application/json, text/plain", "application/json", true, "C8", "RFC 9110 §12.5.1"},
-		{"list, second member", "application/json, text/plain", "text/plain", true, "C8", "RFC 9110 §12.5.1"},
+		{"text/* must not match application/text", "text/*", "application/text", false, "accepts-matches-substring", "RFC 9110 §12.5.1"},
+		{"structured suffix is literal", "application/vnd.api+json", "application/vnd.api+json", true, "accepts-treats-type-as-regex", "RFC 6838 §4.2.8"},
+		{"list, first member", "application/json, text/plain", "application/json", true, "accepts-ignores-list", "RFC 9110 §12.5.1"},
+		{"list, second member", "application/json, text/plain", "text/plain", true, "accepts-ignores-list", "RFC 9110 §12.5.1"},
 		{"list, absent member", "application/json, text/plain", "text/html", false, "", "RFC 9110 §12.5.1"},
-		{"list with weights", "text/html;q=0.9, application/json;q=0.8", "application/json", true, "C8", "RFC 9110 §12.5.1"},
-		{"q=0 means not acceptable", "text/html;q=0", "text/html", false, "C8", "RFC 9110 §12.4.2"},
-		{"prefix of the value is not a match", "text/html", "text/htmlx", false, "C8", "RFC 9110 §12.5.1"},
-		{"dot is not a regex wildcard", "text/h.ml", "text/html", false, "C8", "RFC 9110 §12.5.1"},
-		{"alternation is not a regex operator", "text/x|y", "application/y", false, "C8", "RFC 9110 §12.5.1"},
-		{"wildcard with q=0 means not acceptable", "*/*;q=0", "text/html", false, "C8", "RFC 9110 §12.4.2"},
-		{"q=0 type excludes it even with a wildcard member", "text/html;q=0, */*", "text/html", false, "C8", "RFC 9110 §12.5.1"},
+		{"list with weights", "text/html;q=0.9, application/json;q=0.8", "application/json", true, "accepts-ignores-list", "RFC 9110 §12.5.1"},
+		{"q=0 means not acceptable", "text/html;q=0", "text/html", false, "accepts-q0-acceptable", "RFC 9110 §12.4.2"},
+		{"prefix of the value is not a match", "text/html", "text/htmlx", false, "accepts-matches-substring", "RFC 9110 §12.5.1"},
+		{"dot is not a regex wildcard", "text/h.ml", "text/html", false, "accepts-treats-type-as-regex", "RFC 9110 §12.5.1"},
+		{"alternation is not a regex operator", "text/x|y", "application/y", false, "accepts-treats-type-as-regex", "RFC 9110 §12.5.1"},
+		{"wildcard with q=0 means not acceptable", "*/*;q=0", "text/html", false, "accepts-q0-acceptable", "RFC 9110 §12.4.2"},
+		{"q=0 type excludes it even with a wildcard member", "text/html;q=0, */*", "text/html", false, "accepts-q0-acceptable", "RFC 9110 §12.5.1"},
 		{"malformed value", "text/html", "garbage", false, "", "RFC 9110 §8.3.1"},
 	}
 
@@ -123,7 +123,7 @@ func TestRequestAccepts(t *testing.T) {
 	}
 }
 
-// Author decision (C8): an invalid Accept header is answered with 406
+// An invalid Accept header is answered with 406
 // (RFC 9110 §12.5.1 lets a server do that), so Accepts is false for every value.
 func TestRequestAcceptsMalformedHeaderIsRefused(t *testing.T) {
 	t.Parallel()
@@ -139,14 +139,14 @@ func TestRequestAcceptsMalformedHeaderIsRefused(t *testing.T) {
 				req.Request.Header.Set(HeaderAccept, accept)
 
 				for _, v := range values {
-					ehttptest.Eq(t, "RFC 9110 §12.5.1 + C8 (invalid Accept is refused with 406) value "+v, req.Accepts(v), false)
+					ehttptest.Eq(t, "RFC 9110 §12.5.1 (an invalid Accept is refused with 406) value "+v, req.Accepts(v), false)
 				}
 			}
 
 			// "garbage" is used as an unanchored regex today, so it matches
-			// the value "garbage" (C8).
+			// the value "garbage".
 			if accept == "garbage" || strings.HasPrefix(accept, "*/*") {
-				ehttptest.KnownBug(t, "C8", check)
+				ehttptest.KnownBug(t, "accepts-matches-substring", check)
 				return
 			}
 
@@ -266,7 +266,7 @@ func TestRequestBodyJSON(t *testing.T) {
 		ehttptest.Eq(t, "encoding/json: null is a no-op", p.A, 1)
 	})
 
-	// C13 is an open decision: these document the behavior today.
+	// These tests document the current behavior for an empty or blank body.
 	for _, tt := range []struct {
 		name, body string
 	}{
@@ -282,7 +282,7 @@ func TestRequestBodyJSON(t *testing.T) {
 			var p payload
 
 			err := aReq("POST", "/", strings.NewReader(tt.body)).BodyJSON(&p)
-			ehttptest.True(t, "C13 (current behavior documented)", err != nil, "expected an error for %q", tt.body)
+			ehttptest.True(t, "an empty or blank body is an error", err != nil, "expected an error for %q", tt.body)
 		})
 	}
 
@@ -292,7 +292,7 @@ func TestRequestBodyJSON(t *testing.T) {
 		var p payload
 
 		err := aReq("POST", "/", nil).BodyJSON(&p)
-		ehttptest.True(t, "C13: json.Unmarshal never returns io.EOF", err != nil && !errors.Is(err, io.EOF), "got %v", err)
+		ehttptest.True(t, "encoding/json: Unmarshal never returns io.EOF", err != nil && !errors.Is(err, io.EOF), "got %v", err)
 	})
 
 	t.Run("non-pointer target", func(t *testing.T) {
@@ -327,7 +327,7 @@ func TestRequestProtocolAndHost(t *testing.T) {
 	t.Run("plain HTTP request has protocol http", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.Eq(t, "S7: Protocol() derives from r.TLS", aReq("GET", "/", nil).Protocol(), "http")
+		ehttptest.Eq(t, "Protocol() derives from r.TLS", aReq("GET", "/", nil).Protocol(), "http")
 	})
 
 	t.Run("TLS request has protocol https", func(t *testing.T) {
@@ -336,7 +336,7 @@ func TestRequestProtocolAndHost(t *testing.T) {
 		req := aReq("GET", "/", nil)
 		req.Request.TLS = &tls.ConnectionState{}
 
-		ehttptest.Eq(t, "S7: Protocol() derives from r.TLS", req.Protocol(), "https")
+		ehttptest.Eq(t, "Protocol() derives from r.TLS", req.Protocol(), "https")
 	})
 
 	t.Run("Hostname is the Host header without the port", func(t *testing.T) {
@@ -345,7 +345,7 @@ func TestRequestProtocolAndHost(t *testing.T) {
 		req := aReq("GET", "/", nil)
 		req.Request.Host = "example.com:8080"
 
-		ehttptest.Eq(t, "S7: Hostname() comes from r.Host without the port", req.Hostname(), "example.com")
+		ehttptest.Eq(t, "Hostname() comes from r.Host without the port", req.Hostname(), "example.com")
 	})
 
 	for _, h := range []string{HeaderXForwardedProto, HeaderXForwardedProtocol} {
@@ -355,7 +355,7 @@ func TestRequestProtocolAndHost(t *testing.T) {
 			req := aReq("GET", "/", nil, h, "https")
 			req.Request.TLS = nil
 
-			ehttptest.Eq(t, "S7: X-Forwarded-* only from trusted proxies (Express, Echo v5, Fiber v3)", req.Protocol(), "http")
+			ehttptest.Eq(t, "X-Forwarded-* counts only from trusted proxies (Express, Echo v5, Fiber v3)", req.Protocol(), "http")
 		})
 	}
 
@@ -364,11 +364,11 @@ func TestRequestProtocolAndHost(t *testing.T) {
 
 		req := aReq("GET", "/", nil, HeaderXForwardedHost, "evil.example")
 
-		ehttptest.Eq(t, "S7: X-Forwarded-* only from trusted proxies", req.Host(), "example.com")
+		ehttptest.Eq(t, "X-Forwarded-* counts only from trusted proxies", req.Host(), "example.com")
 	})
 }
 
-// Premise of S7 checked against a real net/http server: server-side
+// Check the premise against a real net/http server: server-side
 // requests have an empty URL.Scheme and URL.Host.
 func TestRequestProtocolAndHostOverRealServer(t *testing.T) {
 	t.Parallel()
@@ -388,7 +388,7 @@ func TestRequestProtocolAndHostOverRealServer(t *testing.T) {
 		ts := aRealServer(t, handler())
 		_, body := aGetBody(t, ts.URL+"/")
 
-		ehttptest.Eq(t, "S7: Protocol/Hostname work on a real server", body, "http|127.0.0.1")
+		ehttptest.Eq(t, "Protocol and Hostname work on a real server", body, "http|127.0.0.1")
 	})
 
 	t.Run("https", func(t *testing.T) {
@@ -407,6 +407,6 @@ func TestRequestProtocolAndHostOverRealServer(t *testing.T) {
 
 		b, _ := io.ReadAll(resp.Body)
 
-		ehttptest.Eq(t, "S7: Protocol() derives from r.TLS", string(b), "https|127.0.0.1")
+		ehttptest.Eq(t, "Protocol() derives from r.TLS", string(b), "https|127.0.0.1")
 	})
 }

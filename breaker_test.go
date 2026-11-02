@@ -44,7 +44,7 @@ func TestBreakerPassThrough(t *testing.T) {
 	ehttptest.True(t, "gobreaker contract (callee error is returned as is)", errors.Is(err, errBoom), "err = %v", err)
 }
 
-// C6: the breaker must open on a failure *rate* with a minimum number of
+// The breaker must open on a failure *rate* with a minimum number of
 // samples. ReadyToTrip divides ConsecutiveFailures by ConsecutiveSuccesses,
 // which is +Inf after any failure that follows zero consecutive successes.
 func TestBreakerNeedsEvidenceToOpen(t *testing.T) {
@@ -53,19 +53,19 @@ func TestBreakerNeedsEvidenceToOpen(t *testing.T) {
 	t.Run("a single failure does not open it", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "C6", func(t testing.TB) {
+		ehttptest.KnownBug(t, "breaker-opens-on-first-failure", func(t testing.TB) {
 			cb := bBreaker()
 			_ = bFail(cb)
 
-			ehttptest.Eq(t, "C6", cb.State().String(), "closed")
-			ehttptest.True(t, "C6", bSucceed(cb) == nil, "next call was rejected after one failure")
+			ehttptest.Eq(t, "a failure rate with a minimum of samples trips the breaker", cb.State().String(), "closed")
+			ehttptest.True(t, "a single failure does not trip the breaker", bSucceed(cb) == nil, "next call was rejected after one failure")
 		})
 	})
 
 	t.Run("one failure after many successes does not open it", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "C6", func(t testing.TB) {
+		ehttptest.KnownBug(t, "breaker-opens-on-first-failure", func(t testing.TB) {
 			cb := bBreaker()
 			for range 99 {
 				_ = bSucceed(cb)
@@ -73,7 +73,7 @@ func TestBreakerNeedsEvidenceToOpen(t *testing.T) {
 
 			_ = bFail(cb) // 1% failure rate
 
-			ehttptest.Eq(t, "C6", cb.State().String(), "closed")
+			ehttptest.Eq(t, "a failure rate with a minimum of samples trips the breaker", cb.State().String(), "closed")
 		})
 	})
 
@@ -88,7 +88,7 @@ func TestBreakerNeedsEvidenceToOpen(t *testing.T) {
 		called := false
 		_, err := cb.Execute(func() (int, error) { called = true; return 0, nil })
 
-		ehttptest.Eq(t, "C6", cb.State().String(), "open")
+		ehttptest.Eq(t, "a high failure rate trips the breaker", cb.State().String(), "open")
 		ehttptest.True(t, "gobreaker contract", err != nil && !called, "open breaker ran the callee (err=%v)", err)
 	})
 }
@@ -102,7 +102,7 @@ func TestBreakerRecovery(t *testing.T) {
 			_ = bFail(cb)
 		}
 
-		ehttptest.Eq(t, "C6", cb.State().String(), "open")
+		ehttptest.Eq(t, "a high failure rate trips the breaker", cb.State().String(), "open")
 
 		time.Sleep(29 * time.Second)
 		ehttptest.Eq(t, "gobreaker contract (Timeout not reached)", cb.State().String(), "open")

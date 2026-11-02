@@ -137,7 +137,7 @@ func TestBodyLimitInvalidValue(t *testing.T) {
 		t.Run("invalid "+v, func(t *testing.T) {
 			t.Parallel()
 
-			ehttptest.KnownBug(t, "C5", func(t testing.TB) {
+			ehttptest.KnownBug(t, "body-limit-accepts-invalid-value", func(t testing.TB) {
 				panicked := func() (p bool) {
 					defer func() { p = recover() != nil }()
 					middleware.BodyLimit(v)
@@ -145,7 +145,7 @@ func TestBodyLimitInvalidValue(t *testing.T) {
 					return false
 				}()
 
-				ehttptest.True(t, "C5", panicked, "BodyLimit(%q) accepted an invalid limit at boot", v)
+				ehttptest.True(t, "an invalid limit panics at boot", panicked, "BodyLimit(%q) accepted an invalid limit at boot", v)
 			})
 		})
 	}

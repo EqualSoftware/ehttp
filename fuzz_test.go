@@ -1,8 +1,8 @@
-// C5 - fuzzing with invariants. Package ehttp (internal) so the targets can
+// Fuzzing with invariants. Package ehttp (internal) so the targets can
 // reach route.match, fileParseRange, fileIsNotModified, corsAcceptOrigin.
 //
 // How known bugs are handled: a fuzz target cannot be an expected failure.
-// When fuzzing finds a bug that already has an ID, the crasher stays in
+// When fuzzing finds a bug that already has a name, the crasher stays in
 // testdata/fuzz/<Target>/ as a permanent seed, the fuzz function skips the
 // known-bug domain (see the *Known helpers), and a regular test below
 // reproduces the bug through ehttptest.KnownBug. When the bug is fixed, the
@@ -116,7 +116,7 @@ func FuzzRouterMatch(f *testing.F) {
 
 		// invariant 4: the matched route is the one that the segment rules
 		// give (README routing), by an oracle independent of route.match.
-		// A path with percent-encoding is the C10 domain: the router may decode
+		// A path with percent-encoding is the percent-decoding domain: the router may decode
 		// segments before it matches (RFC 3986 §2.1), so the oracle on the
 		// escaped form does not apply. TestRouterParamDecoding covers it.
 		if want := dExpectedRoute(req.URL.EscapedPath()); !strings.Contains(req.URL.EscapedPath(), "%") && got.pattern != want {
@@ -129,7 +129,7 @@ func FuzzRouterMatch(f *testing.F) {
 
 		// invariant 2: a matched parameter is always a segment of the path
 		// the router saw (RFC 3986 §3.3), never invented or merged.
-		// With a "%" in the path the value may be raw or decoded (C10, RFC 3986
+		// With a "%" in the path the value may be raw or decoded (RFC 3986
 		// §2.1, §2.2); only check the values when no "%" is present.
 		escaped := req.URL.EscapedPath()
 		if strings.Contains(escaped, "%") {
@@ -156,14 +156,14 @@ func FuzzRouterMatch(f *testing.F) {
 			}
 		}
 
-		// invariant 3: the anchored regex route only receives digits (S12).
+		// invariant 3: the anchored regex route only receives digits.
 		// The fixture regexes are not anchored by hand: the router anchors them.
 		if n, ok := got.params["n"]; ok && !regexp.MustCompile(`^\d+$`).MatchString(n) {
-			t.Errorf("[S12] /v/:n got %q, not digits", n)
+			t.Errorf("/v/:n got %q, not digits", n)
 		}
 
 		if m, ok := got.params["m"]; ok && m != "a" && m != "b" {
-			t.Errorf("[S12] /w/:m got %q, not a or b", m)
+			t.Errorf("/w/:m got %q, not a or b", m)
 		}
 	})
 }
@@ -174,7 +174,7 @@ func FuzzRouterMatch(f *testing.F) {
 var dRangeSimple = regexp.MustCompile(`^bytes=(?:(\d{1,9})-(\d{0,9})|-(\d{1,9}))$`)
 
 // dRangeClass reports whether header is a valid single range for the oracle
-// (a <= b, n > 0), and whether it is in the C2 domain, where fileParseRange
+// (a <= b, n > 0), and whether it is in the known-bug domain, where fileParseRange
 // differs from http.ServeContent today: open ended, suffix, or an end of 0.
 func dRangeClass(header string) (valid, known bool) {
 	m := dRangeSimple.FindStringSubmatch(header)
@@ -254,7 +254,7 @@ func FuzzParseRange(f *testing.F) {
 			t.Errorf("status %d is neither 206 nor 416", code)
 		}
 
-		// invariant 3: for a valid single range outside the C2 domain, the
+		// invariant 3: for a valid single range outside the known-bug domain, the
 		// answer is exactly the one of http.ServeContent (RFC 9110 §14.1.2).
 		// The oracle is unreliable for an empty body, so size starts at 1.
 		valid, known := dRangeClass(header)
@@ -274,7 +274,7 @@ func FuzzParseRange(f *testing.F) {
 // dTokenRe is a media-type token without regexp metacharacters.
 var dTokenRe = regexp.MustCompile(`^[a-z0-9]+$`)
 
-// dAcceptsKnown reports whether the input is in the C8 domain (Accept header
+// dAcceptsKnown reports whether the input is in the known-bug domain (Accept header
 // used as an unanchored regex), where the behaviour is a known bug.
 func dAcceptsKnown(accept, value string) bool {
 	return strings.ContainsAny(accept+value, `*+.^$()[]{}|\?,;`) ||
@@ -318,7 +318,7 @@ func dIsMediaRange(m string) bool {
 // dPlainWildcard reports whether accept is a list that has a "*/*" member, no
 // ";" anywhere (so no q value), and only valid media ranges as members (empty
 // members are ignored, RFC 9110 §5.6.1). An invalid member makes the field
-// invalid, and C8 answers it with 406, so the invariant does not apply.
+// invalid, and Accepts answers it with 406, so the invariant does not apply.
 func dPlainWildcard(accept string) bool {
 	if strings.Contains(accept, ";") {
 		return false
@@ -370,7 +370,7 @@ func FuzzAccepts(f *testing.F) {
 		}
 
 		// invariant 3: two distinct plain "type/subtype" tokens never match
-		// (RFC 9110 §8.3.1). Outside the C8 domain only.
+		// (RFC 9110 §8.3.1). Outside the known-bug domain only.
 		at, as, aok := strings.Cut(accept, "/")
 		vt, vs, vok := strings.Cut(value, "/")
 		if aok && vok && dTokenRe.MatchString(at) && dTokenRe.MatchString(as) &&
@@ -456,13 +456,13 @@ func FuzzCorsOrigin(f *testing.F) {
 	})
 }
 
-// ------------------------------------------------- known bugs found/fed by C5
+// ------------------------------------------------- known bugs found by fuzzing
 //
 // Each test reproduces, with a concrete input, a bug that a fuzz target above
-// skips on purpose. They run in the normal `go test` as SKIP with the ID.
+// skips on purpose. They run in the normal `go test` as SKIP with the bug name.
 
 func TestFuzzKnownBugs(t *testing.T) {
-	t.Run("S11 Vary compares by substring", func(t *testing.T) {
+	t.Run("Vary compares by substring", func(t *testing.T) {
 		t.Parallel()
 		rec := httptest.NewRecorder()
 		res := &ResponseWriter{w: rec, request: httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)}
@@ -471,25 +471,25 @@ func TestFuzzKnownBugs(t *testing.T) {
 		ehttptest.Eq(t, "RFC 9110 §12.5.5", rec.Header().Get(HeaderVary), "Accept-Encoding, Accept")
 	})
 
-	t.Run("C8 Accepts matches substring of other type", func(t *testing.T) {
+	t.Run("Accepts matches substring of other type", func(t *testing.T) {
 		t.Parallel()
-		ehttptest.KnownBug(t, "C8", func(t testing.TB) {
+		ehttptest.KnownBug(t, "accepts-matches-substring", func(t testing.TB) {
 			req := &Request{Request: &http.Request{Header: http.Header{HeaderAccept: {"text/html"}}}}
 			ehttptest.Eq(t, "RFC 9110 §8.3.1", req.Accepts("text/htmlx"), false)
 		})
 	})
 
-	t.Run("C8 Accepts ignores a list", func(t *testing.T) {
+	t.Run("Accepts ignores a list", func(t *testing.T) {
 		t.Parallel()
-		ehttptest.KnownBug(t, "C8", func(t testing.TB) {
+		ehttptest.KnownBug(t, "accepts-ignores-list", func(t testing.TB) {
 			req := &Request{Request: &http.Request{Header: http.Header{HeaderAccept: {"application/json, text/plain"}}}}
 			ehttptest.Eq(t, "RFC 9110 §12.5.1", req.Accepts("text/plain"), true)
 		})
 	})
 
-	t.Run("C8 Accepts treats q=0 as acceptable", func(t *testing.T) {
+	t.Run("Accepts treats q=0 as acceptable", func(t *testing.T) {
 		t.Parallel()
-		ehttptest.KnownBug(t, "C8", func(t testing.TB) {
+		ehttptest.KnownBug(t, "accepts-q0-acceptable", func(t testing.TB) {
 			req := &Request{Request: &http.Request{Header: http.Header{HeaderAccept: {"text/html;q=0"}}}}
 			ehttptest.Eq(t, "RFC 9110 §12.5.1", req.Accepts("text/html"), false)
 		})
@@ -506,16 +506,16 @@ func TestFuzzKnownBugs(t *testing.T) {
 		{"bytes=-N is a suffix", "bytes=-3", 10, 7, 9, http.StatusPartialContent},
 	}
 	for _, tc := range rangeCases {
-		t.Run("C2 "+tc.name, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			ehttptest.KnownBug(t, "C2", func(t testing.TB) {
+			ehttptest.KnownBug(t, "range-parser-differs-from-servecontent", func(t testing.TB) {
 				s, e, code := fileParseRange(tc.header, tc.size)
 				ehttptest.Eq(t, "RFC 9110 §14.1.2", [3]int64{s, e, int64(code)}, [3]int64{tc.s, tc.e, int64(tc.code)})
 			})
 		})
 	}
 
-	t.Run("C2 fileParseRange equals http.ServeContent", func(t *testing.T) {
+	t.Run("fileParseRange equals http.ServeContent", func(t *testing.T) {
 		t.Parallel()
 
 		headers := []string{
@@ -541,7 +541,7 @@ func TestFuzzKnownBugs(t *testing.T) {
 
 			t.Run(h, func(t *testing.T) {
 				if known {
-					ehttptest.KnownBug(t, "C2", check)
+					ehttptest.KnownBug(t, "range-parser-differs-from-servecontent", check)
 					return
 				}
 
@@ -552,9 +552,9 @@ func TestFuzzKnownBugs(t *testing.T) {
 
 	const inmEtag = `W/"1-00000001"`
 	for _, inm := range []string{"*", `"x", ` + inmEtag, strings.TrimPrefix(inmEtag, "W/")} {
-		t.Run("C3 If-None-Match "+inm, func(t *testing.T) {
+		t.Run("If-None-Match "+inm, func(t *testing.T) {
 			t.Parallel()
-			ehttptest.KnownBug(t, "C3", func(t testing.TB) {
+			ehttptest.KnownBug(t, "if-none-match-list-ignored", func(t testing.TB) {
 				r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)
 				r.Header.Set(HeaderIfNoneMatch, inm)
 				res := &ResponseWriter{request: r}
@@ -563,9 +563,9 @@ func TestFuzzKnownBugs(t *testing.T) {
 		})
 	}
 
-	t.Run("C2 If-None-Match wins over If-Modified-Since", func(t *testing.T) {
+	t.Run("If-None-Match wins over If-Modified-Since", func(t *testing.T) {
 		t.Parallel()
-		ehttptest.KnownBug(t, "C2", func(t testing.TB) {
+		ehttptest.KnownBug(t, "file-conditional-headers-ignored", func(t testing.TB) {
 			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)
 			r.Header.Set(HeaderIfNoneMatch, `W/"other"`)
 			r.Header.Set(HeaderIfModifiedSince, time.Unix(200, 0).UTC().Format(http.TimeFormat))
@@ -575,9 +575,9 @@ func TestFuzzKnownBugs(t *testing.T) {
 		})
 	})
 
-	t.Run("C2 If-Modified-Since never matches a sub-second mtime", func(t *testing.T) {
+	t.Run("If-Modified-Since never matches a sub-second mtime", func(t *testing.T) {
 		t.Parallel()
-		ehttptest.KnownBug(t, "C2", func(t testing.TB) {
+		ehttptest.KnownBug(t, "if-modified-since-subsecond-mtime", func(t testing.TB) {
 			mod := time.Unix(100, 500_000_000) // real file systems keep ns; Last-Modified is truncated to s
 			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)
 			r.Header.Set(HeaderIfModifiedSince, time.Unix(100, 0).UTC().Format(http.TimeFormat))
@@ -586,55 +586,55 @@ func TestFuzzKnownBugs(t *testing.T) {
 		})
 	})
 
-	t.Run("C12 params leak from a route that did not match", func(t *testing.T) {
+	t.Run("params leak from a route that did not match", func(t *testing.T) {
 		t.Parallel()
-		ehttptest.KnownBug(t, "C12", func(t testing.TB) {
+		ehttptest.KnownBug(t, "params-leak-from-unmatched-route", func(t testing.TB) {
 			var seen string
 			r := &Router{cors: &CorsOptions{}}
 			r.GET("/u/:a/x", func(*ResponseWriter, *Request) {})
 			r.GET("/u/:b/y", func(_ *ResponseWriter, req *Request) { seen = req.Param("a") })
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/u/5/y", http.NoBody)
 			ehttptest.Do(r, req)
-			ehttptest.Eq(t, "C12", seen, "")
+			ehttptest.Eq(t, "params come only from the matched route", seen, "")
 		})
 	})
 
-	t.Run("S12 route regex is not anchored", func(t *testing.T) {
+	t.Run("route regex is not anchored", func(t *testing.T) {
 		t.Parallel()
 		status := 0
 		r := &Router{cors: &CorsOptions{}}
 		r.GET("/i/:id|[0-9]+", func(res *ResponseWriter, _ *Request) { res.SendStatus(200) })
 		status = ehttptest.Do(r, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/i/abc1", http.NoBody)).Code
-		ehttptest.Eq(t, "S12", status, 404)
+		ehttptest.Eq(t, "a regex param matches the whole segment", status, 404)
 	})
 
-	t.Run("S12 unbalanced paren does not escape the anchor group", func(t *testing.T) {
+	t.Run("unbalanced paren does not escape the anchor group", func(t *testing.T) {
 		t.Parallel()
 		defer func() { _ = recover() }()
 		r := &Router{cors: &CorsOptions{}}
 		r.GET("/i/:id|[0-9]+)|(x", func(*ResponseWriter, *Request) {}) // must panic here (boot)
-		ehttptest.True(t, "S12", false, "Handle accepted an unbalanced regex")
+		ehttptest.True(t, "an unbalanced regex is rejected", false, "Handle accepted an unbalanced regex")
 	})
 
-	t.Run("S12 invalid route regex panics at registration", func(t *testing.T) {
+	t.Run("invalid route regex panics at registration", func(t *testing.T) {
 		t.Parallel()
 		defer func() { _ = recover() }()
 		r := &Router{cors: &CorsOptions{}}
 		r.GET("/i/:id|[", func(*ResponseWriter, *Request) {}) // must panic here (boot)
-		ehttptest.True(t, "S12", false, "Handle accepted an invalid regex; it panics later, per request")
+		ehttptest.True(t, "an invalid regex panics at registration", false, "Handle accepted an invalid regex; it panics later, per request")
 	})
 
-	t.Run("S3 CORS foreign origin accepted without Sec-Fetch-Site", func(t *testing.T) {
+	t.Run("CORS foreign origin accepted without Sec-Fetch-Site", func(t *testing.T) {
 		t.Parallel()
 		// The origin host equals the Host header, but the origin is not on
-		// the allowlist: S3 allows an origin iff it is in the allowlist.
+		// the allowlist: an origin is allowed iff it is in the allowlist.
 		req := &Request{Request: &http.Request{Header: http.Header{}, Host: "evil.example"}}
 		req.Request.Header.Set(HeaderOrigin, "http://evil.example")
 		opts := &CorsOptions{Origin: []string{"http://app.example"}}
-		ehttptest.Eq(t, "Fetch §3.2.5 + S3 (allowed iff in the allowlist)", corsAcceptOrigin(req, opts), false)
+		ehttptest.Eq(t, "Fetch §3.2.5 (allowed iff in the allowlist)", corsAcceptOrigin(req, opts), false)
 	})
 
-	t.Run("S3 (ND-1) CORS allowlist ignored without Sec-Fetch-Site", func(t *testing.T) {
+	t.Run("CORS allowlist ignored without Sec-Fetch-Site", func(t *testing.T) {
 		t.Parallel()
 		req := &Request{Request: &http.Request{Header: http.Header{}, Host: "api.example"}}
 		req.Request.Header.Set(HeaderOrigin, "http://app.example")
