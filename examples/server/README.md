@@ -1,55 +1,88 @@
 # Example server
 
-`main.go` runs the server on port 3000 (`go run ./examples/server`).
-It has a group `/admin` with HTTP Basic auth (`demo` / `demo-password`, for the
-demo only), a group `/api/v1`, CORS for `http://localhost:3000`, and trusted
-proxies (only the nginx address of the compose file).
-
-## Experiment stack
-
-Needs Docker. From the repository root:
+A short guide to ehttp. Read `main.go` from top to bottom. Run it from the
+repository root:
 
 ```
-docker compose -f examples/server/compose.yaml up --build -d
-docker compose -f examples/server/compose.yaml down        # stop and remove
+go run ./examples/server
 ```
 
-| Service    | URL                      | Note |
-| :--------- | :----------------------- | :--- |
-| nginx      | http://localhost:8080    | Trusted proxy. Sets `X-Forwarded-For`, `-Proto` and `-Host`; the example uses them. |
-| example    | http://localhost:3000    | Direct. Not trusted: `X-Forwarded-*` from the client are ignored. |
-| Prometheus | http://localhost:9090    | Scrapes `example:3000/metrics` every 5 s. |
-| Grafana    | http://localhost:3001    | Login `admin` / `admin` (demo only). Dashboards "ehttp example" and "Containers (cAdvisor)" are provisioned. |
-| cAdvisor   | (internal)               | Container CPU and memory, scraped by Prometheus. |
+The server listens on port 3000. Press Ctrl+C to stop it: `Listen` finishes
+the requests in flight, then returns (graceful shutdown).
 
-The app has limits (1 CPU, 256 MB) and nginx too (0.5 CPU, 64 MB); the Containers dashboard shows use against them.
+The curl commands below use `-i` to show the status line and the headers.
 
-Load and stress tests (k6) and the comparison with other frameworks are in a separate repository: https://github.com/EqualSoftware/ehttp_benchmark. Its stress tests target this stack (nginx on 127.0.0.1:8080); watch the two dashboards while they run to see the effect on the app and on the containers.
+## 1. Basic: routes, parameters, JSON, status codes
 
-To open the circuit breaker, send failures: `for i in $(seq 30); do curl -s -o /dev/null "localhost:8080/flaky?fail=1"; done`.
+| Route               | What it shows                                   |
+| :------------------ | :---------------------------------------------- |
+| `GET /hello/:name`  | A route parameter (`req.Param`) and a JSON body |
+| `POST /items`       | `res.Status(201)` before the body               |
+| `GET /teapot`       | `res.SendStatus(418)`: a status and no body     |
 
-## Cache-Control
+```
+curl -i localhost:3000/hello/world        # 200 {"message":"Hello, world"}
+curl -i -X POST localhost:3000/items      # 201
+curl -i localhost:3000/teapot             # 418
+curl -i localhost:3000/missing            # 404
+curl -i -X DELETE localhost:3000/items    # 405 with an Allow header
+```
 
-The app has `middleware.ErrorCache(99*time.Second)` as a global middleware, outside `Timeout`.
+## 2. Middlewares
 
-- 404, 405, 410, 414 and 501 get `max-age=99, stale-while-revalidate=99, stale-if-error=99`.
-- 428, 429, 431 and 511 get `no-store`.
-- Each other error status gets `no-store`. This stops cache-poisoned DoS (CPDoS).
-- 401, 403, 407 and a request with `Authorization` get `private` when a lifetime applies.
-- A `Cache-Control` that a handler sets wins.
+`server.Use` takes the middlewares in the recommended order, outside first:
 
-Use `middleware.ErrorCacheStatus(code, d)` to change one status. Use `middleware.Cache(d)` on a route for the statuses below 400.
-The rules, the RFC basis and runnable examples are in the doc comments of `ErrorCache`, `ErrorCacheStatus` and `Cache` (package `middleware`, `example_test.go`).
+1. `Recover`: a panic becomes a 500.
+2. `ErrorCache`: sets `Cache-Control` for error responses. It is outside
+   `Timeout`, so it covers the 503 of `Timeout`.
+3. `RequestId`: sets `X-Request-Id`.
+4. `Secure`: security headers.
+5. `Cors`: the CORS policy. It comes before any authentication, so a
+   preflight and a refusal get the CORS headers. `DefaultCorsOptions()` allows
+   everything; the example narrows it to one origin.
+6. `Timeout`: a deadline of 1 second on the request context. It is
+   cooperative: the handler of `/slow` watches `req.Context()`.
 
-## Metrics
+```
+curl -i localhost:3000/hello/world        # X-Request-Id and the security headers
+curl -i localhost:3000/boom               # 500: Recover caught the panic
+curl -i localhost:3000/slow               # 503 after 1 second: Timeout
+curl -i -X OPTIONS localhost:3000/items \
+  -H 'Origin: http://localhost:5173' \
+  -H 'Access-Control-Request-Method: POST'  # CORS preflight: allowed
+curl -i -X OPTIONS localhost:3000/items \
+  -H 'Origin: http://evil.example' \
+  -H 'Access-Control-Request-Method: POST'  # CORS preflight: refused
+```
 
-The library exposes one metric: the gauge of the circuit breaker
-(`BreakerOptions.PrometheusGauge`). It has no request metrics. For the
-dashboard, `app/metrics.go` adds a request counter and a latency histogram in
-the example only. `app.NewObserved` turns them on (and `/metrics`, `/flaky`);
-`app.New` does not, so the golden and perf suites are not affected.
+## 3. A group with Basic auth
 
-## macOS
+`server.Route("/admin", basicAuth(...))` makes a group. The credentials
+`demo` / `demo-password` are for the demo only.
 
-Docker runs in a Linux VM: cAdvisor sees the VM, not the Mac, and the CPU and memory numbers depend on the VM size. Do not compare load or benchmark numbers with runs
-from another environment.
+The middleware of a group also runs on the 401, 404, 405 and OPTIONS answers
+under its prefix. So only a group with auth hides the `Allow` header from a
+client without credentials. A route outside the group shows it.
+
+```
+curl -i localhost:3000/admin/me                          # 401 with WWW-Authenticate
+curl -i -u demo:demo-password localhost:3000/admin/me    # 200
+curl -i -X OPTIONS localhost:3000/admin/me               # 401: no Allow header
+curl -i -X OPTIONS -u demo:demo-password localhost:3000/admin/me   # 200 with Allow
+curl -i -X OPTIONS localhost:3000/hello/world            # 200 with Allow
+```
+
+## 4. Files and cache
+
+`GET /notes.txt` uses `res.SendFile`. It sets a strong `ETag`, and it answers
+`Range` and conditional requests. The route uses `middleware.Cache(time.Minute)`
+for the `Cache-Control` of the success responses. The `ErrorCache` of section 2
+does the same for errors.
+
+```
+curl -i localhost:3000/notes.txt                                  # 200, ETag, Cache-Control
+curl -i -H 'Range: bytes=0-49' localhost:3000/notes.txt           # 206, first 50 bytes
+curl -i -H 'If-None-Match: "<the ETag value>"' localhost:3000/notes.txt   # 304
+```
+
+Load and stress tests (k6) and the comparison with other frameworks are in a separate repository: https://github.com/EqualSoftware/ehttp_benchmark.
