@@ -171,7 +171,7 @@ func (req *Request) forwardedHost() string {
 // a value that is not valid, so the connection value is used. The value is
 // client data, so the log keeps it quoted and truncated.
 func (req *Request) warnInvalidForwarded(name, value, fix string) {
-	if !req.forwardedWarned.CompareAndSwap(false, true) {
+	if req.flags.Or(flagForwardedWarned)&flagForwardedWarned != 0 {
 		return
 	}
 

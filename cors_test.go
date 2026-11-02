@@ -36,7 +36,7 @@ func TestCors(t *testing.T) {
 	t.Run("Credentials with the wildcard origin fails at boot", func(t *testing.T) {
 		t.Parallel()
 
-		msg := aPanics(func() { Cors(CorsOptions{Credentials: true}) })
+		msg := aPanics(func() { Cors(CorsOptions{Origin: []string{"*"}, Credentials: true}) })
 
 		ehttptest.True(t, "Fetch §3.3.5: credentials never go with the * origin", msg != "", "Credentials:true with the * origin did not panic at boot")
 	})
@@ -61,7 +61,7 @@ func TestCors(t *testing.T) {
 		t.Parallel()
 
 		s := NewServer()
-		s.Use(Cors(CorsOptions{CacheDuration: time.Hour}))
+		s.Use(Cors(CorsOptions{Origin: []string{"*"}, CacheDuration: time.Hour}))
 
 		_, header := aPreflight(s, "/x")
 
@@ -169,4 +169,44 @@ func TestCorsRefusalLogHasNoSecrets(t *testing.T) {
 	ehttptest.Eq(t, "the requested header names are logged", fmt.Sprint(e.ContextMap()["request_headers"]), "[Authorization X-Token]")
 
 	ehttptest.True(t, "the log has no secret value", !strings.Contains(fmt.Sprint(e.ContextMap()), "secret"), "log: %v", e.ContextMap())
+}
+
+func TestCorsOptionsChecks(t *testing.T) {
+	t.Parallel()
+
+	t.Run("an empty Origin list panics", func(t *testing.T) {
+		t.Parallel()
+
+		msg := aPanics(func() { Cors(CorsOptions{Methods: []string{"GET"}}) })
+
+		ehttptest.True(t, "the message says what, where and the fix", strings.HasPrefix(msg, "ehttp: an empty Origin list in Cors: ") &&
+			strings.Contains(msg, "ehttp.Cors(ehttp.DefaultCorsOptions())"), "message %q", msg)
+	})
+
+	t.Run("DefaultCorsOptions allows all and is a new copy", func(t *testing.T) {
+		t.Parallel()
+
+		d := DefaultCorsOptions()
+		d.Origin[0] = "https://changed.example"
+
+		ehttptest.Eq(t, "a call returns a fresh copy", DefaultCorsOptions().Origin[0], "*")
+
+		s := NewServer()
+		s.Use(Cors(DefaultCorsOptions()))
+
+		code, header := aPreflight(s, "/x", HeaderAccessControlRequestHeaders, "X-Any")
+		ehttptest.Eq(t, "Fetch §3.2.3", code, 200)
+		ehttptest.Eq(t, "Fetch §3.2.3", header(HeaderAccessControlAllowOrigin), "*")
+	})
+
+	t.Run("header names are compared in canonical form", func(t *testing.T) {
+		t.Parallel()
+
+		s := NewServer()
+		s.Use(Cors(CorsOptions{Origin: []string{"https://a.example"}, Headers: []string{"content-type"}}))
+
+		code, header := aPreflight(s, "/x", HeaderAccessControlRequestHeaders, "Content-Type")
+		ehttptest.Eq(t, "RFC 9110 §5.1 (names are case-insensitive)", code, 200)
+		ehttptest.Eq(t, "RFC 9110 §5.1 (names are case-insensitive)", header(HeaderAccessControlAllowHeaders), "Content-Type")
+	})
 }

@@ -21,14 +21,21 @@ type Request struct {
 	Request *http.Request
 
 	proxies trustedProxies
-	peer    atomic.Uint32 // peerUnknown, peerTrusted or peerUntrusted; the result is the same in every goroutine
-	// forwardedWarned is true after the warning for an invalid forwarded header.
-	forwardedWarned atomic.Bool
-	corsRan         atomic.Bool                // the Cors middleware ran; only the Development warning for a refused preflight reads it
-	res             *ResponseWriter            // for Vary; nil in a Request built by hand
-	logger          *zap.Logger                // the server logger; nil in a Request built by hand
-	log             atomic.Pointer[zap.Logger] // logger with the request fields, built on first use
+	peer    atomic.Uint32              // peerUnknown, peerTrusted or peerUntrusted; the result is the same in every goroutine
+	flags   atomic.Uint32              // flagForwardedWarned and flagPreflightHandled; one word keeps Request in its size class
+	res     *ResponseWriter            // for Vary; nil in a Request built by hand
+	logger  *zap.Logger                // the server logger; nil in a Request built by hand
+	log     atomic.Pointer[zap.Logger] // logger with the request fields, built on first use
 }
+
+const (
+	// flagForwardedWarned is set after the warning for an invalid forwarded header.
+	flagForwardedWarned uint32 = 1 << iota
+	// flagPreflightHandled is set when the Cors middleware ran, or when the router
+	// refused the request itself. The Development warning for a preflight that
+	// was refused before Cors reads it.
+	flagPreflightHandled
+)
 
 var nopLogger = zap.NewNop()
 

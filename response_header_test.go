@@ -335,6 +335,10 @@ func TestBootValidation(t *testing.T) {
 	const basis = "invalid developer input panics at boot"
 
 	cors := func(o CorsOptions) func() {
+		if len(o.Origin) == 0 {
+			o.Origin = []string{"*"}
+		}
+
 		return func() { Cors(o) }
 	}
 

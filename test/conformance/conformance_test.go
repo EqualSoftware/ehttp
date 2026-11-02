@@ -365,7 +365,6 @@ func cRun(t testing.TB, base, path, method string, hdr http.Header) *cResp {
 }
 
 func TestCConformance(t *testing.T) {
-	// Not parallel: cors-* fixtures mutate the global DefaultCorsOptions.
 	for _, tc := range conformanceCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.basis == "" {

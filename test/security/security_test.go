@@ -239,7 +239,7 @@ func TestCSecurityWildcardWithCredentials(t *testing.T) {
 	t.Run("boot fails fast", func(t *testing.T) {
 		panicked := func() (p bool) {
 			defer func() { p = recover() != nil }()
-			ehttp.Cors(ehttp.CorsOptions{Credentials: true})
+			ehttp.Cors(ehttp.CorsOptions{Origin: []string{"*"}, Credentials: true})
 
 			return false
 		}()

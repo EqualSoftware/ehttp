@@ -163,7 +163,7 @@ func BenchmarkErrorCache(b *testing.B) {
 
 func BenchmarkCorsPreflight(b *testing.B) {
 	s := ehttp.NewServer()
-	s.Use(ehttp.Cors(ehttp.CorsOptions{}))
+	s.Use(ehttp.Cors(ehttp.DefaultCorsOptions()))
 	s.POST("/body", noop)
 
 	req := httptest.NewRequestWithContext(context.Background(), "OPTIONS", "/body", http.NoBody)
@@ -175,7 +175,7 @@ func BenchmarkCorsPreflight(b *testing.B) {
 
 func BenchmarkCorsSimple(b *testing.B) {
 	s := ehttp.NewServer()
-	s.Use(ehttp.Cors(ehttp.CorsOptions{}))
+	s.Use(ehttp.Cors(ehttp.DefaultCorsOptions()))
 	s.GET("/", noop)
 
 	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", http.NoBody)

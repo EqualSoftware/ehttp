@@ -10,8 +10,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// CorsOptions sets the CORS policy of the Cors middleware. An empty Origin,
-// Methods or Headers list means "*".
+// CorsOptions sets the CORS policy of the Cors middleware. Origin must list at
+// least one origin ("*" allows every origin). An empty Methods or Headers list
+// means "*".
 type CorsOptions struct {
 	Origin        []string
 	Methods       []string
@@ -30,9 +31,26 @@ func (o *CorsOptions) clone() *CorsOptions {
 	return &c
 }
 
-// withDefaults sets "*" for each empty list.
+// DefaultCorsOptions returns a new policy that allows every origin, method and
+// header, with no credentials. Change the copy before you pass it to Cors.
+func DefaultCorsOptions() CorsOptions {
+	return CorsOptions{
+		Origin:  []string{"*"},
+		Methods: []string{"*"},
+		Headers: []string{"*"},
+	}
+}
+
+// withDefaults sets "*" for an empty Methods or Headers list, and writes each
+// header name in its canonical form, as the request names are compared.
 func (o *CorsOptions) withDefaults() {
-	for _, list := range []*[]string{&o.Origin, &o.Methods, &o.Headers} {
+	for i, h := range o.Headers {
+		if h != "*" {
+			o.Headers[i] = http.CanonicalHeaderKey(h)
+		}
+	}
+
+	for _, list := range []*[]string{&o.Methods, &o.Headers} {
 		if len(*list) == 0 {
 			*list = []string{"*"}
 		}
@@ -51,10 +69,16 @@ func (o *CorsOptions) withDefaults() {
 // authentication, or the browser gets a refusal with no CORS headers.
 // Any other request gets the CORS response headers, and the chain goes on.
 //
-// The options are copied. Credentials with the "*" origin, an invalid entry
-// and a negative CacheDuration panic at boot.
+// The options are copied. An empty Origin list, Credentials with the "*"
+// origin, an invalid entry and a negative CacheDuration panic at boot.
 func Cors(options CorsOptions) MiddlewareHandlerFunc {
+	if len(options.Origin) == 0 {
+		bootPanic("Cors", "an empty Origin list", "it is not clear whether no origin or every origin is meant",
+			"list the origins, for example CorsOptions{Origin: []string{\"https://app.example\"}}, or use ehttp.Cors(ehttp.DefaultCorsOptions()) to allow every origin")
+	}
+
 	opts := options.clone()
+	validateCors(opts)
 	opts.withDefaults()
 
 	if opts.Credentials && slices.Contains(opts.Origin, "*") {
@@ -62,11 +86,9 @@ func Cors(options CorsOptions) MiddlewareHandlerFunc {
 			"list the origins, for example CorsOptions{Origin: []string{\"https://app.example\"}, Credentials: true}")
 	}
 
-	validateCors(opts)
-
 	return func(next Handler) HandlerFunc {
 		return func(res *ResponseWriter, req *Request) {
-			req.corsRan.Store(true)
+			req.flags.Or(flagPreflightHandled)
 			corsUpdateHeaders(res, req, opts)
 
 			if !isPreflight(req) {

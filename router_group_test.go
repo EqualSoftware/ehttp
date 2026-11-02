@@ -241,3 +241,155 @@ func TestRouterPreflightAndAuth(t *testing.T) {
 		ehttptest.Eq(t, "no warning", logs.Len(), 0)
 	})
 }
+
+func TestRouterAllowNeedsTheChain(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a 401 of the group auth sends no Allow", func(t *testing.T) {
+		t.Parallel()
+
+		var log []string
+
+		s := NewServer()
+		admin := s.Route("/admin", aAuth(&log))
+		admin.GET("/x", aText("x"))
+		admin.GET("/u/:id", aText("x"))
+
+		for _, path := range []string{"/admin/x", "/admin/u/5"} {
+			rec := aDo(s, "OPTIONS", path)
+
+			ehttptest.Eq(t, "the group auth answers", rec.Code, 401)
+			ehttptest.Eq(t, "RFC 9110 §10.2.1: no method list for a refused request", rec.Header().Get(HeaderAllow), "")
+		}
+	})
+
+	t.Run("a refused preflight sends no Allow", func(t *testing.T) {
+		t.Parallel()
+
+		s := NewServer()
+		s.Use(Cors(CorsOptions{Origin: []string{"https://b.example"}}))
+		s.GET("/x", aText("x"))
+
+		rec := aDo(s, "OPTIONS", "/x", HeaderOrigin, "https://a.example", HeaderAccessControlRequestMethod, "GET")
+
+		ehttptest.Eq(t, "Fetch §3.2.2", rec.Code, 403)
+		ehttptest.Eq(t, "RFC 9110 §10.2.1: no method list for a refused request", rec.Header().Get(HeaderAllow), "")
+	})
+}
+
+func TestRouterGroupSelection(t *testing.T) {
+	t.Parallel()
+
+	build := func() (*Server, *[]string) {
+		log := new([]string)
+		s := NewServer()
+		s.Use(aTrace(log, "root"))
+
+		admin := s.Route("/admin", aTrace(log, "admin"))
+		admin.GET("/x", aText("x"))
+
+		user := s.Route("/u/:id", aTrace(log, "user"))
+		user.GET("/x", aText("x"))
+
+		admin.Route("/deep", aTrace(log, "deep")).GET("/y", aText("y"))
+
+		s.GET("/administrator", aText("a"))
+
+		return s, log
+	}
+
+	cases := []struct{ name, method, path, want string }{
+		{"a longer first segment is not the prefix", "POST", "/administrator", "root"},
+		{"404 of a longer first segment", "GET", "/administrators/x", "root"},
+		{"a parameter prefix", "GET", "/u/5/none", "root,user"},
+		{"a parameter prefix, 405", "POST", "/u/5/x", "root,user"},
+		{"the prefix alone", "GET", "/admin", "root,admin"},
+		{"a trailing slash", "GET", "/admin/none/", "root,admin"},
+		{"an encoded prefix is another segment", "GET", "/%61dmin/zz", "root"},
+		{"a nested group", "GET", "/admin/deep/none", "root,admin,deep"},
+		{"the outer group beside the nested one", "GET", "/admin/other", "root,admin"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s, log := build()
+			aDo(s, tc.method, tc.path)
+
+			ehttptest.Eq(t, "the innermost group whose prefix matches runs after the root", strings.Join(*log, ","), tc.want)
+		})
+	}
+}
+
+func TestRouterGroupWithRootRouteOnSamePath(t *testing.T) {
+	t.Parallel()
+
+	var log []string
+
+	s := NewServer()
+	s.GET("/shared", aText("root"))
+	s.Route("/shared", aTrace(&log, "group")).POST("", aText("group"))
+
+	rec := aDo(s, "OPTIONS", "/shared")
+
+	ehttptest.Eq(t, "the routes of the root and of a group: the root chain only", len(log), 0)
+	ehttptest.Eq(t, "Allow lists both routes", aAllow(rec), "GET,HEAD,OPTIONS,POST")
+}
+
+func TestRouterSecondGroupWithSamePrefixPanics(t *testing.T) {
+	t.Parallel()
+
+	t.Run("siblings", func(t *testing.T) {
+		t.Parallel()
+
+		s := NewServer()
+		s.Route("/api/:id")
+
+		msg := aPanics(func() { s.Route("/api/:name") })
+
+		ehttptest.True(t, "what, where, why and fix", strings.HasPrefix(msg, "ehttp: a second group in Route \"/api/:name\": ") &&
+			strings.Contains(msg, "cannot pick one group middleware chain") &&
+			strings.Contains(msg, "router.GET(pattern, handler, middleware)"), "message %q", msg)
+	})
+
+	t.Run("the same full prefix by another path", func(t *testing.T) {
+		t.Parallel()
+
+		s := NewServer()
+		s.Route("/a/b")
+
+		ehttptest.True(t, "the full prefix counts", aPanics(func() { s.Route("/a").Route("/b") }) != "", "no panic")
+	})
+
+	t.Run("a different regex is another prefix", func(t *testing.T) {
+		t.Parallel()
+
+		s := NewServer()
+		s.Route("/api/:id|[0-9]+")
+
+		ehttptest.Eq(t, "no panic", aPanics(func() { s.Route("/api/:id|[a-z]+") }), "")
+	})
+
+	t.Run("a nested group is not a sibling", func(t *testing.T) {
+		t.Parallel()
+
+		s := NewServer()
+		api := s.Route("/api")
+
+		ehttptest.Eq(t, "no panic", aPanics(func() { api.Route("") }), "")
+	})
+}
+
+func TestRouterRefusalGivesNoPreflightWarning(t *testing.T) {
+	t.Parallel()
+
+	l, logs := aObserved()
+	s := NewServer(WithLogger(l), WithMode(Development))
+	s.GET("/p/:v", aText("x"))
+
+	rec := aDo(s, "OPTIONS", "/p/%2e%2e", HeaderOrigin, "https://a.example", HeaderAccessControlRequestMethod, "GET")
+
+	ehttptest.Eq(t, "RFC 9110 §15.5.4", rec.Code, 403)
+	ehttptest.Eq(t, "the router refused, not a middleware", logs.Len(), 0)
+}

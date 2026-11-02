@@ -141,11 +141,12 @@ func Listen(t testing.TB, mk func(port string) *ehttp.Server) *Listening {
 	return nil
 }
 
-// CorsServer builds a server with the Cors middleware. Nil options mean the
-// allow-all policy of an empty CorsOptions.
+// CorsServer builds a server with the Cors middleware. Nil options mean
+// DefaultCorsOptions.
 func CorsServer(_ testing.TB, opts *ehttp.CorsOptions) *ehttp.Server {
 	if opts == nil {
-		opts = &ehttp.CorsOptions{}
+		d := ehttp.DefaultCorsOptions()
+		opts = &d
 	}
 
 	srv := ehttp.NewServer()

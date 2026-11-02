@@ -294,7 +294,7 @@ func TestBootMessagesHaveTheFormat(t *testing.T) {
 		"timeout":          func() { WithReadTimeout(-1) },
 		"max header bytes": func() { WithMaxHeaderBytes(-1) },
 		"nil logger":       func() { WithLogger(nil) },
-		"cors max age":     func() { Cors(CorsOptions{CacheDuration: -time.Second}) },
+		"cors max age":     func() { Cors(CorsOptions{Origin: []string{"*"}, CacheDuration: -time.Second}) },
 		"duplicate route": func() {
 			s := NewServer()
 			s.GET("/a", aText("1"))
@@ -389,7 +389,7 @@ func TestDuplicateRoutePanics(t *testing.T) {
 		"parameter name":       func(s *Server) { s.GET("/u/:id", noop); s.GET("/u/:name", noop) },
 		"same regex":           func(s *Server) { s.GET("/u/:id|[0-9]+", noop); s.GET("/u/:n|[0-9]+", noop) },
 		"in a group":           func(s *Server) { s.GET("/g/a", noop); s.Route("/g").GET("/a", noop) },
-		"in two groups":        func(s *Server) { s.Route("/g").GET("/a", noop); s.Route("/g").GET("/a", noop) },
+		"in a group twice":     func(s *Server) { g := s.Route("/g"); g.GET("/a", noop); g.GET("/a", noop) },
 		"nested group":         func(s *Server) { s.Route("/g").Route("/h").GET("/a", noop); s.GET("/g/h/a", noop) },
 		"explicit HEAD":        func(s *Server) { s.router.Handle("HEAD", "/a", noop); s.router.Handle("head", "/a", noop) },
 	}

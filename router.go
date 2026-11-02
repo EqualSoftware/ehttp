@@ -72,7 +72,15 @@ func (r *Router) Use(m ...MiddlewareHandlerFunc) {
 
 // Route makes a group. The middlewares of a group run on its routes and, for
 // a path under its prefix, on the 404, 405 and OPTIONS answers of the router
-// (see ServeHTTP).
+// (see ServeHTTP). A second group with the same prefix, other than a nested
+// group of the first, panics: the answers of that prefix cannot pick one
+// chain. The parameter name does not change the prefix, a regex does.
+//
+// If a root route and a group route match the same path, the 405 and OPTIONS
+// answers run the root middlewares only, and Allow lists the methods of both
+// routes. To keep the methods of a group hidden behind its authentication,
+// put every route of the path in that group and add the authentication
+// middleware to each route.
 func (r *Router) Route(prefix string, m ...MiddlewareHandlerFunc) *Router {
 	g := &Router{
 		parent:      r,
@@ -85,9 +93,34 @@ func (r *Router) Route(prefix string, m ...MiddlewareHandlerFunc) *Router {
 	g.scope = &route{pattern: full, segments: segments, regexes: compileSegments(full, segments)}
 
 	root := r.root()
+	root.mustBeNewGroup(r, full, routeKey(segments))
 	root.groups = append(root.groups, g)
 
 	return g
+}
+
+// mustBeNewGroup panics when a group that is not an ancestor of parent has
+// the same prefix: a request under that prefix would have two chains to run.
+func (r *Router) mustBeNewGroup(parent *Router, full, key string) {
+	for _, old := range r.groups {
+		if routeKey(old.scope.segments) != key || parent.isInside(old) {
+			continue
+		}
+
+		bootPanic("Route "+quoteValue(full), "a second group", "the group "+quoteValue(old.scope.pattern)+" has the same prefix, so the 404, 405 and OPTIONS answers of this prefix cannot pick one group middleware chain",
+			"use one group for the prefix, or add the middleware to the route, for example router.GET(pattern, handler, middleware)")
+	}
+}
+
+// isInside reports whether r is the group g, or a group inside g.
+func (r *Router) isInside(g *Router) bool {
+	for ; r != nil; r = r.parent {
+		if r == g {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (r *Router) root() *Router {
@@ -311,7 +344,8 @@ func (r *Router) TRACE(pattern string, h HandlerFunc, m ...MiddlewareHandlerFunc
 //   - 404: the innermost group whose prefix matches the path.
 //   - 405 and OPTIONS: the group that owns every route that matches the path.
 //     If the routes belong to several groups or to the root, only the root
-//     middlewares run, as the router cannot pick one group.
+//     middlewares run, as the router cannot pick one group. Allow then lists
+//     the methods of all these routes (see Route).
 //
 // The refusals of an unsafe path value (400, 403) run the root middlewares
 // only, so a group middleware never sees a path that was refused.
@@ -373,8 +407,7 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	group := router.groupOf(url_segments)
 
 	if method == MethodOptions {
-		router.setAllow(res, url_segments)
-		router.wrapIn(group, router.optionsHandler).ServeHTTP(res, req)
+		router.wrapIn(group, router.optionsHandler(url_segments)).ServeHTTP(res, req)
 
 		return
 	}
@@ -384,9 +417,10 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // warnPreflight tells the developer that a middleware refused a preflight
 // with 401 or 403 before the CORS middleware ran: the browser then sees a
-// refusal with no CORS headers.
+// refusal with no CORS headers. A refusal of the router (a path guard) is not
+// a mistake of the developer, so it gives no warning.
 func (router *Router) warnPreflight(res *ResponseWriter, req *Request) {
-	if req.corsRan.Load() || (res.code != StatusUnauthorized && res.code != StatusForbidden) {
+	if req.flags.Load()&flagPreflightHandled != 0 || (res.code != StatusUnauthorized && res.code != StatusForbidden) {
 		return
 	}
 
@@ -398,8 +432,8 @@ func (router *Router) warnPreflight(res *ResponseWriter, req *Request) {
 }
 
 // groupUnder returns the innermost group whose prefix matches the path, or
-// nil. Among groups with the same number of segments the last one made wins,
-// which is the deeper one.
+// nil. Two groups with the same prefix are nested (Route panics for any other
+// pair), and among them the last one made wins, which is the deeper one.
 func (r *Router) groupUnder(segments []string) *Router {
 	var best *Router
 
@@ -527,6 +561,14 @@ func (route *route) match(segments []string) bool {
 
 		if route_segment == "..." {
 			return validEscapes(segments[i:])
+		}
+
+		if !strings.HasPrefix(route_segment, ":") {
+			if segments[i] != route_segment {
+				return false
+			}
+
+			continue
 		}
 
 		if !route.matchSegment(i, segments[i]) {
@@ -731,10 +773,15 @@ func (r *Router) wrapIn(g *Router, h HandlerFunc) HandlerFunc {
 }
 
 // optionsHandler answers OPTIONS that is not a CORS preflight: 200 with the
-// Allow header that the router set, and no body (RFC 9110 §9.3.7).
-func (r *Router) optionsHandler(res *ResponseWriter, _ *Request) {
-	res.Set(HeaderContentLength, "0")
-	res.SendStatus(StatusOK)
+// Allow header and no body (RFC 9110 §9.3.7). It sets Allow itself, as the
+// 405 handler does, so a middleware that answers first (for example 401)
+// does not show the methods of the path.
+func (r *Router) optionsHandler(segments []string) HandlerFunc {
+	return func(res *ResponseWriter, _ *Request) {
+		r.setAllow(res, segments)
+		res.Set(HeaderContentLength, "0")
+		res.SendStatus(StatusOK)
+	}
 }
 
 func (r *Router) methodNotAllowedHandler(segments []string) HandlerFunc {
@@ -746,7 +793,8 @@ func (r *Router) methodNotAllowedHandler(segments []string) HandlerFunc {
 
 // statusHandler sends a status that the router chose before the handler ran.
 func (r *Router) statusHandler(status int) HandlerFunc {
-	return func(res *ResponseWriter, _ *Request) {
+	return func(res *ResponseWriter, req *Request) {
+		req.flags.Or(flagPreflightHandled)
 		res.SendStatus(status)
 	}
 }

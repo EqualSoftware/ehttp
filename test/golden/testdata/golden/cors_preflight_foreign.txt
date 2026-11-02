@@ -1,5 +1,4 @@
 status: 403
-header Allow: POST, OPTIONS
 header Content-Length: 0
 header Date: <volatile>
 header Vary: Accept-Encoding, Access-Control-Request-Headers, Access-Control-Request-Method, Origin
