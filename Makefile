@@ -62,9 +62,9 @@ golden-update:
 known-bugs: test
 	@names=$$(grep -E '^ *[A-Za-z0-9_./-]+\.go:[0-9]+: pending [A-Za-z0-9+-]+:' $(TESTLOG) \
 		| sed -E 's/^.*: pending ([A-Za-z0-9+-]+):.*$$/\1/'); \
-	total=$$(printf '%s\n' "$$names" | grep -c .); \
+	total=$$(printf '%s\n' "$$names" | grep -c . || true); \
 	echo "== pending (open bugs)"; \
-	printf '%s\n' "$$names" | tr '+' '\n' | sort | uniq -c \
-		| awk '{ printf "%-50s %d\n", $$2, $$1; n++ } END { printf "%-50s %d pending tests, %d distinct names\n", "total", '"$$total"', n }'
+	printf '%s\n' "$$names" | tr '+' '\n' | grep . | sort | uniq -c \
+		| awk '{ printf "%-50s %d\n", $$2, $$1; n++ } END { printf "%-50s %d pending tests, %d distinct names\n", "total", '"$$total"', n+0 }'
 
 check: test allocs lint vuln known-bugs

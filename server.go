@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"os/signal"
-	"slices"
 	"strconv"
 	"syscall"
 	"time"
@@ -16,14 +15,6 @@ import (
 
 	"github.com/EqualSoftware/ehttp/internal/redact"
 )
-
-type CorsOptions struct {
-	Origin        []string
-	Methods       []string
-	Headers       []string
-	Credentials   bool
-	CacheDuration time.Duration
-}
 
 type serverOption func(*Server)
 
@@ -229,62 +220,17 @@ func WithTemplates(v string) serverOption {
 	}
 }
 
-func WithCors(v CorsOptions) serverOption {
-	return func(s *Server) {
-		if len(v.Methods) != 0 {
-			s.router.cors.Methods = slices.Clone(v.Methods)
-		}
-
-		if len(v.Origin) != 0 {
-			s.router.cors.Origin = slices.Clone(v.Origin)
-		}
-
-		if len(v.Headers) != 0 {
-			s.router.cors.Headers = slices.Clone(v.Headers)
-		}
-
-		s.router.cors.Credentials = v.Credentials
-		s.router.cors.CacheDuration = v.CacheDuration
-	}
-}
-
-var DefaultCorsOptions = &CorsOptions{
-	Origin:      []string{"*"},
-	Methods:     []string{"*"},
-	Headers:     []string{"*"},
-	Credentials: false,
-}
-
-// clone returns a copy that shares no slice with o.
-func (o *CorsOptions) clone() *CorsOptions {
-	c := *o
-	c.Origin = slices.Clone(o.Origin)
-	c.Methods = slices.Clone(o.Methods)
-	c.Headers = slices.Clone(o.Headers)
-
-	return &c
-}
-
 func NewServer(options ...serverOption) *Server {
 	server := &Server{
 		port:              "3000",
 		readHeaderTimeout: defaultReadHeaderTimeout,
 		shutdownTimeout:   defaultShutdownTimeout,
-		router: &Router{
-			cors: DefaultCorsOptions.clone(),
-		},
+		router:            &Router{},
 	}
 
 	for _, apply := range options {
 		apply(server)
 	}
-
-	if server.router.cors.Credentials && slices.Contains(server.router.cors.Origin, "*") {
-		bootPanic("WithCors", "Credentials with the \"*\" origin", "a browser refuses a wildcard origin on a response with credentials (Fetch §3.3.5)",
-			"list the origins, for example CorsOptions{Origin: []string{\"https://app.example\"}, Credentials: true}")
-	}
-
-	validateCors(server.router.cors)
 
 	if server.router.logger == nil {
 		server.router.logger = presetLogger(server.router.mode)

@@ -166,7 +166,8 @@ func TestRequestLoggerHasNoDuplicateKeys(t *testing.T) {
 	t.Parallel()
 
 	l, logs := aObserved()
-	s := NewServer(WithLogger(l), WithCors(CorsOptions{Origin: []string{"https://a.example"}}))
+	s := NewServer(WithLogger(l))
+	s.Use(Cors(CorsOptions{Origin: []string{"https://a.example"}}))
 	s.GET("/x", func(res *ResponseWriter, req *Request) { req.Logger().Info("hit") })
 
 	s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), "GET", "/x", nil))

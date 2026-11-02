@@ -56,16 +56,6 @@ func aWaitReady(t *testing.T, url string) {
 	t.Fatalf("server at %s never became ready", url)
 }
 
-// aRestoreCors puts the global DefaultCorsOptions back after a test that
-// mutates it. Tests that call WithCors must not be parallel.
-func aRestoreCors(t *testing.T) {
-	t.Helper()
-
-	saved := *DefaultCorsOptions
-
-	t.Cleanup(func() { *DefaultCorsOptions = saved })
-}
-
 func TestNewServerDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -73,13 +63,6 @@ func TestNewServerDefaults(t *testing.T) {
 
 	ehttptest.Eq(t, "Express app.listen examples use 3000", s.port, "3000")
 	ehttptest.Eq(t, "shutdown default is below the Kubernetes grace period", s.shutdownTimeout, 25*time.Second)
-	ehttptest.True(t, "default CORS allows everything", len(s.router.cors.Origin) == 1 && s.router.cors.Origin[0] == "*", "got %v", s.router.cors.Origin)
-
-	t.Run("server gets its own CORS options", func(t *testing.T) {
-		t.Parallel()
-
-		ehttptest.True(t, "NewServer must not share the DefaultCorsOptions pointer", s.router.cors != DefaultCorsOptions, "router.cors is the global")
-	})
 }
 
 func TestServerPortOptions(t *testing.T) {
@@ -148,66 +131,6 @@ func TestServerWithTemplatesInvalidGlob(t *testing.T) {
 			})
 		})
 	}
-}
-
-// WithCors tests mutate the global DefaultCorsOptions, so they are serial.
-func TestServerWithCors(t *testing.T) {
-	aRestoreCors(t)
-
-	t.Run("empty fields keep the defaults", func(t *testing.T) {
-		aRestoreCors(t)
-
-		s := NewServer(WithCors(CorsOptions{Origin: []string{"https://a.example"}}))
-		rec := aDo(s, "OPTIONS", "/x", HeaderOrigin, "https://a.example", HeaderAccessControlRequestMethod, "GET")
-
-		ehttptest.Eq(t, "Fetch §3.2.3 (preflight response)", rec.Header().Get(HeaderAccessControlAllowMethods), "*")
-		ehttptest.Eq(t, "Fetch §3.2.3 (preflight response)", rec.Header().Get(HeaderAccessControlAllowHeaders), "*")
-	})
-
-	t.Run("Credentials with the wildcard origin fails at boot", func(t *testing.T) {
-		aRestoreCors(t)
-
-		panicked := func() (p bool) {
-			defer func() { p = recover() != nil }()
-			NewServer(WithCors(CorsOptions{Credentials: true}))
-
-			return false
-		}()
-
-		ehttptest.True(t, "Fetch §3.2.5: credentials never go with the * origin", panicked,
-			"Credentials:true with the * origin did not panic at boot")
-	})
-
-	t.Run("a second server does not inherit the first one's CORS options", func(t *testing.T) {
-		aRestoreCors(t)
-
-		NewServer(WithCors(CorsOptions{Origin: []string{"https://a.example"}, Methods: []string{"GET"}, Credentials: true}))
-		second := NewServer()
-		rec := aDo(second, "OPTIONS", "/x", HeaderOrigin, "https://a.example", HeaderAccessControlRequestMethod, "GET")
-
-		ehttptest.Eq(t, "WithCors must not mutate DefaultCorsOptions", rec.Header().Get(HeaderAccessControlAllowMethods), "*")
-		ehttptest.Eq(t, "WithCors must not mutate DefaultCorsOptions", rec.Header().Get(HeaderAccessControlAllowCredentials), "")
-	})
-
-	t.Run("NewServer copies the slices of the default options", func(t *testing.T) {
-		aRestoreCors(t)
-
-		s := NewServer()
-		s.router.cors.Origin[0] = "https://changed.example"
-
-		ehttptest.Eq(t, "the server must not share the slices of DefaultCorsOptions", DefaultCorsOptions.Origin[0], "*")
-	})
-
-	// An OPTIONS response is not cacheable (RFC 9110 §9.3.7), so the preflight
-	// cache is Access-Control-Max-Age only and never Cache-Control.
-	t.Run("CacheDuration becomes Access-Control-Max-Age", func(t *testing.T) {
-		aRestoreCors(t)
-
-		s := NewServer(WithCors(CorsOptions{CacheDuration: time.Hour}))
-		rec := aDo(s, "OPTIONS", "/x", HeaderOrigin, "https://a.example", HeaderAccessControlRequestMethod, "GET")
-
-		ehttptest.Eq(t, "Fetch §3.2.2 (preflight cache)", rec.Header().Get(HeaderAccessControlMaxAge), "3600")
-	})
 }
 
 func TestServerVerbDelegation(t *testing.T) {

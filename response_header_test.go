@@ -335,7 +335,7 @@ func TestBootValidation(t *testing.T) {
 	const basis = "invalid developer input panics at boot"
 
 	cors := func(o CorsOptions) func() {
-		return func() { NewServer(WithCors(o)) }
+		return func() { Cors(o) }
 	}
 
 	tests := []struct {

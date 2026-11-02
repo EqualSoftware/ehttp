@@ -285,8 +285,8 @@ func TestBootMessagesHaveTheFormat(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]func(){
-		"cors origin":      func() { NewServer(WithCors(CorsOptions{Origin: []string{"a\nb"}})) },
-		"cors credentials": func() { NewServer(WithCors(CorsOptions{Origin: []string{"*"}, Credentials: true})) },
+		"cors origin":      func() { Cors(CorsOptions{Origin: []string{"a\nb"}}) },
+		"cors credentials": func() { Cors(CorsOptions{Origin: []string{"*"}, Credentials: true}) },
 		"unknown method":   func() { NewServer().router.Handle("PROPFIND", "/", func(*ResponseWriter, *Request) {}) },
 		"route method":     func() { NewServer().router.Handle("GE T", "/", func(*ResponseWriter, *Request) {}) },
 		"route regex":      func() { NewServer().router.GET("/:id|(", func(*ResponseWriter, *Request) {}) },
@@ -294,7 +294,7 @@ func TestBootMessagesHaveTheFormat(t *testing.T) {
 		"timeout":          func() { WithReadTimeout(-1) },
 		"max header bytes": func() { WithMaxHeaderBytes(-1) },
 		"nil logger":       func() { WithLogger(nil) },
-		"cors max age":     func() { NewServer(WithCors(CorsOptions{CacheDuration: -time.Second})) },
+		"cors max age":     func() { Cors(CorsOptions{CacheDuration: -time.Second}) },
 		"duplicate route": func() {
 			s := NewServer()
 			s.GET("/a", aText("1"))
@@ -318,9 +318,9 @@ func TestBootMessagesHaveTheFormat(t *testing.T) {
 func TestBootPanicsInProduction(t *testing.T) {
 	t.Parallel()
 
-	msg := aPanics(func() { NewServer(WithMode(Production), WithCors(CorsOptions{Origin: []string{""}})) })
+	msg := aPanics(func() { Cors(CorsOptions{Origin: []string{""}}) })
 
-	ehttptest.True(t, strictBasis, strings.Contains(msg, "in WithCors"), "message %q", msg)
+	ehttptest.True(t, strictBasis, strings.Contains(msg, "in Cors"), "message %q", msg)
 }
 
 func TestAcceptsAddsVaryAccept(t *testing.T) {

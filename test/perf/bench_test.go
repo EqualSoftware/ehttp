@@ -64,14 +64,9 @@ func githubServer(tb testing.TB) *ehttp.Server {
 	return s
 }
 
-// exampleApp is the real examples/server app. WithCors mutates the global
-// shared by every server. The global is restored at once, so the app
-// and the other servers of this package run with the default CORS options.
+// exampleApp is the real examples/server app.
 func exampleApp(tb testing.TB) *ehttp.Server {
 	tb.Helper()
-
-	saved := *ehttp.DefaultCorsOptions
-	defer func() { *ehttp.DefaultCorsOptions = saved }()
 
 	return app.New(filepath.Join("..", "..", "examples", "server"), time.Unix(1700000000, 0))
 }
@@ -168,6 +163,7 @@ func BenchmarkErrorCache(b *testing.B) {
 
 func BenchmarkCorsPreflight(b *testing.B) {
 	s := ehttp.NewServer()
+	s.Use(ehttp.Cors(ehttp.CorsOptions{}))
 	s.POST("/body", noop)
 
 	req := httptest.NewRequestWithContext(context.Background(), "OPTIONS", "/body", http.NoBody)
@@ -179,6 +175,7 @@ func BenchmarkCorsPreflight(b *testing.B) {
 
 func BenchmarkCorsSimple(b *testing.B) {
 	s := ehttp.NewServer()
+	s.Use(ehttp.Cors(ehttp.CorsOptions{}))
 	s.GET("/", noop)
 
 	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", http.NoBody)

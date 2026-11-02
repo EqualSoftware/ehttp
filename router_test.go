@@ -465,21 +465,15 @@ func TestRouterMiddlewareScopeAndOrder(t *testing.T) {
 		ehttptest.Eq(t, "Express: next() is explicit", ran, false)
 	})
 
-	t.Run("Use only wraps routes registered after it", func(t *testing.T) {
+	t.Run("Use after a route panics", func(t *testing.T) {
 		t.Parallel()
-
-		var log []string
 
 		s := NewServer()
 		s.GET("/early", aText("early"))
-		s.Use(aTrace(&log, "mw"))
-		s.GET("/late", aText("late"))
 
-		aDo(s, "GET", "/early")
-		ehttptest.Eq(t, "Express: app.use only affects routes declared after it", len(log), 0)
-
-		aDo(s, "GET", "/late")
-		ehttptest.Eq(t, "Express: app.use only affects routes declared after it", len(log), 1)
+		msg := aPanics(func() { s.Use(aTrace(new([]string), "mw")) })
+		ehttptest.Eq(t, "go-chi mux.go: all middlewares must be defined before routes on a mux", msg,
+			"ehttp: a call after a route was registered in Use: middleware registered after a route does not wrap that route. Fix: call Use before the routes.")
 	})
 
 	t.Run("global middleware wraps 404, 405 and OPTIONS", func(t *testing.T) {

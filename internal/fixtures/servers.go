@@ -141,20 +141,15 @@ func Listen(t testing.TB, mk func(port string) *ehttp.Server) *Listening {
 	return nil
 }
 
-// CorsServer builds a server with WithCors. WithCors mutates the global
-// DefaultCorsOptions, so the global is restored when the test ends.
-func CorsServer(t testing.TB, opts *ehttp.CorsOptions) *ehttp.Server {
-	orig := *ehttp.DefaultCorsOptions
-	*ehttp.DefaultCorsOptions = orig
-
-	t.Cleanup(func() { *ehttp.DefaultCorsOptions = orig })
-
-	var srv *ehttp.Server
+// CorsServer builds a server with the Cors middleware. Nil options mean the
+// allow-all policy of an empty CorsOptions.
+func CorsServer(_ testing.TB, opts *ehttp.CorsOptions) *ehttp.Server {
 	if opts == nil {
-		srv = ehttp.NewServer()
-	} else {
-		srv = ehttp.NewServer(ehttp.WithCors(*opts))
+		opts = &ehttp.CorsOptions{}
 	}
+
+	srv := ehttp.NewServer()
+	srv.Use(ehttp.Cors(*opts))
 
 	srv.GET("/api", func(res *ehttp.ResponseWriter, req *ehttp.Request) { res.String("data") })
 

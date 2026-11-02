@@ -194,7 +194,7 @@ func TestCSecuritySpoofedProtoTriggersHSTS(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// CORS attacks (not parallel: WithCors mutates the global)
+// CORS attacks
 // ---------------------------------------------------------------------------
 
 func TestCSecurityCorsReflection(t *testing.T) {
@@ -237,13 +237,9 @@ func TestCSecurityWildcardWithCredentials(t *testing.T) {
 	})
 
 	t.Run("boot fails fast", func(t *testing.T) {
-		orig := *ehttp.DefaultCorsOptions
-
-		t.Cleanup(func() { *ehttp.DefaultCorsOptions = orig })
-
 		panicked := func() (p bool) {
 			defer func() { p = recover() != nil }()
-			ehttp.NewServer(ehttp.WithCors(ehttp.CorsOptions{Credentials: true}))
+			ehttp.Cors(ehttp.CorsOptions{Credentials: true})
 
 			return false
 		}()
@@ -283,31 +279,37 @@ func TestCSecurityForgedSecFetchSite(t *testing.T) {
 	ehttptest.Eq(t, "allowlist must not be bypassed by a self-declared Sec-Fetch-Site", resp.StatusCode, 403)
 }
 
-// NewServer keeps a pointer to the global; WithCors writes through it.
-func TestCSecurityGlobalCorsLeaksAcrossServers(t *testing.T) {
-	orig := *ehttp.DefaultCorsOptions
-
-	t.Cleanup(func() { *ehttp.DefaultCorsOptions = orig })
-
-	*ehttp.DefaultCorsOptions = orig
-
-	_ = ehttp.NewServer(ehttp.WithCors(ehttp.CorsOptions{Origin: []string{fixtures.OriginA}}))
-	other := ehttp.NewServer() // default: any origin
+// CORS is off until the developer adds the Cors middleware: a server without
+// it sends no CORS header, and another server's policy does not reach it.
+func TestCSecurityCorsOffByDefault(t *testing.T) {
+	_ = fixtures.CorsServer(t, &ehttp.CorsOptions{Origin: []string{fixtures.OriginA}})
+	other := ehttp.NewServer()
 	other.GET("/api", func(res *ehttp.ResponseWriter, req *ehttp.Request) { res.String("x") })
 	ts := fixtures.Start(t, other)
 
-	resp, _ := fixtures.Fetch(t, http.MethodOptions, ts.URL+"/api", http.Header{
+	resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/api", http.Header{"Origin": {fixtures.OriginA}})
+	ehttptest.Eq(t, "Fetch §3.2: no Cors middleware, no CORS header", resp.Header.Get("Access-Control-Allow-Origin"), "")
+
+	resp, _ = fixtures.Fetch(t, http.MethodOptions, ts.URL+"/api", http.Header{
 		"Origin":                        {fixtures.OriginB},
 		"Access-Control-Request-Method": {"GET"},
-		"Sec-Fetch-Site":                {"cross-site"},
 	})
-
-	ehttptest.Eq(t, "a second server must not inherit the first server's allowlist", resp.StatusCode, 200)
+	ehttptest.Eq(t, "RFC 9110 §9.3.7: OPTIONS without Cors is a plain answer", resp.StatusCode, 200)
+	ehttptest.Eq(t, "Fetch §3.2: no Cors middleware, no CORS header", resp.Header.Get("Access-Control-Allow-Origin"), "")
+	ehttptest.Eq(t, "Fetch §3.2: no Cors middleware, no CORS header", resp.Header.Get("Access-Control-Allow-Methods"), "")
 }
 
 // ---------------------------------------------------------------------------
 // Group middleware
 // ---------------------------------------------------------------------------
+
+func cPanics(f func()) (p bool) {
+	defer func() { p = recover() != nil }()
+
+	f()
+
+	return false
+}
 
 func cAuth() ehttp.MiddlewareHandlerFunc {
 	return func(next ehttp.Handler) ehttp.HandlerFunc {
@@ -382,20 +384,11 @@ func TestCSecurityGroupAuthBypass(t *testing.T) {
 		ehttptest.Eq(t, "control: authorized request passes", body, "secret")
 	})
 
-	// Express semantic (app.use only affects what is registered after it).
-	// Pinned so a change to group middleware does not alter it by accident.
-	t.Run("Use after a route does not wrap that route (Express order)", func(t *testing.T) {
+	t.Run("Use after a route panics (go-chi order)", func(t *testing.T) {
 		srv := ehttp.NewServer()
 		srv.GET("/early", cSecretHandler)
-		srv.Use(cAuth())
-		srv.GET("/late", cSecretHandler)
-		ts := fixtures.Start(t, srv)
 
-		resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL+"/early", nil)
-		ehttptest.Eq(t, "Express app.use ordering", resp.StatusCode, 200)
-
-		resp, _ = fixtures.Fetch(t, http.MethodGet, ts.URL+"/late", nil)
-		ehttptest.Eq(t, "Express app.use ordering", resp.StatusCode, 401)
+		ehttptest.True(t, "chi mux.go: all middlewares must be defined before routes", cPanics(func() { srv.Use(cAuth()) }), "Use after a route did not panic")
 	})
 }
 

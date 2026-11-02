@@ -51,7 +51,8 @@ func TestLibraryErrorsHaveNoBody(t *testing.T) {
 			return s
 		}, []string{"GET", "/x"}, 405},
 		{"CORS 403", func() *ehttp.Server {
-			s := ehttp.NewServer(ehttp.WithCors(ehttp.CorsOptions{Origin: []string{"http://ok"}}))
+			s := ehttp.NewServer()
+			s.Use(ehttp.Cors(ehttp.CorsOptions{Origin: []string{"http://ok"}}))
 			s.POST("/x", set)
 			return s
 		}, []string{"OPTIONS", "/x"}, 403},

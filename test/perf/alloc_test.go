@@ -26,6 +26,7 @@ func TestAllocsHotPaths(t *testing.T) {
 	stack := exampleApp(t)
 
 	corsSrv := ehttp.NewServer()
+	corsSrv.Use(ehttp.Cors(ehttp.CorsOptions{}))
 	corsSrv.POST("/body", noop)
 	corsSrv.GET("/", noop)
 	cors := corsSrv

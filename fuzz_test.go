@@ -38,7 +38,7 @@ type dMatch struct {
 // dNewFuzzRouter registers fixed routes; the handler records the matched
 // pattern and every declared parameter.
 func dNewFuzzRouter(got *dMatch) *Router {
-	r := &Router{cors: &CorsOptions{}}
+	r := &Router{}
 	record := func(keys ...string) HandlerFunc {
 		return func(res *ResponseWriter, req *Request) {
 			*got = dMatch{pattern: req.RoutePath(), params: map[string]string{}}
@@ -699,7 +699,7 @@ func TestFuzzKnownBugs(t *testing.T) {
 	t.Run("params leak from a route that did not match", func(t *testing.T) {
 		t.Parallel()
 		var seen string
-		r := &Router{cors: &CorsOptions{}}
+		r := &Router{}
 		r.GET("/u/:a/x", func(*ResponseWriter, *Request) {})
 		r.GET("/u/:b/y", func(_ *ResponseWriter, req *Request) { seen = req.Param("a") })
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/u/5/y", http.NoBody)
@@ -710,7 +710,7 @@ func TestFuzzKnownBugs(t *testing.T) {
 	t.Run("route regex is not anchored", func(t *testing.T) {
 		t.Parallel()
 		status := 0
-		r := &Router{cors: &CorsOptions{}}
+		r := &Router{}
 		r.GET("/i/:id|[0-9]+", func(res *ResponseWriter, _ *Request) { res.SendStatus(200) })
 		status = ehttptest.Do(r, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/i/abc1", http.NoBody)).Code
 		ehttptest.Eq(t, "a regex param matches the whole segment", status, 404)
@@ -719,7 +719,7 @@ func TestFuzzKnownBugs(t *testing.T) {
 	t.Run("unbalanced paren does not escape the anchor group", func(t *testing.T) {
 		t.Parallel()
 		defer func() { _ = recover() }()
-		r := &Router{cors: &CorsOptions{}}
+		r := &Router{}
 		r.GET("/i/:id|[0-9]+)|(x", func(*ResponseWriter, *Request) {}) // must panic here (boot)
 		ehttptest.True(t, "an unbalanced regex is rejected", false, "Handle accepted an unbalanced regex")
 	})
@@ -727,7 +727,7 @@ func TestFuzzKnownBugs(t *testing.T) {
 	t.Run("invalid route regex panics at registration", func(t *testing.T) {
 		t.Parallel()
 		defer func() { _ = recover() }()
-		r := &Router{cors: &CorsOptions{}}
+		r := &Router{}
 		r.GET("/i/:id|[", func(*ResponseWriter, *Request) {}) // must panic here (boot)
 		ehttptest.True(t, "an invalid regex panics at registration", false, "Handle accepted an invalid regex; it panics later, per request")
 	})

@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 
 	"go.uber.org/zap"
@@ -38,7 +37,9 @@ type Router struct {
 	template    *template.Template
 	middlewares []MiddlewareHandlerFunc
 	routes      []*route
-	cors        *CorsOptions
+	scope       *route    // the full prefix of a group, for the answers the router makes; nil on the root
+	groups      []*Router // the root keeps every group, at any depth
+	routed      bool      // a route was registered through this router: Use is closed
 	proxies     trustedProxies
 	logger      *zap.Logger
 	mode        Mode
@@ -52,18 +53,69 @@ type route struct {
 	regexes     []*regexp.Regexp
 	handle      HandlerFunc
 	middlewares []MiddlewareHandlerFunc
+	group       *Router // the innermost group that registered the route; nil for the root
 }
 
+// Use adds middlewares that wrap each route registered after the call. It
+// panics after a route was registered through this router (for a group: through
+// the group or one of its subgroups), as a middleware added later would not
+// wrap that route. Call Use before the routes (the rule of go-chi: "all
+// middlewares must be defined before routes on a mux").
 func (r *Router) Use(m ...MiddlewareHandlerFunc) {
+	if r.routed {
+		bootPanic("Use", "a call after a route was registered", "middleware registered after a route does not wrap that route",
+			"call Use before the routes")
+	}
+
 	r.middlewares = append(r.middlewares, m...)
 }
 
+// Route makes a group. The middlewares of a group run on its routes and, for
+// a path under its prefix, on the 404, 405 and OPTIONS answers of the router
+// (see ServeHTTP).
 func (r *Router) Route(prefix string, m ...MiddlewareHandlerFunc) *Router {
-	return &Router{
+	g := &Router{
 		parent:      r,
 		prefix:      prefix,
 		middlewares: slices.Clone(m),
 	}
+
+	full := r.fullPrefix() + prefix
+	segments := splitPath(full)
+	g.scope = &route{pattern: full, segments: segments, regexes: compileSegments(full, segments)}
+
+	root := r.root()
+	root.groups = append(root.groups, g)
+
+	return g
+}
+
+func (r *Router) root() *Router {
+	for r.parent != nil {
+		r = r.parent
+	}
+
+	return r
+}
+
+func (r *Router) fullPrefix() string {
+	if r.scope == nil {
+		return ""
+	}
+
+	return r.scope.pattern
+}
+
+// splitPath splits a pattern or a path into segments. A trailing slash adds
+// no segment.
+func splitPath(p string) []string {
+	segments := strings.Split(p, "/")
+
+	if segments[len(segments)-1] == "" {
+		segments = segments[:len(segments)-1]
+	}
+
+	return segments
 }
 
 // Handle registers a route. A group passes its own middlewares to its
@@ -79,12 +131,25 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc, m ...MiddlewareHa
 			"use one of these methods, or a helper such as router.GET")
 	}
 
+	r.add(r, method, pattern, h, m)
+}
+
+// add registers the route on the root. owner is the router that got the
+// Handle call. Each router on the way closes its Use.
+func (r *Router) add(owner *Router, method, pattern string, h HandlerFunc, m []MiddlewareHandlerFunc) {
+	r.routed = true
+
 	if r.parent != nil {
 		all := make([]MiddlewareHandlerFunc, 0, len(r.middlewares)+len(m))
 		all = append(all, r.middlewares...)
 		all = append(all, m...)
-		r.parent.Handle(method, r.prefix+pattern, h, all...)
+		r.parent.add(owner, method, r.prefix+pattern, h, all)
+
 		return
+	}
+
+	if owner == r {
+		owner = nil
 	}
 
 	for _, middleware := range slices.Backward(m) {
@@ -95,11 +160,7 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc, m ...MiddlewareHa
 		h = middleware(h)
 	}
 
-	segments := strings.Split(r.prefix+pattern, "/")
-
-	if segments[len(segments)-1] == "" {
-		segments = segments[:len(segments)-1]
-	}
+	segments := splitPath(r.prefix + pattern)
 
 	mustNotHaveDotSegment(strings.ToUpper(method), r.prefix+pattern, segments)
 	r.mustBeNew(strings.ToUpper(method), r.prefix+pattern, segments)
@@ -111,6 +172,7 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc, m ...MiddlewareHa
 		regexes:     compileSegments(pattern, segments),
 		handle:      h,
 		middlewares: m,
+		group:       owner,
 	})
 }
 
@@ -242,6 +304,21 @@ func (r *Router) TRACE(pattern string, h HandlerFunc, m ...MiddlewareHandlerFunc
 	r.Handle(MethodTrace, pattern, h, m...)
 }
 
+// ServeHTTP serves a request. The router answers itself when no route serves
+// it: 404, 405 and the answer to OPTIONS. These answers run the middlewares
+// of the root, and before them the middlewares of one group (the outer group
+// first), so a middleware such as logging or CORS sees them:
+//   - 404: the innermost group whose prefix matches the path.
+//   - 405 and OPTIONS: the group that owns every route that matches the path.
+//     If the routes belong to several groups or to the root, only the root
+//     middlewares run, as the router cannot pick one group.
+//
+// The refusals of an unsafe path value (400, 403) run the root middlewares
+// only, so a group middleware never sees a path that was refused.
+//
+// OPTIONS without a CORS preflight gets 200 with Allow and no body (RFC 9110
+// §9.3.7), and 404 for an unknown path. A preflight is answered by the CORS
+// middleware (see Cors).
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	req := &Request{
 		Request: r,
@@ -258,14 +335,12 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	req.res = res
 
-	corsUpdateHeaders(res, req, router.cors)
-
 	method := req.Method()
 	path := req.Path()
-	url_segments := strings.Split(path, "/")
+	url_segments := splitPath(path)
 
-	if url_segments[len(url_segments)-1] == "" {
-		url_segments = url_segments[:len(url_segments)-1]
+	if router.mode == Development && method == MethodOptions && isPreflight(req) {
+		defer router.warnPreflight(res, req)
 	}
 
 	endpoint, first := router.find(method, url_segments)
@@ -290,22 +365,77 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if matched && method != MethodOptions {
-		router.wrap(router.methodNotAllowedHandler(url_segments)).ServeHTTP(res, req)
+	if !matched {
+		router.wrapIn(router.groupUnder(url_segments), router.notFoundHandler).ServeHTTP(res, req)
 		return
 	}
+
+	group := router.groupOf(url_segments)
 
 	if method == MethodOptions {
-		if matched {
-			router.setAllow(res, url_segments)
-		}
-
-		router.wrap(router.optionsHandler).ServeHTTP(res, req)
+		router.setAllow(res, url_segments)
+		router.wrapIn(group, router.optionsHandler).ServeHTTP(res, req)
 
 		return
 	}
 
-	router.wrap(router.notFoundHandler).ServeHTTP(res, req)
+	router.wrapIn(group, router.methodNotAllowedHandler(url_segments)).ServeHTTP(res, req)
+}
+
+// warnPreflight tells the developer that a middleware refused a preflight
+// with 401 or 403 before the CORS middleware ran: the browser then sees a
+// refusal with no CORS headers.
+func (router *Router) warnPreflight(res *ResponseWriter, req *Request) {
+	if req.corsRan.Load() || (res.code != StatusUnauthorized && res.code != StatusForbidden) {
+		return
+	}
+
+	req.newLogger().Warn("a middleware refused a CORS preflight before the CORS middleware ran",
+		zap.String("path", req.Path()),
+		zap.Int("status", res.code),
+		zap.String("fix", "register the CORS middleware before the authentication middleware"),
+	)
+}
+
+// groupUnder returns the innermost group whose prefix matches the path, or
+// nil. Among groups with the same number of segments the last one made wins,
+// which is the deeper one.
+func (r *Router) groupUnder(segments []string) *Router {
+	var best *Router
+
+	for _, g := range r.groups {
+		if !g.scope.under(segments) {
+			continue
+		}
+
+		if best == nil || len(g.scope.segments) >= len(best.scope.segments) {
+			best = g
+		}
+	}
+
+	return best
+}
+
+// groupOf returns the group that owns every route that matches the path. It
+// returns nil when the routes belong to the root or to several groups.
+func (r *Router) groupOf(segments []string) *Router {
+	var group *Router
+
+	seen := false
+
+	for _, endpoint := range r.routes {
+		if !endpoint.match(segments) {
+			continue
+		}
+
+		if seen && endpoint.group != group {
+			return nil
+		}
+
+		group, seen = endpoint.group, true
+	}
+
+	return group
 }
 
 // find returns the route that serves the method, and the first route that
@@ -399,16 +529,35 @@ func (route *route) match(segments []string) bool {
 			return validEscapes(segments[i:])
 		}
 
-		if !strings.HasPrefix(route_segment, ":") {
-			if segments[i] != route_segment {
-				return false
-			}
-
-			continue
+		if !route.matchSegment(i, segments[i]) {
+			return false
 		}
+	}
 
-		value, ok := decodeSegment(segments[i])
-		if !ok || !route.matchParam(i, value) {
+	return true
+}
+
+// matchSegment reports whether the path segment fits the segment i of the
+// route: the same text, or a parameter that accepts the decoded value.
+func (route *route) matchSegment(i int, segment string) bool {
+	if !strings.HasPrefix(route.segments[i], ":") {
+		return segment == route.segments[i]
+	}
+
+	value, ok := decodeSegment(segment)
+
+	return ok && route.matchParam(i, value)
+}
+
+// under reports whether the path is the pattern of the route or is below it.
+// The router uses it for the prefix of a group.
+func (route *route) under(segments []string) bool {
+	if len(segments) < len(route.segments) {
+		return false
+	}
+
+	for i := range route.segments {
+		if !route.matchSegment(i, segments[i]) {
 			return false
 		}
 	}
@@ -568,26 +717,24 @@ func (r *Router) wrap(h HandlerFunc) HandlerFunc {
 	return h
 }
 
-func (r *Router) optionsHandler(res *ResponseWriter, req *Request) {
-	res.Vary(HeaderAccessControlRequestMethod)
-	res.Vary(HeaderAccessControlRequestHeaders)
-
-	if corsAcceptOrigin(req, r.cors) && corsAcceptMethod(req, r.cors) && corsAcceptHeaders(req, r.cors) {
-		res.Own(HeaderCacheControl, CacheControl(0, false))
-		corsPreflightHeaders(res, req, r.cors)
-
-		res.SendStatus(StatusOK)
-		return
+// wrapIn wraps h with the middlewares of the group g and of its parents, the
+// outer group first, and then with the root middlewares. A nil group adds
+// nothing.
+func (r *Router) wrapIn(g *Router, h HandlerFunc) HandlerFunc {
+	for ; g != nil && g != r; g = g.parent {
+		for _, middleware := range slices.Backward(g.middlewares) {
+			h = middleware(h)
+		}
 	}
 
-	res.SendStatus(StatusForbidden)
+	return r.wrap(h)
+}
 
-	req.newLogger().Warn("the request did not pass cors validation",
-		zap.String("path", req.Path()),
-		zap.String("host", req.Host()),
-		zap.String("origin", req.Origin()),
-		zap.Any("headers", req.Request.Header),
-	)
+// optionsHandler answers OPTIONS that is not a CORS preflight: 200 with the
+// Allow header that the router set, and no body (RFC 9110 §9.3.7).
+func (r *Router) optionsHandler(res *ResponseWriter, _ *Request) {
+	res.Set(HeaderContentLength, "0")
+	res.SendStatus(StatusOK)
 }
 
 func (r *Router) methodNotAllowedHandler(segments []string) HandlerFunc {
@@ -606,147 +753,4 @@ func (r *Router) statusHandler(status int) HandlerFunc {
 
 func (r *Router) notFoundHandler(res *ResponseWriter, req *Request) {
 	res.SendStatus(StatusNotFound)
-}
-
-func corsAcceptHeaders(req *Request, options *CorsOptions) bool {
-	if slices.Contains(options.Headers, "*") {
-		return true
-	}
-
-	headers_raw := req.Header(HeaderAccessControlRequestHeaders)
-
-	if headers_raw == "" {
-		return true
-	}
-
-	headers_raw = strings.ReplaceAll(headers_raw, ", ", ",")
-	headers := strings.Split(headers_raw, ",")
-
-	for _, header := range headers {
-		if !slices.Contains(options.Headers, http.CanonicalHeaderKey(header)) {
-			return false
-		}
-	}
-
-	return true
-}
-
-func corsAcceptMethod(req *Request, options *CorsOptions) bool {
-	if slices.Contains(options.Methods, "*") {
-		return true
-	}
-
-	method := req.Header(HeaderAccessControlRequestMethod)
-
-	if method == "" {
-		return false
-	}
-
-	return slices.Contains(options.Methods, strings.ToUpper(method))
-}
-
-func corsAcceptOrigin(req *Request, options *CorsOptions) bool {
-	if slices.Contains(options.Origin, "*") {
-		return true
-	}
-
-	origin := req.Origin()
-
-	return origin != "" && slices.Contains(options.Origin, origin)
-}
-
-// corsUpdateHeaders sets the CORS headers of a response (Fetch §3.2).
-// Vary: Origin is set when the allowlist is specific, so a cache keeps one
-// response for each origin, also for requests without Origin.
-func corsUpdateHeaders(res *ResponseWriter, req *Request, options *CorsOptions) {
-	wildcard := slices.Contains(options.Origin, "*")
-
-	if !wildcard {
-		res.OwnVary(HeaderOrigin)
-	}
-
-	origin := req.Origin()
-
-	if origin == "" || !corsAcceptOrigin(req, options) {
-		return
-	}
-
-	if wildcard {
-		origin = "*"
-	}
-
-	res.Own(HeaderAccessControlAllowOrigin, origin)
-
-	if options.Credentials {
-		res.Own(HeaderAccessControlAllowCredentials, "true")
-	}
-}
-
-// corsPreflightHeaders sets the headers that a browser reads only from the
-// preflight response (Fetch §3.2.3). With credentials, a literal * has no
-// meaning, so the request values are echoed.
-func corsPreflightHeaders(res *ResponseWriter, req *Request, options *CorsOptions) {
-	methods := options.Methods
-	headers := options.Headers
-
-	if options.Credentials && slices.Contains(options.Methods, "*") {
-		methods = corsEcho(req, HeaderAccessControlRequestMethod)
-	}
-
-	if options.Credentials && slices.Contains(options.Headers, "*") {
-		headers = corsEcho(req, HeaderAccessControlRequestHeaders)
-	}
-
-	if len(methods) > 0 {
-		res.Append(HeaderAccessControlAllowMethods, methods...)
-	}
-
-	if len(headers) > 0 {
-		res.Append(HeaderAccessControlAllowHeaders, headers...)
-	}
-
-	if d := options.CacheDuration; d > 0 {
-		res.Set(HeaderAccessControlMaxAge, strconv.Itoa(int(d.Seconds())))
-	}
-}
-
-// corsEcho returns the request header name as one list member, or none if the
-// header is empty.
-func corsEcho(req *Request, name string) []string {
-	if v := req.Header(name); v != "" {
-		return []string{v}
-	}
-
-	return nil
-}
-
-// validateCors panics at boot for an entry that would fail at each request:
-// an empty entry, an invalid origin value, or a method or header name that is
-// not a token (RFC 9110 §5.6.2, §9.1). "*" is allowed.
-func validateCors(o *CorsOptions) {
-	for _, origin := range o.Origin {
-		if origin == "" || !validFieldValue(origin) {
-			bootPanic("WithCors", "Origin entry "+quoteValue(origin), "it is empty or not a valid field value (RFC 9110 §5.5)",
-				"use an origin such as \"https://app.example\", or \"*\"")
-		}
-	}
-
-	for _, method := range o.Methods {
-		if method != "*" && !validFieldName(method) {
-			bootPanic("WithCors", "Methods entry "+quoteValue(method), "it is not a token (RFC 9110 §9.1)",
-				"use a method such as \"GET\", or \"*\"")
-		}
-	}
-
-	if o.CacheDuration < 0 {
-		bootPanic("WithCors", "CacheDuration "+o.CacheDuration.String(), "Access-Control-Max-Age is delta-seconds, a non-negative integer (Fetch §3.2.3)",
-			"use zero for no Max-Age, or a positive duration, for example CacheDuration: time.Hour")
-	}
-
-	for _, header := range o.Headers {
-		if header != "*" && !validFieldName(header) {
-			bootPanic("WithCors", "Headers entry "+quoteValue(header), "it is not a token (RFC 9110 §5.6.2)",
-				"use a header name such as \"Content-Type\", or \"*\"")
-		}
-	}
 }

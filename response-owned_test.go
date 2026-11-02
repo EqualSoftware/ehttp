@@ -134,7 +134,8 @@ func TestOwnedCorsRawVary(t *testing.T) {
 	t.Parallel()
 
 	l, logs := aObserved()
-	s := NewServer(WithLogger(l), WithCors(CorsOptions{Origin: []string{"https://a.example"}}))
+	s := NewServer(WithLogger(l))
+	s.Use(Cors(CorsOptions{Origin: []string{"https://a.example"}}))
 	s.GET("/x", func(res *ResponseWriter, _ *Request) {
 		res.Header().Set("Vary", "Accept")
 		res.Header().Set("Access-Control-Allow-Origin", "*")
@@ -151,7 +152,8 @@ func TestOwnedCorsRawVary(t *testing.T) {
 func TestOwnedCorsHandlerSet(t *testing.T) {
 	t.Parallel()
 
-	s := NewServer(WithMode(Development), WithCors(CorsOptions{Origin: []string{"https://a.example"}}))
+	s := NewServer(WithMode(Development))
+	s.Use(Cors(CorsOptions{Origin: []string{"https://a.example"}}))
 	s.GET("/x", func(res *ResponseWriter, _ *Request) { res.Set("Access-Control-Allow-Origin", "*") })
 
 	msg := aPanics(func() { aDo(s, "GET", "/x", "Origin", "https://a.example") })
@@ -288,7 +290,8 @@ func TestOwnedEqualValueIsNotAMistake(t *testing.T) {
 	t.Parallel()
 
 	l, logs := aObserved()
-	s := NewServer(WithLogger(l), WithMode(Development), WithCors(CorsOptions{Origin: []string{"*"}}))
+	s := NewServer(WithLogger(l), WithMode(Development))
+	s.Use(Cors(CorsOptions{Origin: []string{"*"}}))
 	s.GET("/x", func(res *ResponseWriter, _ *Request) {
 		res.Set("Access-Control-Allow-Origin", "*")
 		res.String("ok")

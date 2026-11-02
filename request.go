@@ -24,6 +24,7 @@ type Request struct {
 	peer    atomic.Uint32 // peerUnknown, peerTrusted or peerUntrusted; the result is the same in every goroutine
 	// forwardedWarned is true after the warning for an invalid forwarded header.
 	forwardedWarned atomic.Bool
+	corsRan         atomic.Bool                // the Cors middleware ran; only the Development warning for a refused preflight reads it
 	res             *ResponseWriter            // for Vary; nil in a Request built by hand
 	logger          *zap.Logger                // the server logger; nil in a Request built by hand
 	log             atomic.Pointer[zap.Logger] // logger with the request fields, built on first use

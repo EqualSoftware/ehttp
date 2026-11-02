@@ -50,7 +50,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/EqualSoftware/ehttp"
 	"github.com/EqualSoftware/ehttp/examples/server/app"
 	"github.com/EqualSoftware/ehttp/internal/ehttptest"
 )
@@ -100,11 +99,6 @@ func goldenCopy(t *testing.T, dir string) {
 // goldenServer serves the example app. See the file comment.
 func goldenServer(t *testing.T) *httptest.Server {
 	t.Helper()
-
-	// WithCors mutates the global DefaultCorsOptions: restore it so other
-	// tests of this package are not affected.
-	saved := *ehttp.DefaultCorsOptions
-	t.Cleanup(func() { *ehttp.DefaultCorsOptions = saved })
 
 	dir := t.TempDir()
 	goldenCopy(t, dir)

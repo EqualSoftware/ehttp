@@ -20,14 +20,6 @@ func New(dir string, modified time.Time) *ehttp.Server {
 	server := ehttp.NewServer(
 		ehttp.WithPortInt(3000),
 		ehttp.WithTemplates(filepath.Join(dir, "templates", "*.html")),
-		ehttp.WithCors(ehttp.CorsOptions{
-			Origin: []string{
-				"http://localhost:3000",
-			},
-			Methods:       []string{ehttp.MethodGet, ehttp.MethodHead, ehttp.MethodOptions, ehttp.MethodPost},
-			Credentials:   true,
-			CacheDuration: 5 * time.Minute,
-		}),
 	)
 
 	server.Use(
@@ -39,6 +31,17 @@ func New(dir string, modified time.Time) *ehttp.Server {
 		middleware.RequestId(),
 		middleware.AcceptEncoding(),
 		middleware.Secure(middleware.DefaultSecureConfig),
+		// Cors comes after the middlewares whose headers a preflight keeps, and
+		// before BodyLimit and Timeout, so their refusals get the CORS headers.
+		// Put it before any authentication.
+		ehttp.Cors(ehttp.CorsOptions{
+			Origin: []string{
+				"http://localhost:3000",
+			},
+			Methods:       []string{ehttp.MethodGet, ehttp.MethodHead, ehttp.MethodOptions, ehttp.MethodPost},
+			Credentials:   true,
+			CacheDuration: 5 * time.Minute,
+		}),
 		middleware.BodyLimit("4KB"),
 		middleware.Timeout(10*time.Second),
 	)
