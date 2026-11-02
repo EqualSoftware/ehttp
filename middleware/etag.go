@@ -111,12 +111,14 @@ func (w *etagWriter) ReadFrom(r io.Reader) (int64, error) {
 	return io.Copy(struct{ io.Writer }{w}, r)
 }
 
-// FlushError flushes the real writer after the response is passing. Before
-// that, the body waits for the ETag and the flush is not supported.
+// FlushError commits the response: a flush cannot wait for the whole body. The
+// buffered bytes go out, the rest is streamed, and there is no ETag.
 func (w *etagWriter) FlushError() error {
-	if !w.passing {
-		return http.ErrNotSupported
+	if w.code == 0 {
+		w.code = ehttp.StatusOK
 	}
+
+	w.pass()
 
 	return http.NewResponseController(w.real).Flush()
 }

@@ -235,6 +235,51 @@ func TestWeakEtagLargeResponse(t *testing.T) {
 	}
 }
 
+// A handler that flushes cannot wait for the whole body: the bytes before the
+// flush reach the client while the handler still runs, and there is no ETag.
+func TestWeakEtagFlushStreams(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	ts := httptest.NewServer(fixtures.Handler(func(res *ehttp.ResponseWriter, _ *ehttp.Request) {
+		_, _ = res.Write([]byte("first"))
+		res.Flush()
+		<-release
+		_, _ = res.Write([]byte("second"))
+	}, middleware.WeakEtag()))
+	defer ts.Close()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/x", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer resp.Body.Close()
+
+	ehttptest.Eq(t, "RFC 9110 §8.8.3", resp.Header.Get("ETag"), "")
+
+	first := make([]byte, len("first"))
+	if _, err := io.ReadFull(resp.Body, first); err != nil {
+		t.Fatal(err)
+	}
+
+	ehttptest.Eq(t, "middleware contract (the chunk arrives before the handler ends)", string(first), "first")
+
+	close(release)
+
+	rest, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ehttptest.Eq(t, "middleware contract", string(rest), "second")
+}
+
 // Composition with ErrorCache, in both orders (the pair must work).
 func TestWeakEtagWithErrorCache(t *testing.T) {
 	t.Parallel()

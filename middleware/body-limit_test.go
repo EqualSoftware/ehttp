@@ -198,8 +198,8 @@ func TestBodyLimitClosesConnectionOnOverflow(t *testing.T) {
 	}
 }
 
-// F6: an interceptor cannot flush. ResponseController must say so.
-func TestFlushInsideInterceptorIsNotSupported(t *testing.T) {
+// A flush under WeakEtag commits the response without an ETag: it works.
+func TestFlushInsideWeakEtagWorks(t *testing.T) {
 	t.Parallel()
 
 	var got error
@@ -211,6 +211,6 @@ func TestFlushInsideInterceptorIsNotSupported(t *testing.T) {
 
 	rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
 
-	ehttptest.True(t, "ResponseController.Flush", errors.Is(got, http.ErrNotSupported), "got %v", got)
+	ehttptest.Eq(t, "ResponseController.Flush", got, nil)
 	ehttptest.Eq(t, "body still sent once", rec.Body.String(), "x")
 }
