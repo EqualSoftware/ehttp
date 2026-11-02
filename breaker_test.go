@@ -346,7 +346,8 @@ func TestBreakerConcurrentAcrossStateChanges(t *testing.T) {
 		_ = bFail(cb)
 	}
 
-	ehttptest.Eq(t, "a high failure rate trips the breaker", cb.State().String(), "open")
+	_, err := cb.Execute(func() (int, error) { return 0, nil })
+	ehttptest.True(t, "a high failure rate trips the breaker", errors.Is(err, gobreaker.ErrOpenState), "err = %v", err)
 
 	var (
 		wg                sync.WaitGroup
@@ -394,7 +395,7 @@ func TestBreakerConcurrentAcrossStateChanges(t *testing.T) {
 	ehttptest.Eq(t, "gobreaker contract (only the callee error or a rejection)", unknown.Load(), int64(0))
 	ehttptest.True(t, "an open breaker rejects calls", rejected.Load() > 0, "no call was rejected")
 
-	// The calls end with successes only after the timeout, so it recovers.
+	// After the timeout a successful probe closes the breaker.
 	time.Sleep(10 * time.Millisecond)
 
 	for range 3 {

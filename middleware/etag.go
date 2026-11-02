@@ -22,8 +22,9 @@ const etagBufferLimit = 1 << 20
 // the body up to 1 MiB. A larger response is streamed without an ETag. A
 // response that already has an ETag (for example from SendFile) is not
 // buffered and keeps its ETag. An If-Match field answers 412 to a 2xx response
-// unless it is "*" (strong comparison, RFC 9110 section 13.1.1): the ETag is
-// weak. An If-Match or If-None-Match with an invalid syntax gets 400.
+// unless it is "*" or lists the strong ETag that the handler set (strong
+// comparison, RFC 9110 section 13.1.1). The ETag of this middleware is weak,
+// and a streamed response has no strong tag, so a list never matches them. An If-Match or If-None-Match with an invalid syntax gets 400.
 func WeakEtag() ehttp.MiddlewareHandlerFunc {
 	return func(next ehttp.Handler) ehttp.HandlerFunc {
 		return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
@@ -80,11 +81,6 @@ func (w *etagWriter) WriteHeader(code int) {
 
 	w.code = code
 
-	if code != ehttp.StatusOK && code >= 200 && code < 300 && w.Header().Get(ehttp.HeaderEtag) == "" && w.failsIfMatch("") {
-		w.preconditionFailed()
-		return
-	}
-
 	if code != ehttp.StatusOK || w.Header().Get(ehttp.HeaderEtag) != "" {
 		w.pass()
 	}
@@ -103,6 +99,10 @@ func (w *etagWriter) Write(b []byte) (int, error) {
 		w.pass()
 	}
 
+	if w.discard {
+		return len(b), nil
+	}
+
 	if w.passing {
 		return w.real.Write(b)
 	}
@@ -114,6 +114,10 @@ func (w *etagWriter) Write(b []byte) (int, error) {
 func (w *etagWriter) ReadFrom(r io.Reader) (int64, error) {
 	if w.code == 0 {
 		w.WriteHeader(ehttp.StatusOK)
+	}
+
+	if w.discard {
+		return io.Copy(io.Discard, r)
 	}
 
 	if rf, ok := w.real.(io.ReaderFrom); ok && w.passing {
@@ -141,6 +145,19 @@ func (w *etagWriter) pass() {
 		return
 	}
 
+	// The response is committed. A 2xx with no strong tag that If-Match lists
+	// (no tag, a weak tag, a flush or a body over the buffer limit) fails the
+	// precondition (RFC 9110 sections 13.1.1, 13.2.1).
+	if w.code >= 200 && w.code < 300 && w.failsIfMatch(w.Header().Get(ehttp.HeaderEtag)) {
+		w.preconditionFailed()
+		return
+	}
+
+	w.send()
+}
+
+// send commits the status and the buffered bytes.
+func (w *etagWriter) send() {
 	w.passing = true
 	w.i.Code = w.code
 	w.i.SendResponse(w.res)
@@ -159,13 +176,7 @@ func (w *etagWriter) finish(header http.Header) {
 	body := w.i.Buffer.Bytes()
 
 	if len(body) == 0 {
-		if w.code >= 200 && w.code < 300 && w.failsIfMatch("") {
-			w.preconditionFailed()
-			return
-		}
-
 		w.pass()
-
 		return
 	}
 
@@ -187,9 +198,8 @@ func (w *etagWriter) finish(header http.Header) {
 }
 
 // failsIfMatch reports that If-Match is there and does not match the current
-// tag by strong comparison (RFC 9110 sections 13.1.1, 13.2.2). The tag of this
-// middleware is weak, so only "*" matches. An empty tag is no representation
-// tag at all.
+// tag by strong comparison (RFC 9110 sections 13.1.1, 13.2.2). Only "*" matches
+// a weak tag or an empty one (no tag at all).
 func (w *etagWriter) failsIfMatch(tag string) bool {
 	return len(w.ifMatch) > 0 && !etag.MatchStrong(w.ifMatch, tag)
 }
@@ -201,9 +211,13 @@ func (w *etagWriter) preconditionFailed() {
 	h.Del(ehttp.HeaderContentLength)
 	h.Del(ehttp.HeaderContentType)
 	h.Del(ehttp.HeaderEtag)
+	h.Del(ehttp.HeaderContentRange)
+	h.Del(ehttp.HeaderContentEncoding)
+	h.Del(ehttp.HeaderLastModified)
+	h.Del(ehttp.HeaderContentDisposition)
 
 	w.i.Buffer.Reset()
 	w.code = ehttp.StatusPreconditionFailed
 	w.discard = true
-	w.pass()
+	w.send()
 }

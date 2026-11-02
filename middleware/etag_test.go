@@ -590,3 +590,115 @@ func TestWeakEtagIfMatchRealServer(t *testing.T) {
 		})
 	}
 }
+
+// If-Match on a response that is committed without the buffer: the handler
+// ETag decides (strong comparison); a flush, a weak tag, a body over the
+// buffer limit or no tag never match a list (RFC 9110 sections 13.1.1, 13.2.1).
+func TestWeakEtagIfMatchCommitted(t *testing.T) {
+	t.Parallel()
+
+	withTag := func(tag string) ehttp.HandlerFunc {
+		return func(res *ehttp.ResponseWriter, _ *ehttp.Request) {
+			res.Set("ETag", tag)
+			res.String("hello")
+		}
+	}
+
+	flushed := func(res *ehttp.ResponseWriter, _ *ehttp.Request) {
+		res.Set("Content-Type", "text/plain")
+		_, _ = res.Write([]byte("part"))
+		_ = http.NewResponseController(res).Flush()
+		_, _ = res.Write([]byte("more"))
+	}
+
+	large := func(res *ehttp.ResponseWriter, _ *ehttp.Request) {
+		res.String(strings.Repeat("x", 1<<20+10))
+	}
+
+	tests := []struct {
+		name, im string
+		h        ehttp.HandlerFunc
+		code     int
+	}{
+		{"strong tag, match", `"v1"`, withTag(`"v1"`), 200},
+		{"strong tag, list with match", `"a", "v1"`, withTag(`"v1"`), 200},
+		{"strong tag, no match", `"v2"`, withTag(`"v1"`), 412},
+		{"weak tag", `W/"v1"`, withTag(`W/"v1"`), 412},
+		{"weak tag, strong form", `"v1"`, withTag(`W/"v1"`), 412},
+		{"flush, list", `"v1"`, flushed, 412},
+		{"flush, wildcard", "*", flushed, 200},
+		{"large body, list", `"v1"`, large, 412},
+		{"large body, wildcard", "*", large, 200},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ts := httptest.NewServer(fixtures.Handler(tt.h, middleware.WeakEtag()))
+			defer ts.Close()
+
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/x", http.NoBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			req.Header.Set("If-Match", tt.im)
+
+			resp, err := ts.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			body, err := io.ReadAll(resp.Body)
+
+			ehttptest.Eq(t, "RFC 9110 §13.2.1", resp.StatusCode, tt.code)
+			ehttptest.True(t, "the response is read in full", err == nil, "read: %v", err)
+
+			if tt.code == 412 {
+				ehttptest.Eq(t, "RFC 9110 §15.5.13", len(body), 0)
+			}
+		})
+	}
+}
+
+// After the 412, a body copied with io.Copy from a reader with no WriterTo is
+// dropped, and the headers of the dropped representation are gone.
+func TestWeakEtagIfMatchDiscardsReadFrom(t *testing.T) {
+	t.Parallel()
+
+	h := func(res *ehttp.ResponseWriter, _ *ehttp.Request) {
+		res.Set("Content-Type", "text/plain")
+		res.Set("Content-Range", "bytes 0-4/5")
+		res.Set("Last-Modified", "Mon, 02 Jan 2006 15:04:05 GMT")
+		res.WriteHeader(206)
+		_, _ = io.Copy(res, struct{ io.Reader }{strings.NewReader("hello")})
+	}
+
+	ts := httptest.NewServer(fixtures.Handler(h, middleware.WeakEtag()))
+	defer ts.Close()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/x", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req.Header.Set("If-Match", `"nope"`)
+
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+
+	ehttptest.Eq(t, "RFC 9110 §13.2.1", resp.StatusCode, 412)
+	ehttptest.True(t, "the response is read in full", err == nil, "read: %v", err)
+	ehttptest.Eq(t, "RFC 9110 §15.5.13", len(body), 0)
+
+	for _, name := range []string{"Content-Type", "Content-Range", "Last-Modified"} {
+		ehttptest.Eq(t, "the dropped representation has no "+name, resp.Header.Get(name), "")
+	}
+}
