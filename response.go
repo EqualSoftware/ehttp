@@ -15,37 +15,38 @@ type Response struct {
 	*http.Response
 }
 
-// Retrieve the response.Header Cache-Control max-age as time.Duration
+// Retrieve the response.Header Cache-Control max-age as time.Duration. All
+// the Cache-Control lines are one list (RFC 9110 section 5.3). The directive
+// name is not case-sensitive, and the value can be a quoted-string (RFC 9111
+// section 5.2). The value is delta-seconds: digits only (RFC 9111 section
+// 1.2.2). An invalid value gives zero, which means stale. The first valid
+// max-age wins.
 func (res *Response) GetCacheControlMaxAge() time.Duration {
-	header := res.Header.Get("Cache-Control")
-	duration := time.Duration(0)
+	for _, line := range res.Header.Values("Cache-Control") {
+		for _, directive := range strings.Split(line, ",") {
+			name, value, ok := strings.Cut(strings.TrimSpace(directive), "=")
 
-	if header == "" {
-		return duration
-	}
-
-	directives := strings.Split(header, ",")
-
-	for _, directive := range directives {
-		directive = strings.TrimSpace(directive)
-
-		if strings.HasPrefix(directive, "max-age=") {
-			parts := strings.SplitN(directive, "=", 2)
-
-			if len(parts) == 2 {
-				age_string := strings.TrimSpace(parts[1])
-				age, err := strconv.Atoi(age_string)
-
-				duration = time.Duration(age) * time.Second
-
-				if err == nil {
-					break
-				}
+			if !ok || !strings.EqualFold(strings.TrimSpace(name), "max-age") {
+				continue
 			}
+
+			value = strings.TrimSpace(value)
+
+			if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+				value = value[1 : len(value)-1]
+			}
+
+			age, err := strconv.ParseUint(value, 10, 32)
+
+			if err != nil {
+				return 0
+			}
+
+			return time.Duration(age) * time.Second
 		}
 	}
 
-	return duration
+	return 0
 }
 
 // Read the response.Body as JSON. It reads the JSON value into memory.

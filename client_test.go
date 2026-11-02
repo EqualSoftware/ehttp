@@ -572,24 +572,22 @@ func TestResponseGetCacheControlMaxAge(t *testing.T) {
 		})
 	}
 
-	known := []struct {
-		id, name, basis string
-		lines           []string
-		want            time.Duration
+	more := []struct {
+		name, basis string
+		lines       []string
+		want        time.Duration
 	}{
-		{"cache-control-max-age-case-and-quotes", "directive names are case-insensitive", "RFC 9111 §5.2", []string{"MAX-AGE=60"}, time.Minute},
-		{"cache-control-max-age-case-and-quotes", "quoted-string form is accepted", "RFC 9111 §5.2", []string{`max-age="60"`}, time.Minute},
-		{"cache-control-negative-max-age", "negative value is invalid, treated as stale", "RFC 9111 §1.2.2", []string{"max-age=-5"}, 0},
-		{"cache-control-multiple-lines", "multiple header lines are one list", "RFC 9110 §5.3", []string{"public", "max-age=60"}, time.Minute},
+		{"directive names are case-insensitive", "RFC 9111 §5.2", []string{"MAX-AGE=60"}, time.Minute},
+		{"quoted-string form is accepted", "RFC 9111 §5.2", []string{`max-age="60"`}, time.Minute},
+		{"negative value is invalid, treated as stale", "RFC 9111 §1.2.2", []string{"max-age=-5"}, 0},
+		{"multiple header lines are one list", "RFC 9110 §5.3", []string{"public", "max-age=60"}, time.Minute},
 	}
 
-	for _, tt := range known {
+	for _, tt := range more {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			ehttptest.KnownBug(t, tt.id, func(t testing.TB) {
-				ehttptest.Eq(t, tt.basis, mk(tt.lines...).GetCacheControlMaxAge(), tt.want)
-			})
+			ehttptest.Eq(t, tt.basis, mk(tt.lines...).GetCacheControlMaxAge(), tt.want)
 		})
 	}
 }
