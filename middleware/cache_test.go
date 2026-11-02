@@ -1,7 +1,11 @@
 package middleware_test
 
 import (
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -161,4 +165,40 @@ func bootMessage(do func()) (msg string) {
 	do()
 
 	return ""
+}
+
+// readFromRecorder counts the calls of ReadFrom, like the sendfile path of net/http.
+type readFromRecorder struct {
+	*httptest.ResponseRecorder
+	calls int
+}
+
+func (r *readFromRecorder) ReadFrom(src io.Reader) (int64, error) {
+	r.calls++
+
+	return io.Copy(struct{ io.Writer }{r.ResponseRecorder}, src)
+}
+
+// Cache must not remove the ReadFrom fast path of SendFile.
+func TestCacheKeepsReadFrom(t *testing.T) {
+	t.Parallel()
+
+	name := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(name, []byte("0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for label, mw := range map[string]ehttp.MiddlewareHandlerFunc{"Cache": middleware.Cache(time.Minute), "ErrorCache": middleware.ErrorCache(time.Minute)} {
+		h := fixtures.Handler(func(res *ehttp.ResponseWriter, _ *ehttp.Request) { res.SendFile(name) }, mw)
+		rec := &readFromRecorder{ResponseRecorder: httptest.NewRecorder()}
+		h.ServeHTTP(rec, fixtures.Req("GET", "/x"))
+
+		ehttptest.Eq(t, label+" body", rec.Body.String(), "0123456789")
+		ehttptest.True(t, label+" passes ReadFrom to the inner writer", rec.calls > 0, "ReadFrom calls = %d", rec.calls)
+	}
+
+	rec := httptest.NewRecorder() // no ReaderFrom inside: io.Copy fallback
+	fixtures.Handler(func(res *ehttp.ResponseWriter, _ *ehttp.Request) { res.SendFile(name) }, middleware.Cache(time.Minute)).ServeHTTP(rec, fixtures.Req("GET", "/x"))
+	ehttptest.Eq(t, "fallback body", rec.Body.String(), "0123456789")
+	ehttptest.True(t, "Cache applies on the ReadFrom path", strings.Contains(rec.Header().Get("Cache-Control"), "max-age=60"), "Cache-Control %q", rec.Header().Get("Cache-Control"))
 }

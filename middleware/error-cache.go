@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bufio"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -17,6 +18,33 @@ const noStore = "no-store"
 type errorCacheConfig struct {
 	duration time.Duration
 	byStatus map[int]time.Duration
+	// Built once at boot: the header values, [0] public and [1] private.
+	def    [2]string
+	values map[int][2]string
+}
+
+// build computes the header values, so a request only reads them.
+func (cfg *errorCacheConfig) build() {
+	cfg.def = lifetimeValues(cfg.duration, true)
+	cfg.values = make(map[int][2]string, len(cfg.byStatus))
+
+	for code, d := range cfg.byStatus {
+		cfg.values[code] = lifetimeValues(d, false)
+	}
+}
+
+// lifetimeValues returns the public and private values of a lifetime. Zero
+// is no-store for a default and no header for a status that the author set.
+func lifetimeValues(d time.Duration, isDefault bool) [2]string {
+	if d == 0 {
+		if isDefault {
+			return [2]string{noStore, noStore}
+		}
+
+		return [2]string{}
+	}
+
+	return [2]string{ehttp.CacheControl(d, false), ehttp.CacheControl(d, true)}
 }
 
 // ErrorCacheOption changes the lifetime of one error status.
@@ -88,31 +116,27 @@ func (cfg *errorCacheConfig) value(code int, auth bool) string {
 		return noStore
 	}
 
-	d, set := cfg.byStatus[code]
+	v, set := cfg.values[code]
 	if !set && !heuristic(code) {
 		return noStore
 	}
 
 	if !set {
-		d = cfg.duration
+		v = cfg.def
 	}
 
-	switch {
-	case d > 0:
-		private := auth || code == ehttp.StatusUnauthorized || code == ehttp.StatusForbidden || code == ehttp.StatusProxyAuthRequired
-
-		return ehttp.CacheControl(d, private)
-	case set:
-		return "" // the author turned this status off
+	if auth || code == ehttp.StatusUnauthorized || code == ehttp.StatusForbidden || code == ehttp.StatusProxyAuthRequired {
+		return v[1]
 	}
 
-	return noStore
+	return v[0]
 }
 
 // ErrorCache sets Cache-Control on each error response (status 400 to 599)
 // that has none. A Cache-Control from the handler or an inner middleware wins.
 //
-// Defaults, by status:
+// Defaults, by status (ErrorCacheStatus(code, 0) sends no header, so an outer
+// ErrorCache can still decide: only the outermost off switch is final):
 //   - 404, 405, 410, 414 and 501 get the lifetime duration: they are
 //     heuristically cacheable (RFC 9110 §15.1). With duration zero they get
 //     no-store.
@@ -130,6 +154,9 @@ func (cfg *errorCacheConfig) value(code int, auth bool) string {
 // a bad header can make the origin answer with an error, and a cache that
 // stores that error by URL then serves it to every client.
 //
+// Put ErrorCache outside WeakEtag to decide the 412 of WeakEtag. Inside, the
+// 412 has no Cache-Control, which is safe.
+//
 // It needs only the status, so it does not buffer the body: the writer reads
 // the final status and passes every write through.
 func ErrorCache(duration time.Duration, opts ...ErrorCacheOption) ehttp.MiddlewareHandlerFunc {
@@ -143,6 +170,8 @@ func ErrorCache(duration time.Duration, opts ...ErrorCacheOption) ehttp.Middlewa
 	for _, opt := range opts {
 		opt(cfg)
 	}
+
+	cfg.build()
 
 	return cacheControlMiddleware(cfg.value)
 }
@@ -204,6 +233,17 @@ func (c *cacheControlWriter) Write(b []byte) (int, error) {
 	c.WriteHeader(ehttp.StatusOK)
 
 	return c.ResponseWriter.Write(b)
+}
+
+// ReadFrom keeps the sendfile path of the real writer.
+func (c *cacheControlWriter) ReadFrom(r io.Reader) (int64, error) {
+	c.WriteHeader(ehttp.StatusOK)
+
+	if rf, ok := c.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+
+	return io.Copy(struct{ io.Writer }{c.ResponseWriter}, r)
 }
 
 func (c *cacheControlWriter) Flush() {
