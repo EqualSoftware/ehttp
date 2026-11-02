@@ -77,6 +77,7 @@ func bench(b *testing.B, h http.Handler, req *http.Request) {
 
 	w := newDiscard()
 	for b.Loop() {
+		clear(w.h) // a fresh header each request: the first write of each field is measured
 		h.ServeHTTP(w, req)
 	}
 }

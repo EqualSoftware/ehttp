@@ -162,7 +162,8 @@ func bTimeoutServer(t *testing.T, outer ehttp.MiddlewareHandlerFunc, h ehttp.Han
 	return ts
 }
 
-// A 503 is never cached (RFC 9110 §15.6.4).
+// Timeout itself sets no Cache-Control on its 503 (RFC 9110 §15.6.4). The cache
+// policy of an error is for ErrorCache; a Cache outside Timeout is not covered here.
 func TestTimeout503IsNotCached(t *testing.T) {
 	t.Parallel()
 

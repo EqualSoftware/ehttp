@@ -13,8 +13,8 @@ import (
 // handler runs in the same goroutine and must respect the context. If the
 // deadline passed and no header was sent, it sends 503. It sets no
 // Cache-Control: a 503 is not heuristically cacheable (RFC 9110 §15.6.4), so
-// without ErrorCache a cache does not store it. With ErrorCache, its lifetime
-// for the status decides.
+// without an explicit lifetime, a cache does not store it; use ErrorCache for
+// the error cache policy.
 func Timeout(timeout time.Duration) ehttp.MiddlewareHandlerFunc {
 	if timeout <= 0 {
 		hook.BootPanic("Timeout", "duration "+timeout.String(), "a deadline of zero or less is already past, so each request would get 503 (context.WithTimeout)",

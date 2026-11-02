@@ -1,8 +1,11 @@
 package ehttp
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -377,4 +380,103 @@ func TestQuoteValueCutsOnARuneBoundary(t *testing.T) {
 	got := quoteValue(v)
 
 	ehttptest.True(t, ownBasis, strings.HasSuffix(got, `"...`) && !strings.Contains(got, `\x`), "got %s", got)
+}
+
+func TestOwnedWarningRedactsSecrets(t *testing.T) {
+	t.Parallel()
+
+	const mine, theirs = "Bearer mw-secret", "Bearer handler-secret"
+
+	owner := func(next Handler) HandlerFunc {
+		return func(res *ResponseWriter, req *Request) {
+			res.Own("Authorization", mine)
+			next.ServeHTTP(res, req)
+		}
+	}
+
+	_, logs, msg := aServe(Development, func(res *ResponseWriter, _ *Request) {
+		res.Set("Authorization", theirs)
+		res.String("ok")
+	}, owner)
+
+	ehttptest.Eq(t, ownBasis, msg, "")
+	ehttptest.Eq(t, ownBasis, logs.Len(), 1)
+
+	e := logs.All()[0]
+	ctx := e.ContextMap()
+	ehttptest.Eq(t, ownBasis+" (middleware_value)", ctx["middleware_value"], any("***"))
+	ehttptest.Eq(t, ownBasis+" (handler_value)", ctx["handler_value"], any("***"))
+
+	all := e.Message
+	for _, f := range e.Context {
+		all += " " + f.String
+	}
+
+	ehttptest.True(t, ownBasis+" (secret hidden)", strings.Contains(all, "***") && !strings.Contains(all, "secret"), "log %q", all)
+}
+
+type plainReader struct{ r io.Reader }
+
+func (p plainReader) Read(b []byte) (int, error) { return p.r.Read(b) }
+
+func TestOwnedOverrideOnEverySendPath(t *testing.T) {
+	t.Parallel()
+
+	file := filepath.Join(t.TempDir(), "f.txt")
+	ehttptest.Eq(t, ownBasis, os.WriteFile(file, []byte("data"), 0o600), error(nil))
+
+	tests := []struct {
+		name string
+		do   HandlerFunc
+	}{
+		{"Flush", func(res *ResponseWriter, _ *Request) { res.Set("X-Owned", "h"); res.Flush() }},
+		{"ReadFrom", func(res *ResponseWriter, _ *Request) {
+			res.Set("X-Owned", "h")
+			_, _ = io.Copy(res, plainReader{strings.NewReader("body")})
+		}},
+		{"SendFile", func(res *ResponseWriter, _ *Request) { res.Set("X-Owned", "h"); res.SendFile(file) }},
+		{"Redirect", func(res *ResponseWriter, _ *Request) { res.Set("X-Owned", "h"); res.Redirect("/y") }},
+		{"raw Header + Flush", func(res *ResponseWriter, _ *Request) { res.Header().Set("X-Owned", "h"); res.Flush() }},
+		{"raw Header + Redirect", func(res *ResponseWriter, _ *Request) { res.Header().Set("X-Owned", "h"); res.Redirect("/y") }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec, logs, msg := aServe(Development, tt.do, aOwner)
+
+			ehttptest.Eq(t, ownBasis, msg, "")
+			ehttptest.Eq(t, ownBasis+" (handler value sent)", rec.Result().Header.Get("X-Owned"), "h")
+			ehttptest.Eq(t, ownBasis+" (one warning)", logs.FilterField(zap.String("rule", overrideRule)).Len(), 1)
+		})
+	}
+}
+
+func TestOwnedVaryThroughInterceptor(t *testing.T) {
+	t.Parallel()
+
+	buffered := func(next Handler) HandlerFunc {
+		return func(res *ResponseWriter, req *Request) {
+			ires, i := WithResponseWriter(res)
+			next.ServeHTTP(ires, req)
+			i.SendResponse(res)
+		}
+	}
+
+	do := func(res *ResponseWriter, _ *Request) {
+		res.Header().Del("Vary")
+		res.String("ok")
+	}
+
+	for _, mode := range []Mode{Development, Production} {
+		rec, logs, msg := aServe(mode, do, buffered, aOwner)
+		ehttptest.Eq(t, ownBasis, msg, "")
+		ehttptest.Eq(t, "RFC 9110 §12.5.5 (inner member present)", rec.Result().Header.Get("Vary"), "Owner")
+		ehttptest.Eq(t, ownBasis, logs.FilterField(zap.String("header", "Vary")).Len(), 0)
+
+		// The member of the outer middleware is kept too.
+		rec, _, _ = aServe(mode, do, aOwner, buffered)
+		ehttptest.Eq(t, "RFC 9110 §12.5.5 (outer member present)", rec.Result().Header.Get("Vary"), "Owner")
+	}
 }
