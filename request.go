@@ -22,6 +22,7 @@ type Request struct {
 
 	proxies trustedProxies
 	peer    uint8
+	res     *ResponseWriter            // for Vary; nil in a Request built by hand
 	logger  *zap.Logger                // the server logger; nil in a Request built by hand
 	log     atomic.Pointer[zap.Logger] // logger with the request fields, built on first use
 }
@@ -151,7 +152,13 @@ func (req *Request) Param(name string) string {
 	return req.Request.PathValue(name)
 }
 
+// Accepts reports if the Accept header allows the media type value. The answer
+// depends on Accept, so it adds Accept to Vary (RFC 9110 §12.5.5).
 func (req *Request) Accepts(value string) bool {
+	if req.res != nil {
+		req.res.varyQuiet(HeaderAccept)
+	}
+
 	accept := req.Header(HeaderAccept)
 
 	if accept == "" || strings.Contains(accept, "*/*") {

@@ -49,21 +49,21 @@ func TestResponseHeaderPanics(t *testing.T) {
 		{"Vary value with LF", "RFC 9110 §5.5", "Vary", func(r *ResponseWriter) { r.Vary("a\nb") }},
 		{"Append empty member", "RFC 9110 §5.6.1.1", "empty member", func(r *ResponseWriter) { r.Append("X-A", "a", "") }},
 		{"Append blank member", "RFC 9110 §5.6.1.1", "empty member", func(r *ResponseWriter) { r.Append("X-A", " ") }},
-		{"Append Content-Type", "RFC 9110 §8.3", "use Set", func(r *ResponseWriter) { r.Append("Content-Type", "a") }},
-		{"Append Content-Length", "RFC 9110 §8.6", "use Set", func(r *ResponseWriter) { r.Append("content-length", "1") }},
-		{"Append Location", "RFC 9110 §10.2.2", "use Set", func(r *ResponseWriter) { r.Append("Location", "/") }},
-		{"Append ETag", "RFC 9110 §8.8.3", "use Set", func(r *ResponseWriter) { r.Append("ETag", "x") }},
-		{"Append Last-Modified", "RFC 9110 §8.8.2", "use Set", func(r *ResponseWriter) { r.Append("Last-Modified", "x") }},
-		{"Append Content-Range", "RFC 9110 §14.4", "use Set", func(r *ResponseWriter) { r.Append("Content-Range", "x") }},
-		{"Append Retry-After", "RFC 9110 §10.2.3", "use Set", func(r *ResponseWriter) { r.Append("Retry-After", "1") }},
-		{"Append ACAO", "Fetch §3.3.4", "use Set", func(r *ResponseWriter) { r.Append("Access-Control-Allow-Origin", "*") }},
-		{"Append ACAC", "Fetch §3.3.4", "use Set", func(r *ResponseWriter) { r.Append("Access-Control-Allow-Credentials", "true") }},
-		{"Append ACMA", "Fetch §3.3.4", "use Set", func(r *ResponseWriter) { r.Append("Access-Control-Max-Age", "1") }},
-		{"Set Set-Cookie", "RFC 6265 §3", "use Cookie", func(r *ResponseWriter) { r.Set("Set-Cookie", "a=1") }},
-		{"Append Set-Cookie", "RFC 6265 §3", "use Cookie", func(r *ResponseWriter) { r.Append("Set-Cookie", "a=1") }},
-		{"Set Vary", "RFC 9110 §12.5.5", "use Vary", func(r *ResponseWriter) { r.Set("Vary", "a") }},
-		{"Append Vary", "RFC 9110 §12.5.5", "use Vary", func(r *ResponseWriter) { r.Append("vary", "a") }},
-		{"Remove Vary", "RFC 9110 §12.5.5", "use Vary", func(r *ResponseWriter) { r.Remove("Vary") }},
+		{"Append Content-Type", "RFC 9110 §8.3", "res.Set(", func(r *ResponseWriter) { r.Append("Content-Type", "a") }},
+		{"Append Content-Length", "RFC 9110 §8.6", "res.Set(", func(r *ResponseWriter) { r.Append("content-length", "1") }},
+		{"Append Location", "RFC 9110 §10.2.2", "res.Set(", func(r *ResponseWriter) { r.Append("Location", "/") }},
+		{"Append ETag", "RFC 9110 §8.8.3", "res.Set(", func(r *ResponseWriter) { r.Append("ETag", "x") }},
+		{"Append Last-Modified", "RFC 9110 §8.8.2", "res.Set(", func(r *ResponseWriter) { r.Append("Last-Modified", "x") }},
+		{"Append Content-Range", "RFC 9110 §14.4", "res.Set(", func(r *ResponseWriter) { r.Append("Content-Range", "x") }},
+		{"Append Retry-After", "RFC 9110 §10.2.3", "res.Set(", func(r *ResponseWriter) { r.Append("Retry-After", "1") }},
+		{"Append ACAO", "Fetch §3.3.4", "res.Set(", func(r *ResponseWriter) { r.Append("Access-Control-Allow-Origin", "*") }},
+		{"Append ACAC", "Fetch §3.3.4", "res.Set(", func(r *ResponseWriter) { r.Append("Access-Control-Allow-Credentials", "true") }},
+		{"Append ACMA", "Fetch §3.3.4", "res.Set(", func(r *ResponseWriter) { r.Append("Access-Control-Max-Age", "1") }},
+		{"Set Set-Cookie", "RFC 6265 §3", "res.Cookie(", func(r *ResponseWriter) { r.Set("Set-Cookie", "a=1") }},
+		{"Append Set-Cookie", "RFC 6265 §3", "res.Cookie(", func(r *ResponseWriter) { r.Append("Set-Cookie", "a=1") }},
+		{"Set Vary", "RFC 9110 §12.5.5", "res.Vary(", func(r *ResponseWriter) { r.Set("Vary", "a") }},
+		{"Append Vary", "RFC 9110 §12.5.5", "res.Vary(", func(r *ResponseWriter) { r.Append("vary", "a") }},
+		{"Remove Vary", "RFC 9110 §12.5.5", "res.Vary(", func(r *ResponseWriter) { r.Remove("Vary") }},
 		{"Set after sent", "author decision", "already sent", func(r *ResponseWriter) { sent(r).Set("X-A", "1") }},
 		{"Append after sent", "author decision", "already sent", func(r *ResponseWriter) { sent(r).Append("X-A", "1") }},
 		{"Remove after sent", "author decision", "already sent", func(r *ResponseWriter) { sent(r).Remove("X-A") }},
@@ -80,13 +80,13 @@ func TestResponseHeaderPanics(t *testing.T) {
 		{"WriteHeader 700", "RFC 9110 §15", "outside", func(r *ResponseWriter) { r.WriteHeader(700) }},
 		{"Status 1xx", "RFC 9110 §15.2", "informational", func(r *ResponseWriter) { r.Status(103) }},
 		{"SendStatus 1xx", "RFC 9110 §15.2", "informational", func(r *ResponseWriter) { r.SendStatus(100) }},
-		{"String twice", "RFC 9110 §6.4.1", "response already sent", func(r *ResponseWriter) { sent(r).String("y") }},
-		{"JSON after String", "RFC 9110 §6.4.1", "response already sent", func(r *ResponseWriter) { sent(r).JSON(1) }},
-		{"Send after String", "RFC 9110 §6.4.1", "response already sent", func(r *ResponseWriter) { sent(r).Send(nil) }},
-		{"Error after String", "RFC 9110 §6.4.1", "response already sent", func(r *ResponseWriter) { sent(r).Error(errors.New("e")) }},
-		{"Redirect after String", "RFC 9110 §6.4.1", "response already sent", func(r *ResponseWriter) { sent(r).Redirect("/") }},
-		{"SendFile after String", "RFC 9110 §6.4.1", "response already sent", func(r *ResponseWriter) { sent(r).SendFile("x") }},
-		{"Render after String", "RFC 9110 §6.4.1", "response already sent", func(r *ResponseWriter) { sent(r).Render("x", nil) }},
+		{"String twice", "RFC 9110 §6.4.1", "already sent a body", func(r *ResponseWriter) { sent(r).String("y") }},
+		{"JSON after String", "RFC 9110 §6.4.1", "already sent a body", func(r *ResponseWriter) { sent(r).JSON(1) }},
+		{"Send after String", "RFC 9110 §6.4.1", "already sent a body", func(r *ResponseWriter) { sent(r).Send(nil) }},
+		{"Error after String", "RFC 9110 §6.4.1", "already sent a body", func(r *ResponseWriter) { sent(r).Error(errors.New("e")) }},
+		{"Redirect after String", "RFC 9110 §6.4.1", "already sent a body", func(r *ResponseWriter) { sent(r).Redirect("/") }},
+		{"SendFile after String", "RFC 9110 §6.4.1", "already sent a body", func(r *ResponseWriter) { sent(r).SendFile("x") }},
+		{"Render after String", "RFC 9110 §6.4.1", "already sent a body", func(r *ResponseWriter) { sent(r).Render("x", nil) }},
 	}
 
 	for _, tt := range tests {
@@ -326,7 +326,7 @@ func TestResponseWriterInterceptorBodySent(t *testing.T) {
 
 	msg := aPanics(func() { outer.String("y") })
 
-	ehttptest.True(t, "author decision 2026-11-01 (review: SendResponse is a body)", strings.Contains(msg, "response already sent"), "message %q", msg)
+	ehttptest.True(t, "author decision 2026-11-01 (review: SendResponse is a body)", strings.Contains(msg, "already sent a body"), "message %q", msg)
 }
 
 func TestBootValidation(t *testing.T) {

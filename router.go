@@ -66,7 +66,8 @@ func (r *Router) Route(prefix string, m ...MiddlewareHandlerFunc) *Router {
 // parent, so the middlewares of the outer group run first.
 func (r *Router) Handle(method, pattern string, h HandlerFunc, m ...MiddlewareHandlerFunc) {
 	if !validFieldName(method) {
-		panic("ehttp: Handle: method " + strconv.Quote(method) + " is not a token (RFC 9110 §9.1)")
+		bootPanic("Handle", "method "+quoteValue(method), "it is not a token (RFC 9110 §9.1)",
+			"use a method name such as \"GET\", or a helper such as router.GET")
 	}
 
 	if r.parent != nil {
@@ -118,7 +119,8 @@ func compileSegments(pattern string, segments []string) []*regexp.Regexp {
 
 		// Compile expr alone first: an unbalanced ")" must not escape the group.
 		if _, err := regexp.Compile(expr); err != nil {
-			panic("ehttp: invalid route regex " + strconv.Quote(expr) + " in pattern " + strconv.Quote(pattern) + ": " + err.Error())
+			bootPanic("route "+quoteValue(pattern), "regex "+quoteValue(expr), "it does not compile: "+err.Error()+" (RE2 syntax)",
+				"write a valid RE2 expression, for example \":id|[0-9]+\"")
 		}
 
 		re := regexp.MustCompile("^(?:" + expr + ")$")
@@ -168,7 +170,9 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		request:  r,
 		req:      req,
 		template: router.template,
+		mode:     router.mode,
 	}
+	req.res = res
 
 	corsUpdateHeaders(res, req, router.cors)
 
@@ -281,7 +285,7 @@ func (r *Router) optionsHandler(res *ResponseWriter, req *Request) {
 	res.Vary(HeaderAccessControlRequestHeaders)
 
 	if corsAcceptOrigin(req, r.cors) && corsAcceptMethod(req, r.cors) && corsAcceptHeaders(req, r.cors) {
-		SetCacheHeader(res, 0)
+		res.Own(HeaderCacheControl, CacheControl(0, false))
 		corsPreflightHeaders(res, req, r.cors)
 
 		res.SendStatus(StatusOK)
@@ -363,7 +367,7 @@ func corsUpdateHeaders(res *ResponseWriter, req *Request, options *CorsOptions) 
 	wildcard := slices.Contains(options.Origin, "*")
 
 	if !wildcard {
-		res.Vary(HeaderOrigin)
+		res.OwnVary(HeaderOrigin)
 	}
 
 	origin := req.Origin()
@@ -376,8 +380,8 @@ func corsUpdateHeaders(res *ResponseWriter, req *Request, options *CorsOptions) 
 		origin = "*"
 	}
 
-	res.Set(HeaderAccessControlAllowOrigin, origin)
-	res.Set(HeaderAccessControlAllowCredentials, strconv.FormatBool(options.Credentials))
+	res.Own(HeaderAccessControlAllowOrigin, origin)
+	res.Own(HeaderAccessControlAllowCredentials, strconv.FormatBool(options.Credentials))
 }
 
 // corsPreflightHeaders sets the headers that a browser reads only from the
@@ -424,19 +428,22 @@ func corsEcho(req *Request, name string) []string {
 func validateCors(o *CorsOptions) {
 	for _, origin := range o.Origin {
 		if origin == "" || !validFieldValue(origin) {
-			panic("ehttp: CORS Origin entry " + strconv.Quote(origin) + " is empty or not a valid field value (RFC 9110 §5.5)")
+			bootPanic("WithCors", "Origin entry "+quoteValue(origin), "it is empty or not a valid field value (RFC 9110 §5.5)",
+				"use an origin such as \"https://app.example\", or \"*\"")
 		}
 	}
 
 	for _, method := range o.Methods {
 		if method != "*" && !validFieldName(method) {
-			panic("ehttp: CORS Methods entry " + strconv.Quote(method) + " is not a token (RFC 9110 §9.1)")
+			bootPanic("WithCors", "Methods entry "+quoteValue(method), "it is not a token (RFC 9110 §9.1)",
+				"use a method such as \"GET\", or \"*\"")
 		}
 	}
 
 	for _, header := range o.Headers {
 		if header != "*" && !validFieldName(header) {
-			panic("ehttp: CORS Headers entry " + strconv.Quote(header) + " is not a token (RFC 9110 §5.6.2)")
+			bootPanic("WithCors", "Headers entry "+quoteValue(header), "it is not a token (RFC 9110 §5.6.2)",
+				"use a header name such as \"Content-Type\", or \"*\"")
 		}
 	}
 }

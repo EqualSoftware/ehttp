@@ -62,7 +62,8 @@ func WithMode(m Mode) serverOption {
 // A nil logger panics. The server never changes the global zap logger.
 func WithLogger(l *zap.Logger) serverOption {
 	if l == nil {
-		panic("ehttp: WithLogger needs a logger")
+		bootPanic("WithLogger", "a nil logger", "the server needs a logger for its own messages (author decision)",
+			"pass a *zap.Logger, or remove WithLogger to use the preset of WithMode")
 	}
 
 	return func(s *Server) { s.router.logger = l }
@@ -77,7 +78,8 @@ func presetLogger(m Mode) *zap.Logger {
 
 	l, err := build()
 	if err != nil {
-		panic("ehttp: cannot build the logger: " + err.Error())
+		bootPanic("WithMode", "the logger preset", "zap cannot build it: "+err.Error(),
+			"pass your own logger with WithLogger")
 	}
 
 	return l
@@ -86,7 +88,8 @@ func presetLogger(m Mode) *zap.Logger {
 // mustBeNonNegative panics when a duration option is negative.
 func mustBeNonNegative(option string, d time.Duration) {
 	if d < 0 {
-		panic("ehttp: " + option + " cannot be negative")
+		bootPanic(option, "duration "+d.String(), "a timeout cannot be negative (net/http.Server)",
+			"use zero for no limit, or a positive duration, for example "+option+"(30 * time.Second)")
 	}
 }
 
@@ -132,7 +135,8 @@ func WithIdleTimeout(d time.Duration) serverOption {
 // WithMaxHeaderBytes sets http.Server.MaxHeaderBytes.
 func WithMaxHeaderBytes(n int) serverOption {
 	if n < 0 {
-		panic("ehttp: WithMaxHeaderBytes cannot be negative")
+		bootPanic("WithMaxHeaderBytes", "size "+strconv.Itoa(n), "a size cannot be negative (net/http.Server)",
+			"use zero for the net/http default, or a positive size, for example WithMaxHeaderBytes(1 << 20)")
 	}
 
 	return func(s *Server) { s.maxHeaderBytes = n }
@@ -164,7 +168,7 @@ func WithTemplates(v string) serverOption {
 		t, err := template.ParseGlob(v)
 
 		if err != nil {
-			panic(fmt.Errorf("ehttp: WithTemplates: %w", err))
+			panic(fmt.Errorf("ehttp: pattern %s in WithTemplates: html/template cannot load it (%w). Fix: %s", quoteValue(v), err, "pass a glob that matches valid template files, for example \"views/*.html\"."))
 		}
 
 		s.router.template = t
@@ -222,7 +226,8 @@ func NewServer(options ...serverOption) *Server {
 	}
 
 	if server.router.cors.Credentials && slices.Contains(server.router.cors.Origin, "*") {
-		panic("ehttp: CORS Credentials cannot be used with the * origin")
+		bootPanic("WithCors", "Credentials with the \"*\" origin", "a browser refuses a wildcard origin on a response with credentials (Fetch §3.3.5)",
+			"list the origins, for example CorsOptions{Origin: []string{\"https://app.example\"}, Credentials: true}")
 	}
 
 	validateCors(server.router.cors)

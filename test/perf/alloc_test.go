@@ -50,24 +50,24 @@ func TestAllocsHotPaths(t *testing.T) { //nolint:paralleltest // AllocsPerRun is
 		name    string
 		h       http.Handler
 		req     *http.Request
-		ceiling float64 // measured 2026-11-01
+		ceiling float64 // measured after the owned headers (B7c); keep equal to the measure
 	}{
-		{"router static first route", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/authorizations", http.NoBody), 7},
-		{"router static mid", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/gists/public", http.NoBody), 7},
-		{"router static deep (scan ~236)", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/user/keys", http.NoBody), 7},
-		{"router 1 param", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/users/octocat", http.NoBody), 7},
-		{"router 3 params", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/repos/o/r/issues/42/comments", http.NoBody), 7},
-		{"router wildcard", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/repos/o/r/contents/a/b/c.txt", http.NoBody), 8},
-		{"router regex (compiled per request, S12)", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/regex/12345", http.NoBody), 35},
-		{"router 404", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/this/path/does/not/exist", http.NoBody), 8},
-		{"router 405 (C1 path)", gh, httptest.NewRequestWithContext(context.Background(), "DELETE", "/user/keys/1", http.NoBody), 14},
+		{"router static first route", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/authorizations", http.NoBody), 3},
+		{"router static mid", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/gists/public", http.NoBody), 3},
+		{"router static deep (scan ~236)", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/user/keys", http.NoBody), 3},
+		{"router 1 param", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/users/octocat", http.NoBody), 3},
+		{"router 3 params", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/repos/o/r/issues/42/comments", http.NoBody), 3},
+		{"router wildcard", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/repos/o/r/contents/a/b/c.txt", http.NoBody), 4},
+		{"router regex (compiled per request, S12)", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/regex/12345", http.NoBody), 3},
+		{"router 404", gh, httptest.NewRequestWithContext(context.Background(), "GET", "/this/path/does/not/exist", http.NoBody), 4},
+		{"router 405 (C1 path)", gh, httptest.NewRequestWithContext(context.Background(), "DELETE", "/user/keys/1", http.NoBody), 8},
 		{"cors simple", cors, simple, 5},
-		{"cors preflight", cors, preflight, 9},
+		{"cors preflight", cors, preflight, 7},
 		{"route with Log middleware (nop logger)", logSrv, httptest.NewRequestWithContext(context.Background(), "GET", "/", http.NoBody), 6},
-		{"stack GET / html (no Accept)", stack, httptest.NewRequestWithContext(context.Background(), "GET", "/", http.NoBody), 77},
-		{"stack GET / plain", stack, plainRoot, 99},
-		{"stack GET /api/v1/hello/:name", stack, httptest.NewRequestWithContext(context.Background(), "GET", "/api/v1/hello/octocat", http.NoBody), 49},
-		{"stack 404", stack, httptest.NewRequestWithContext(context.Background(), "GET", "/nope", http.NoBody), 43},
+		{"stack GET / html (no Accept)", stack, httptest.NewRequestWithContext(context.Background(), "GET", "/", http.NoBody), 72},
+		{"stack GET / plain", stack, plainRoot, 94},
+		{"stack GET /api/v1/hello/:name", stack, httptest.NewRequestWithContext(context.Background(), "GET", "/api/v1/hello/octocat", http.NoBody), 46},
+		{"stack 404", stack, httptest.NewRequestWithContext(context.Background(), "GET", "/nope", http.NoBody), 40},
 	}
 
 	for _, c := range cases {

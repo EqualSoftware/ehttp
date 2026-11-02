@@ -247,41 +247,41 @@ func TestGolden(t *testing.T) { //nolint:paralleltest // WithCors mutates a glob
 	origin := map[string]string{"Origin": "http://localhost:3000"}
 
 	scenarios := []goldenScenario{
-		{name: "get_root_html", bug: "S3+S10+S11+C9", method: "GET", path: "/", headers: htmlAccept},
-		{name: "get_root_json", bug: "S3+S10+S11+C9", method: "GET", path: "/", headers: map[string]string{"Accept": "application/json"}},
-		{name: "get_root_plain_default", bug: "S3+S10+S11+C9", method: "GET", path: "/"},
-		{name: "head_root", bug: "S3+S10+S11+C9", method: "HEAD", path: "/", headers: htmlAccept},
-		{name: "cors_simple_allowed_origin", bug: "S3+C9", method: "GET", path: "/healthcheck", headers: origin},
-		{name: "cors_simple_foreign_origin", bug: "S3+C9", method: "GET", path: "/healthcheck", headers: map[string]string{"Origin": "http://evil.example"}},
-		{name: "cors_preflight_allowed", bug: "S3+S10+C9", method: "OPTIONS", path: "/body", headers: map[string]string{
+		{name: "get_root_html", bug: "C9", method: "GET", path: "/", headers: htmlAccept},
+		{name: "get_root_json", bug: "C9", method: "GET", path: "/", headers: map[string]string{"Accept": "application/json"}},
+		{name: "get_root_plain_default", bug: "C9", method: "GET", path: "/"},
+		{name: "head_root", bug: "C9", method: "HEAD", path: "/", headers: htmlAccept},
+		{name: "cors_simple_allowed_origin", bug: "C9", method: "GET", path: "/healthcheck", headers: origin},
+		{name: "cors_simple_foreign_origin", bug: "C9", method: "GET", path: "/healthcheck", headers: map[string]string{"Origin": "http://evil.example"}},
+		{name: "cors_preflight_allowed", bug: "C9", method: "OPTIONS", path: "/body", headers: map[string]string{
 			"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST",
 		}},
-		{name: "cors_preflight_allowed_with_sec_fetch_site", bug: "S3+C9", method: "OPTIONS", path: "/body", headers: map[string]string{
+		{name: "cors_preflight_allowed_with_sec_fetch_site", bug: "C9", method: "OPTIONS", path: "/body", headers: map[string]string{
 			"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST", "Sec-Fetch-Site": "cross-site",
 		}},
-		{name: "cors_preflight_foreign", bug: "S3+S10+C9", method: "OPTIONS", path: "/body", headers: map[string]string{
+		{name: "cors_preflight_foreign", bug: "C9", method: "OPTIONS", path: "/body", headers: map[string]string{
 			"Origin": "http://evil.example", "Access-Control-Request-Method": "POST", "Sec-Fetch-Site": "cross-site",
 		}},
-		{name: "conditional_etag_304", bug: "S3+S10+S11+C9", method: "GET", path: "/", headers: htmlAccept, before: goldenETag},
-		{name: "conditional_if_modified_since_root", bug: "S3+S10+S11+C9+C14", method: "GET", path: "/", headers: map[string]string{
+		{name: "conditional_etag_304", bug: "C9", method: "GET", path: "/", headers: htmlAccept, before: goldenETag},
+		{name: "conditional_if_modified_since_root", bug: "C9+C14", method: "GET", path: "/", headers: map[string]string{
 			"If-Modified-Since": goldenFixedTime.Format(http.TimeFormat),
 		}},
-		{name: "file_full", bug: "S3+S10+C9", method: "GET", path: "/file"},
-		{name: "file_head", bug: "S3+S10+C9", method: "HEAD", path: "/file"},
-		{name: "file_range_0_9", bug: "S3+S10+C9", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-9"}},
-		{name: "file_range_0_0", bug: "S3+S10+C9+C2", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-0"}},
-		{name: "file_range_suffix", bug: "S3+S10+C9+C2", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=-5"}},
-		{name: "file_range_unsatisfiable", bug: "S3+S10+C9+C2", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=99999999-"}},
-		{name: "file_if_modified_since", bug: "S3+S10+C9", method: "GET", path: "/file", headers: map[string]string{
+		{name: "file_full", bug: "C9", method: "GET", path: "/file"},
+		{name: "file_head", bug: "C9", method: "HEAD", path: "/file"},
+		{name: "file_range_0_9", bug: "C9", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-9"}},
+		{name: "file_range_0_0", bug: "C9+C2", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-0"}},
+		{name: "file_range_suffix", bug: "C9+C2", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=-5"}},
+		{name: "file_range_unsatisfiable", bug: "C9+C2", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=99999999-"}},
+		{name: "file_if_modified_since", bug: "C9", method: "GET", path: "/file", headers: map[string]string{
 			"If-Modified-Since": goldenFixedTime.Format(http.TimeFormat),
 		}},
-		{name: "not_found", bug: "S3+S10+C9", method: "GET", path: "/nope"},
-		{name: "method_not_allowed", bug: "S3+S10+C9", method: "POST", path: "/healthcheck"},
-		{name: "body_created", bug: "S3+C9", method: "POST", path: "/body", body: "hello"},
-		{name: "body_over_limit_declared", bug: "S3+S10+C9", method: "POST", path: "/body", body: strings.Repeat("a", 5000)},
-		{name: "param_route_encoded", bug: "S3+S10+C9+C10", method: "GET", path: "/api/v1/hello/John%20Doe"},
-		{name: "native_handler", bug: "S3+S10+C9", method: "GET", path: "/native"},
-		{name: "request_id_echo", bug: "S3+C9", method: "GET", path: "/healthcheck", headers: map[string]string{"X-Request-Id": "fixed-id-1"}},
+		{name: "not_found", bug: "C9", method: "GET", path: "/nope"},
+		{name: "method_not_allowed", bug: "C9", method: "POST", path: "/healthcheck"},
+		{name: "body_created", bug: "C9", method: "POST", path: "/body", body: "hello"},
+		{name: "body_over_limit_declared", bug: "C9", method: "POST", path: "/body", body: strings.Repeat("a", 5000)},
+		{name: "param_route_encoded", bug: "C9+C10", method: "GET", path: "/api/v1/hello/John%20Doe"},
+		{name: "native_handler", bug: "C9", method: "GET", path: "/native"},
+		{name: "request_id_echo", bug: "C9", method: "GET", path: "/healthcheck", headers: map[string]string{"X-Request-Id": "fixed-id-1"}},
 	}
 
 	for _, sc := range scenarios { //nolint:paralleltest // shares one server

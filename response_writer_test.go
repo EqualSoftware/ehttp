@@ -577,7 +577,7 @@ func TestResponseWriterCookie(t *testing.T) {
 		res, _ := aCountedRes(t)
 		msg := aPanics(func() { res.Cookie(&http.Cookie{Name: "bad name", Value: "1"}) })
 
-		ehttptest.True(t, "author decision 2026-11-01 (strict premise / header API)", strings.HasPrefix(msg, "ehttp: Cookie"), "message %q", msg)
+		ehttptest.True(t, "author decision 2026-11-01 (strict premise / header API)", strings.HasPrefix(msg, "ehttp: res.Cookie"), "message %q", msg)
 	})
 
 	t.Run("ClearCookie expires the cookie at Path /", func(t *testing.T) {
@@ -617,7 +617,7 @@ func aCountedRes(t *testing.T) (*ResponseWriter, *headerCounter) {
 	hc := &headerCounter{ResponseRecorder: httptest.NewRecorder()}
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)
 
-	return &ResponseWriter{w: hc, request: req}, hc
+	return &ResponseWriter{w: hc, request: req, mode: Development}, hc
 }
 
 func TestResponseWriterWriteHeaderOnce(t *testing.T) {
@@ -646,7 +646,7 @@ func TestResponseWriterWriteHeaderOnce(t *testing.T) {
 
 			if bodies[name] {
 				msg := aPanics(func() { send(res) })
-				ehttptest.True(t, "author decision 2026-11-01 (strict premise / header API)", strings.Contains(msg, "response already sent"), "second body: message %q", msg)
+				ehttptest.True(t, "author decision 2026-11-01 (strict premise / header API)", strings.Contains(msg, "already sent a body"), "second body: message %q", msg)
 			} else if name == "End" {
 				send(res) // End after End is a no-op
 			}
@@ -692,7 +692,7 @@ func TestResponseWriterCookieNil(t *testing.T) {
 	res, hc := aCountedRes(t)
 	msg := aPanics(func() { res.Cookie(nil) })
 
-	ehttptest.True(t, "author decision 2026-11-01 (strict premise / header API)", strings.HasPrefix(msg, "ehttp: Cookie"), "message %q", msg)
+	ehttptest.True(t, "author decision 2026-11-01 (strict premise / header API)", strings.HasPrefix(msg, "ehttp: res.Cookie"), "message %q", msg)
 	ehttptest.Eq(t, "author decision 2026-11-01 (strict premise / header API)", len(hc.Header().Values(HeaderSetCookie)), 0)
 }
 

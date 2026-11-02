@@ -5,7 +5,7 @@ import "github.com/EqualSoftware/ehttp"
 func AcceptEncoding() ehttp.MiddlewareHandlerFunc {
 	return func(next ehttp.Handler) ehttp.HandlerFunc {
 		return func(res *ehttp.ResponseWriter, r *ehttp.Request) {
-			res.Vary("Accept-Encoding")
+			res.OwnVary("Accept-Encoding")
 			next.ServeHTTP(res, r)
 		}
 	}

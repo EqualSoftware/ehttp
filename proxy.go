@@ -1,7 +1,6 @@
 package ehttp
 
 import (
-	"fmt"
 	"net/netip"
 	"strings"
 
@@ -44,7 +43,8 @@ func parseProxyPrefix(v string) netip.Prefix {
 
 	addr, err := netip.ParseAddr(v)
 	if err != nil {
-		panic(fmt.Sprintf("ehttp: invalid trusted proxy %q: use a CIDR, an IP, loopback, linklocal or uniquelocal", v))
+		bootPanic("WithTrustedProxies", "proxy "+quoteValue(v), "it is not a CIDR, an IP or a preset name (author decision)",
+			"use a CIDR such as \"10.0.0.0/8\", an IP such as \"10.0.0.1\", or loopback, linklocal, uniquelocal")
 	}
 
 	addr = addr.Unmap().WithZone("")

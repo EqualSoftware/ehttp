@@ -28,7 +28,7 @@ func Timeout(timeout time.Duration) ehttp.MiddlewareHandlerFunc {
 
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) && !res.HeadersSent() {
 				// A 503 is temporary (RFC 9110 §15.6.4): it replaces any cache header set before.
-				res.Set(ehttp.HeaderCacheControl, "no-store")
+				res.Own(ehttp.HeaderCacheControl, "no-store")
 				res.SendStatus(ehttp.StatusServiceUnavailable)
 			}
 		}

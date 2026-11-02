@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"fmt"
+	"net/http"
 
 	"github.com/EqualSoftware/ehttp"
 )
@@ -80,6 +81,10 @@ var DefaultSecureConfig = SecureOptions{
 //
 // based on: https://github.com/labstack/echo/blob/3598f295f95f316bbeb252b7b332fe34e120815c/middleware/secure.go
 func Secure(o SecureOptions) ehttp.MiddlewareHandlerFunc {
+	// An option left empty takes its default only if no outer Secure owns the
+	// header already (see setDefault).
+	explicit := [3]bool{o.XSSProtection != "", o.ContentTypeNosniff != "", o.XFrameOptions != ""}
+
 	if o.XSSProtection == "" {
 		o.XSSProtection = DefaultSecureConfig.XSSProtection
 	}
@@ -96,11 +101,13 @@ func Secure(o SecureOptions) ehttp.MiddlewareHandlerFunc {
 		o.HSTSPreloadEnabled = DefaultSecureConfig.HSTSPreloadEnabled
 	}
 
+	xss := http.CanonicalHeaderKey(ehttp.HeaderXXSSProtection) // once, not for each request
+
 	return func(next ehttp.Handler) ehttp.HandlerFunc {
 		return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
-			res.Set(ehttp.HeaderXXSSProtection, o.XSSProtection)
-			res.Set(ehttp.HeaderXContentTypeOptions, o.ContentTypeNosniff)
-			res.Set(ehttp.HeaderXFrameOptions, o.XFrameOptions)
+			setDefault(res, xss, o.XSSProtection, explicit[0])
+			setDefault(res, ehttp.HeaderXContentTypeOptions, o.ContentTypeNosniff, explicit[1])
+			setDefault(res, ehttp.HeaderXFrameOptions, o.XFrameOptions, explicit[2])
 
 			if req.Protocol() == "https" && o.HSTSMaxAge != 0 {
 				subdomains := ""
@@ -113,22 +120,32 @@ func Secure(o SecureOptions) ehttp.MiddlewareHandlerFunc {
 					subdomains = fmt.Sprintf("%s; preload", subdomains)
 				}
 
-				res.Set(ehttp.HeaderStrictTransportSecurity, fmt.Sprintf("max-age=%d%s", o.HSTSMaxAge, subdomains))
+				res.Own(ehttp.HeaderStrictTransportSecurity, fmt.Sprintf("max-age=%d%s", o.HSTSMaxAge, subdomains))
 			}
 
 			if o.ContentSecurityPolicy != "" {
 				if o.CSPReportOnly {
-					res.Set(ehttp.HeaderContentSecurityPolicyReportOnly, o.ContentSecurityPolicy)
+					res.Own(ehttp.HeaderContentSecurityPolicyReportOnly, o.ContentSecurityPolicy)
 				} else {
-					res.Set(ehttp.HeaderContentSecurityPolicy, o.ContentSecurityPolicy)
+					res.Own(ehttp.HeaderContentSecurityPolicy, o.ContentSecurityPolicy)
 				}
 			}
 
 			if o.ReferrerPolicy != "" {
-				res.Set(ehttp.HeaderReferrerPolicy, o.ReferrerPolicy)
+				res.Own(ehttp.HeaderReferrerPolicy, o.ReferrerPolicy)
 			}
 
 			next.ServeHTTP(res, req)
 		}
 	}
+}
+
+// setDefault owns the header. A default value (not set in the options) does
+// not replace a value that an outer Secure already set.
+func setDefault(res *ehttp.ResponseWriter, name, value string, explicit bool) {
+	if !explicit && res.Header().Get(name) != "" {
+		return
+	}
+
+	res.Own(name, value)
 }

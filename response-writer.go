@@ -30,6 +30,8 @@ type ResponseWriterInterceptor struct {
 	Code   int
 	Size   int64
 
+	inner     *ResponseWriter // the writer of the handler: its owned fields
+	base      uint32          // owned sequence of the outer writer when made
 	finalized bool
 	mu        sync.Mutex
 }
@@ -82,6 +84,12 @@ func (i *ResponseWriterInterceptor) SendResponse(res *ResponseWriter) {
 	}
 
 	res.code = i.Code
+
+	if i.inner != nil {
+		res.mergeOwned(i.inner, i.base)
+	}
+
+	res.restoreOwned()
 	res.sent = true
 	res.bodySent = true
 
@@ -99,13 +107,19 @@ func WithResponseWriter(res *ResponseWriter) (*ResponseWriter, *ResponseWriterIn
 		Code:           res.code,
 	}
 
-	return &ResponseWriter{
+	inner := &ResponseWriter{
 		w:        i,
 		request:  res.request,
 		req:      res.req,
 		code:     res.code,
 		template: res.template,
-	}, i
+		mode:     res.mode,
+	}
+	inner.inheritOwned(res)
+	i.inner = inner
+	i.base = res.ownedSeq
+
+	return inner, i
 }
 
 var _ http.ResponseWriter = (*ResponseWriter)(nil)
@@ -118,6 +132,13 @@ type ResponseWriter struct {
 	template *template.Template
 	sent     bool
 	bodySent bool // a body was written; a status line alone is not a body
+	mode     Mode // the mode of the server: how a strict error ends (see fail)
+
+	// owned are the fields that a middleware set before the handler (see Own).
+	// ownedBuf keeps the first ones without an allocation (CORS and Secure fit).
+	owned    []ownedField
+	ownedSeq uint32
+	ownedBuf [ownedInline]ownedField
 }
 
 // logger returns the logger of the request, or a no-op logger.
@@ -143,13 +164,15 @@ func (res *ResponseWriter) writeHeader(code int) {
 		return
 	}
 
+	res.restoreOwned()
+
 	res.sent = true
 	res.w.WriteHeader(code)
 }
 
 // WriteHeader implements http.ResponseWriter. Only the first call counts.
 func (res *ResponseWriter) WriteHeader(code int) {
-	checkStatus("WriteHeader", code)
+	code = res.checkStatus("WriteHeader", code)
 
 	if res.finished() || res.sent {
 		return
@@ -283,49 +306,98 @@ func (res *ResponseWriter) StatusCode() int {
 	return res.code
 }
 
-// Status sets the final status code of the response. It panics for a code
-// outside 200-599 and after the header was sent.
+// Status sets the final status code of the response. A code outside 200-599
+// and a call after the header was sent are mistakes: Development panics,
+// Production logs and uses 500, or ignores the call after the send.
 func (res *ResponseWriter) Status(code int) {
-	checkFinalStatus("Status", code)
+	code = res.checkFinalStatus("Status", code)
 
 	if res.finished() {
 		return
 	}
 
-	res.mustNotBeSent("Status", "status")
+	if !res.unlessSent("Status", "") {
+		return
+	}
 
 	res.code = code
 }
 
-// checkStatus panics for a code outside 100-599 (RFC 9110 §15).
-func checkStatus(method string, code int) {
-	if code < 100 || code > 599 {
-		panic("ehttp: " + method + ": status code " + strconv.Itoa(code) + " is outside 100-599 (RFC 9110 §15)")
+// checkStatus returns code. For a code outside 100-599 (RFC 9110 §15) it
+// fails and returns 500.
+func (res *ResponseWriter) checkStatus(method string, code int) int {
+	if code >= 100 && code <= 599 {
+		return code
 	}
+
+	n := strconv.Itoa(code)
+
+	res.fail(strictError{
+		level: zap.ErrorLevel,
+		rule:  "status code outside 100-599",
+		what:  "res." + method + "(" + n + ")",
+		why:   "status code " + n + " is outside 100-599 (RFC 9110 §15)",
+		fix:   "use a status from 100 to 599, for example res." + method + "(ehttp.StatusOK)",
+	})
+
+	return StatusInternalServerError
 }
 
 // checkFinalStatus is checkStatus and refuses a 1xx: the method sends a final
 // status (RFC 9110 §15.2).
-func checkFinalStatus(method string, code int) {
-	checkStatus(method, code)
-
-	if code < 200 {
-		panic("ehttp: " + method + ": status code " + strconv.Itoa(code) + " is informational and not final (RFC 9110 §15.2); use WriteHeader")
+func (res *ResponseWriter) checkFinalStatus(method string, code int) int {
+	if code = res.checkStatus(method, code); code >= 200 {
+		return code
 	}
+
+	n := strconv.Itoa(code)
+
+	res.fail(strictError{
+		level: zap.ErrorLevel,
+		rule:  "informational status is not final",
+		what:  "res." + method + "(" + n + ")",
+		why:   "status code " + n + " is informational and not final (RFC 9110 §15.2)",
+		fix:   "use res.WriteHeader(" + n + ") for an interim response, and a status from 200 to 599 here",
+	})
+
+	return StatusInternalServerError
 }
 
-// mustNotBeSent panics if the header was sent: a change would be lost.
-func (res *ResponseWriter) mustNotBeSent(method, name string) {
-	if res.sent {
-		panic("ehttp: " + method + ": the header was already sent (" + name + ", RFC 9110 §6.4.1); change it before the first send")
+// unlessSent reports that the header is not sent yet. After the send a change
+// is lost (RFC 9110 §6.4.1): it fails and the caller ignores the change.
+func (res *ResponseWriter) unlessSent(method, name string) bool {
+	if !res.sent {
+		return true
 	}
+
+	res.fail(strictError{
+		level:  zap.WarnLevel,
+		rule:   "change after the header was sent",
+		what:   call(method, name),
+		why:    "the header was already sent, so the change is lost (RFC 9110 §6.4.1)",
+		fix:    "make the call before the first res.Send, res.String, res.JSON, res.Write or res.End",
+		header: name,
+	})
+
+	return false
 }
 
-// mustHaveNoBody panics if a body was already written.
-func (res *ResponseWriter) mustHaveNoBody(what string) {
-	if res.bodySent {
-		panic("ehttp: " + what + ": response already sent (RFC 9110 §6.4.1); a response has one body")
+// noBody reports that no body was written yet. A response has one body: it
+// fails and the caller ignores the second one.
+func (res *ResponseWriter) noBody(method string) bool {
+	if !res.bodySent {
+		return true
 	}
+
+	res.fail(strictError{
+		level: zap.WarnLevel,
+		rule:  "second body",
+		what:  "res." + method + "(...)",
+		why:   "the response already sent a body, and a response has one body (RFC 9110 §6.4.1)",
+		fix:   "send one body for each response: return after res.Send, res.String, res.JSON, res.Render or res.Error",
+	})
+
+	return false
 }
 
 // singletons are the fields that allow one value only: Append refuses them.
@@ -342,11 +414,54 @@ var singletons = [...]struct{ name, basis string }{
 	{HeaderAccessControlMaxAge, "Fetch §3.3.4"},
 }
 
-// checkName panics if name is not a field name (RFC 9110 §5.1).
-func checkName(method, name string) {
-	if !validFieldName(name) {
-		panic("ehttp: " + method + ": header name " + strconv.Quote(name) + " is not a token (RFC 9110 §5.1)")
+// checkName reports that name is a field name (RFC 9110 §5.6.2). Else it fails
+// and the caller ignores the call.
+func (res *ResponseWriter) checkName(method, name string) bool {
+	if validFieldName(name) {
+		return true
 	}
+
+	why := "header name \"\" is not a token: it is empty (RFC 9110 §5.6.2)"
+
+	if name != "" {
+		i := firstInvalid(name, &tcharTable)
+		why = "header name " + quoteValue(name) + " is not a token: it has " + byteName(name[i]) + " at position " + strconv.Itoa(i) + " (RFC 9110 §5.6.2)"
+	}
+
+	res.fail(strictError{
+		level:  zap.ErrorLevel,
+		rule:   "invalid header name",
+		what:   call(method, name),
+		why:    why,
+		fix:    "use a name of letters, digits and !#$%&'*+-.^_`|~, for example \"X-Request-Id\"",
+		header: name,
+	})
+
+	return false
+}
+
+// firstInvalid returns the index of the first byte that the table refuses.
+func firstInvalid(s string, table *[256]bool) int {
+	for i := 0; i < len(s); i++ {
+		if !table[s[i]] {
+			return i
+		}
+	}
+
+	return 0
+}
+
+// byteName writes a byte for a message: '\n' (0x0a).
+func byteName(b byte) string {
+	const digits = "0123456789abcdef"
+
+	hex := "0x" + string([]byte{digits[b>>4], digits[b&15]})
+
+	if b < 0x80 {
+		return strconv.QuoteRuneToASCII(rune(b)) + " (" + hex + ")"
+	}
+
+	return hex
 }
 
 // tcharTable marks the token characters (RFC 9110 §5.6.2): ALPHA, DIGIT and
@@ -397,80 +512,202 @@ func validFieldValue(value string) bool {
 	return true
 }
 
-// checkValue panics if value has a byte that a field value cannot have
-// (RFC 9110 §5.5).
-func checkValue(method, name, value string) {
-	if !validFieldValue(value) {
-		panic("ehttp: " + method + ": header " + name + " has an invalid value " + strconv.Quote(value) + " (RFC 9110 §5.5)")
+// checkValue reports that value fits RFC 9110 §5.5. Else it fails and the
+// caller ignores the call.
+func (res *ResponseWriter) checkValue(method, name, value string) bool {
+	if validFieldValue(value) {
+		return true
 	}
+
+	i := firstInvalid(value, &valueTable)
+
+	res.fail(strictError{
+		level:  zap.ErrorLevel,
+		rule:   "invalid header value",
+		what:   call(method, name),
+		why:    "header " + name + " has the value " + quoteValue(value) + ", which has the byte " + byteName(value[i]) + " at position " + strconv.Itoa(i) + " (RFC 9110 §5.5)",
+		fix:    "remove the control bytes from the value; encode data from a user before it goes in a header",
+		header: name,
+		value:  value,
+	})
+
+	return false
 }
 
-// checkOwned panics for the fields that have their own method.
-func checkOwned(method, name string) {
+// checkSpecial reports that name is not a field with its own method.
+func (res *ResponseWriter) checkSpecial(method, name string) bool {
 	switch {
 	case equalASCIIFold(name, HeaderSetCookie):
-		panic("ehttp: " + method + ": header Set-Cookie has its own method, use Cookie (RFC 6265 §3)")
+		res.fail(strictError{
+			level:  zap.WarnLevel,
+			rule:   "Set-Cookie has its own method",
+			what:   call(method, name),
+			why:    "Set-Cookie can have many field lines and its value has its own rules (RFC 6265 §3)",
+			fix:    "use res.Cookie(&http.Cookie{Name: \"sid\", Value: value})",
+			header: name,
+		})
+
+		return false
 	case equalASCIIFold(name, HeaderVary):
-		panic("ehttp: " + method + ": header Vary has its own method, use Vary (RFC 9110 §12.5.5)")
+		fix := "use res.Vary(\"Accept\")"
+		if method == "Own" {
+			fix = "use res.OwnVary(\"Accept\")"
+		}
+
+		res.fail(strictError{
+			level:  zap.WarnLevel,
+			rule:   "Vary has its own method",
+			what:   call(method, name),
+			why:    "Vary is a list that only grows (RFC 9110 §12.5.5)",
+			fix:    fix,
+			header: name,
+		})
+
+		return false
 	}
+
+	return true
 }
 
-// Set replaces all values of the field name with value. It panics for an
-// invalid name or value, for Set-Cookie and Vary (use Cookie and Vary) and
-// after the header was sent. It does nothing after the client is gone.
+// Set replaces all values of the field name with value. These are mistakes
+// (see fail): an invalid name or value, Set-Cookie and Vary (use Cookie and
+// Vary), a call after the header was sent, and a field that a middleware owns
+// (see Own). Development panics. Production logs and does not change the
+// field. It does nothing after the client is gone.
 func (res *ResponseWriter) Set(name, value string) {
-	checkName("Set", name)
-	checkValue("Set", name, value)
-	checkOwned("Set", name)
+	res.setField("Set", name, value)
+}
+
+func (res *ResponseWriter) setField(method, name, value string) {
+	if !res.checkName(method, name) || !res.checkValue(method, name, value) || !res.checkSpecial(method, name) {
+		return
+	}
 
 	if res.finished() {
 		return
 	}
 
-	res.mustNotBeSent("Set", name)
+	if !res.unlessSent(method, name) {
+		return
+	}
+
+	if o := res.findOwned(name); o != nil {
+		if value != o.value {
+			res.failOverride(call(method, name), o, value)
+		}
+
+		return
+	}
 
 	res.w.Header().Set(name, value)
 }
 
 // Append adds members to the list field name. All members go in one field line
 // and a member that is already there (same bytes) is skipped. Each element of
-// values is one member: nothing is split. It panics for an empty member, for
-// an invalid name or value, for a singleton field such as Content-Type (use
-// Set), for Set-Cookie and Vary, and after the header was sent. It does nothing
-// after the client is gone.
+// values is one member: nothing is split. It does nothing after the client is
+// gone.
+//
+// These are mistakes (see fail), as for Set: an empty member (Production skips
+// it), a singleton field such as Content-Type (Production does a Set with the
+// last value), an invalid name or value, Set-Cookie and Vary, a call after the
+// header was sent, and a field that a middleware owns.
 //
 // Members are compared as whole strings. A value with a quoted comma, such as
 // `rel="x, y"`, is not parsed.
 func (res *ResponseWriter) Append(name string, values ...string) {
-	checkName("Append", name)
-	checkOwned("Append", name)
-
-	for _, singleton := range singletons {
-		if equalASCIIFold(name, singleton.name) {
-			panic("ehttp: Append: header " + name + " takes one value, use Set (" + singleton.basis + ")")
-		}
+	if !res.checkName("Append", name) || !res.checkSpecial("Append", name) {
+		return
 	}
 
-	for _, value := range values {
-		checkValue("Append", name, value)
-
-		if strings.TrimSpace(value) == "" {
-			panic("ehttp: Append: header " + name + " has an empty member (RFC 9110 §5.6.1.1)")
-		}
+	if res.appendSingleton(name, values) || !res.checkMembers(name, values) {
+		return
 	}
 
 	if res.finished() {
 		return
 	}
 
-	res.mustNotBeSent("Append", name)
+	if !res.unlessSent("Append", name) {
+		return
+	}
 
+	if o := res.findOwned(name); o != nil {
+		if appendNews(o.value, values) {
+			res.failOverride(call("Append", name), o, strings.Join(values, ", "))
+		}
+
+		return
+	}
+
+	res.appendMembers(name, values)
+}
+
+// appendSingleton reports that name takes one value. It fails and does a Set
+// with the last value, the same as a sequence of Set calls.
+func (res *ResponseWriter) appendSingleton(name string, values []string) bool {
+	for _, singleton := range singletons {
+		if !equalASCIIFold(name, singleton.name) {
+			continue
+		}
+
+		res.fail(strictError{
+			level:  zap.WarnLevel,
+			rule:   "Append on a single-value field",
+			what:   call("Append", name),
+			why:    singleton.name + " is a single-value field (" + singleton.basis + ")",
+			fix:    "use res.Set(" + strconv.Quote(singleton.name) + ", value)",
+			header: name,
+		})
+
+		if n := len(values); n > 0 {
+			res.Set(name, values[n-1])
+		}
+
+		return true
+	}
+
+	return false
+}
+
+// checkMembers reports that each value is valid. An empty member fails but is
+// not invalid: appendMembers skips it.
+func (res *ResponseWriter) checkMembers(name string, values []string) bool {
+	ok := true
+
+	for _, value := range values {
+		if !res.checkValue("Append", name, value) {
+			ok = false
+			continue
+		}
+
+		if isBlank(value) {
+			res.fail(strictError{
+				level:  zap.WarnLevel,
+				rule:   "empty list member",
+				what:   call("Append", name),
+				why:    "header " + name + " has an empty member (RFC 9110 §5.6.1.1)",
+				fix:    "pass only members with text, for example res.Append(" + strconv.Quote(name) + ", \"a\", \"b\")",
+				header: name,
+			})
+		}
+	}
+
+	return ok
+}
+
+func isBlank(value string) bool {
+	return strings.TrimSpace(value) == ""
+}
+
+// appendMembers merges the members into the field line. It skips an empty
+// member.
+func (res *ResponseWriter) appendMembers(name string, values []string) {
 	header := res.w.Header()
 	lines := header.Values(name)
 	line := joinLines(lines)
 	multi := len(lines) > 1 // always leave one field line
 
-	if line == "" && len(values) == 1 {
+	if line == "" && len(values) == 1 && !isBlank(values[0]) {
 		header.Set(name, values[0])
 		return
 	}
@@ -499,10 +736,10 @@ func (res *ResponseWriter) Append(name string, values ...string) {
 	header.Set(name, out.String())
 }
 
-// isOldMember reports if values[i] is in the line or is a copy of an earlier
-// value.
+// isOldMember reports if values[i] is in the line, is a copy of an earlier
+// value, or is empty (it is skipped).
 func isOldMember(line string, values []string, i int) bool {
-	return listHas(line, values[i]) || slices.Contains(values[:i], values[i])
+	return isBlank(values[i]) || listHas(line, values[i]) || slices.Contains(values[:i], values[i])
 }
 
 // appendNews reports if one value is not in the line yet.
@@ -516,21 +753,38 @@ func appendNews(line string, values []string) bool {
 	return false
 }
 
-// Remove deletes the field name. It panics for an invalid name, for Vary (use
-// Vary) and after the header was sent. It does nothing after the client is
-// gone.
+// Remove deletes the field name. The mistakes are the same as for Set; Vary
+// has no Remove. It does nothing after the client is gone.
 func (res *ResponseWriter) Remove(name string) {
-	checkName("Remove", name)
+	if !res.checkName("Remove", name) {
+		return
+	}
 
 	if equalASCIIFold(name, HeaderVary) {
-		panic("ehttp: Remove: header Vary has its own method, use Vary (RFC 9110 §12.5.5)")
+		res.fail(strictError{
+			level:  zap.WarnLevel,
+			rule:   "Vary has no Remove",
+			what:   call("Remove", name),
+			why:    "Vary is a list that only grows: a member can be added, not removed (RFC 9110 §12.5.5)",
+			fix:    "use res.Vary(\"Accept\") to add a member",
+			header: name,
+		})
+
+		return
 	}
 
 	if res.finished() {
 		return
 	}
 
-	res.mustNotBeSent("Remove", name)
+	if !res.unlessSent("Remove", name) {
+		return
+	}
+
+	if o := res.findOwned(name); o != nil {
+		res.failOverride(call("Remove", name), o, "")
+		return
+	}
 
 	res.w.Header().Del(name)
 }
@@ -588,20 +842,40 @@ func skipOWS(s string) string {
 // Vary adds names to the Vary field (RFC 9110 §12.5.5). It is the only way to
 // change Vary. Each argument can list names with commas. An empty name is
 // skipped, a name that is already there (ASCII case-insensitive) is skipped
-// and "*" replaces all. Vary stays one field line. It panics for an invalid
-// value and after the header was sent. It does nothing after the client is
-// gone.
+// and "*" replaces all. Vary stays one field line. An invalid value and a call
+// after the header was sent are mistakes (see fail). It does nothing after the
+// client is gone. A handler can add members to a Vary that a middleware owns.
 func (res *ResponseWriter) Vary(names ...string) {
+	res.addVary("Vary", names)
+}
+
+func (res *ResponseWriter) addVary(method string, names []string) bool {
 	for _, value := range names {
-		checkValue("Vary", HeaderVary, value)
+		if !res.checkValue(method, HeaderVary, value) {
+			return false
+		}
 	}
 
-	if res.finished() {
+	if res.finished() || !res.unlessSent(method, "") {
+		return false
+	}
+
+	res.mergeVary(names)
+
+	return true
+}
+
+// varyQuiet adds a Vary member for a method that reads the request (see
+// Request.Accepts). It does nothing, and is not a mistake, after the send.
+func (res *ResponseWriter) varyQuiet(name string) {
+	if res.sent || res.finished() {
 		return
 	}
 
-	res.mustNotBeSent("Vary", HeaderVary)
+	res.mergeVary([]string{name})
+}
 
+func (res *ResponseWriter) mergeVary(names []string) {
 	header := res.w.Header()
 	lines := header.Values(HeaderVary)
 	old := joinLines(lines)
@@ -711,24 +985,54 @@ func varyHasLine(line, name string) bool {
 }
 
 // Cookie adds a Set-Cookie field line (RFC 6265 §3). It is the only field that
-// can have many lines. It panics for a nil or invalid cookie and after the
-// header was sent. It does nothing after the client is gone.
+// can have many lines. A nil or invalid cookie and a call after the header was
+// sent are mistakes (see fail): Production does not send the cookie. It does
+// nothing after the client is gone.
 func (res *ResponseWriter) Cookie(cookie *http.Cookie) {
-	if cookie == nil {
-		panic("ehttp: Cookie: the cookie is nil")
-	}
-
-	if err := cookie.Valid(); err != nil {
-		panic("ehttp: Cookie: cookie " + strconv.Quote(cookie.Name) + " is invalid (RFC 6265 §4.1.1): " + err.Error())
+	if !res.checkCookie(cookie) {
+		return
 	}
 
 	if res.finished() {
 		return
 	}
 
-	res.mustNotBeSent("Cookie", HeaderSetCookie)
+	if !res.unlessSent("Cookie", HeaderSetCookie) {
+		return
+	}
 
 	res.w.Header().Add(HeaderSetCookie, cookie.String())
+}
+
+func (res *ResponseWriter) checkCookie(cookie *http.Cookie) bool {
+	if cookie == nil {
+		res.fail(strictError{
+			level:  zap.WarnLevel,
+			rule:   "nil cookie",
+			what:   "res.Cookie(nil)",
+			why:    "the cookie is nil, so there is nothing to send (RFC 6265 §4.1)",
+			fix:    "pass a cookie: res.Cookie(&http.Cookie{Name: \"sid\", Value: value})",
+			header: HeaderSetCookie,
+		})
+
+		return false
+	}
+
+	err := cookie.Valid()
+	if err == nil {
+		return true
+	}
+
+	res.fail(strictError{
+		level:  zap.WarnLevel,
+		rule:   "invalid cookie",
+		what:   "res.Cookie(" + quoteValue(cookie.Name) + ")",
+		why:    "cookie " + quoteValue(cookie.Name) + " is invalid: " + err.Error() + " (RFC 6265 §4.1.1)",
+		fix:    "use a cookie name that is a token and a value of cookie-octets; encode other data first",
+		header: HeaderSetCookie,
+	})
+
+	return false
 }
 
 // ClearCookie asks the client to delete the cookie name (Path "/").
@@ -739,7 +1043,7 @@ func (res *ResponseWriter) ClearCookie(name string) {
 
 // Location sets the Location field. See Set.
 func (res *ResponseWriter) Location(value string) {
-	res.Set(HeaderLocation, value)
+	res.setField("Location", HeaderLocation, value)
 }
 
 func (res *ResponseWriter) End() {
@@ -754,16 +1058,18 @@ func (res *ResponseWriter) End() {
 	res.writeHeader(res.code)
 }
 
-// SendStatus sends the status line and no body. It panics for a code outside
-// 200-599 and after the header was sent.
+// SendStatus sends the status line and no body. A code outside 200-599 and a
+// call after the header was sent are mistakes, as for Status.
 func (res *ResponseWriter) SendStatus(code int) {
-	checkFinalStatus("SendStatus", code)
+	code = res.checkFinalStatus("SendStatus", code)
 
 	if res.finished() {
 		return
 	}
 
-	res.mustNotBeSent("SendStatus", "status")
+	if !res.unlessSent("SendStatus", "") {
+		return
+	}
 
 	res.code = code
 	res.writeHeader(code)
@@ -774,7 +1080,9 @@ func (res *ResponseWriter) Send(v []byte) {
 		return
 	}
 
-	res.mustHaveNoBody("Send")
+	if !res.noBody("Send") {
+		return
+	}
 
 	if res.code == 0 {
 		res.code = StatusOK
@@ -792,7 +1100,9 @@ func (res *ResponseWriter) Render(name string, data interface{}) {
 		return
 	}
 
-	res.mustHaveNoBody("Render")
+	if !res.noBody("Render") {
+		return
+	}
 
 	buf := &bytes.Buffer{}
 
@@ -824,7 +1134,9 @@ func (res *ResponseWriter) Error(e error) {
 		return
 	}
 
-	res.mustHaveNoBody("Error")
+	if !res.noBody("Error") {
+		return
+	}
 
 	if res.code == 0 {
 		res.code = StatusInternalServerError
@@ -845,7 +1157,15 @@ func (res *ResponseWriter) Redirect(value string) {
 		return
 	}
 
-	res.mustHaveNoBody("Redirect")
+	if !res.noBody("Redirect") {
+		return
+	}
+
+	// A redirect without Location is useless: Production answers 500.
+	if !res.checkValue("Redirect", HeaderLocation, value) {
+		res.SendStatus(StatusInternalServerError)
+		return
+	}
 
 	if res.code == 0 {
 		res.code = StatusTemporaryRedirect
@@ -865,7 +1185,9 @@ func (res *ResponseWriter) String(v string) {
 		return
 	}
 
-	res.mustHaveNoBody("String")
+	if !res.noBody("String") {
+		return
+	}
 
 	if res.code == 0 {
 		res.code = StatusOK
@@ -886,7 +1208,9 @@ func (res *ResponseWriter) JSON(v interface{}) {
 		return
 	}
 
-	res.mustHaveNoBody("JSON")
+	if !res.noBody("JSON") {
+		return
+	}
 
 	bytes, err := json.Marshal(v)
 
@@ -911,7 +1235,9 @@ func (res *ResponseWriter) SendFile(name string) {
 		return
 	}
 
-	res.mustHaveNoBody("SendFile")
+	if !res.noBody("SendFile") {
+		return
+	}
 
 	if hasDotDot(name) {
 		res.logger().Error("path traversal refused", zap.String("filename", name))

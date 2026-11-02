@@ -18,5 +18,5 @@ func Cache(duration time.Duration) ehttp.MiddlewareHandlerFunc {
 // setCacheControl sets the cache headers. A response to a request with
 // Authorization is private (RFC 9111 §3.5): a shared cache must not store it.
 func setCacheControl(res *ehttp.ResponseWriter, req *ehttp.Request, d time.Duration) {
-	ehttp.SetCacheHeaderPrivate(res, d, req.Header(ehttp.HeaderAuthorization) != "")
+	res.Own(ehttp.HeaderCacheControl, ehttp.CacheControl(d, req.Header(ehttp.HeaderAuthorization) != ""))
 }
