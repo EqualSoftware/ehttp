@@ -35,6 +35,19 @@ k6 only makes load; its summary is in the terminal. Watch the two dashboards whi
 
 To open the circuit breaker, send failures: `for i in $(seq 30); do curl -s -o /dev/null "localhost:8080/flaky?fail=1"; done`.
 
+## Cache-Control
+
+The app has `middleware.ErrorCache(99*time.Second)` as a global middleware, outside `Timeout`.
+
+- 404, 405, 410, 414 and 501 get `max-age=99, stale-while-revalidate=99, stale-if-error=99`.
+- 428, 429, 431 and 511 get `no-store`.
+- Each other error status gets `no-store`. This stops cache-poisoned DoS (CPDoS).
+- 401, 403, 407 and a request with `Authorization` get `private` when a lifetime applies.
+- A `Cache-Control` that a handler sets wins.
+
+Use `middleware.ErrorCacheStatus(code, d)` to change one status. Use `middleware.Cache(d)` on a route for the statuses below 400.
+The rules, the RFC basis and runnable examples are in the doc comments of `ErrorCache`, `ErrorCacheStatus` and `Cache` (package `middleware`, `example_test.go`).
+
 ## Metrics
 
 The library exposes one metric: the gauge of the circuit breaker

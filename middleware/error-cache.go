@@ -50,9 +50,19 @@ func lifetimeValues(d time.Duration, isDefault bool) [2]string {
 // ErrorCacheOption changes the lifetime of one error status.
 type ErrorCacheOption func(*errorCacheConfig)
 
-// ErrorCacheStatus sets the lifetime of one error status (400 to 599). Zero
-// turns the header off for this status. Each status can be set one time. It
-// panics at boot for 428, 429, 431 and 511: those responses are never stored.
+// ErrorCacheStatus sets the lifetime of one error status (400 to 599) for the
+// ErrorCache that gets it.
+//
+// A lifetime above zero sets the header like the ErrorCache default:
+// "max-age=N, stale-while-revalidate=N, stale-if-error=N", with "private, " in
+// front for 401, 403, 407 and for a request with Authorization.
+//
+// Zero sends no header from this ErrorCache. A Cache-Control from an ErrorCache
+// further out can still fill the header, so the outermost off switch is final.
+//
+// Each status can be set one time. The call panics at boot for a status
+// outside 400 to 599, a negative lifetime, and 428, 429, 431 and 511: a cache
+// must not store those (RFC 6585).
 func ErrorCacheStatus(status int, duration time.Duration) ErrorCacheOption {
 	return func(cfg *errorCacheConfig) {
 		where := "ErrorCacheStatus"
@@ -132,30 +142,37 @@ func (cfg *errorCacheConfig) value(code int, auth bool) string {
 	return v[0]
 }
 
-// ErrorCache sets Cache-Control on each error response (status 400 to 599)
-// that has none. A Cache-Control from the handler or an inner middleware wins.
+// ErrorCache decides Cache-Control for each error response (status 400 to
+// 599). Cache decides the statuses below 400. They never decide the same status.
 //
-// Defaults, by status (ErrorCacheStatus(code, 0) sends no header, so an outer
-// ErrorCache can still decide: only the outermost off switch is final):
-//   - 404, 405, 410, 414 and 501 get the lifetime duration: they are
-//     heuristically cacheable (RFC 9110 §15.1). With duration zero they get
-//     no-store.
-//   - 428, 429, 431 and 511 always get no-store: "MUST NOT be stored by a
-//     cache" (RFC 6585 §3 to §6). ErrorCacheStatus panics at boot for them.
-//   - Each other error status gets no-store, unless ErrorCacheStatus sets a
-//     lifetime for it. A 503 is temporary (RFC 9110 §15.6.4), so keep its
+// Default for each status:
+//   - 404, 405, 410, 414, 501: the lifetime duration, because they are
+//     heuristically cacheable (RFC 9110 §15.1). With duration zero: no-store.
+//   - 428, 429, 431, 511: always no-store. "MUST NOT be stored by a cache"
+//     (RFC 6585 §3 to §6). ErrorCacheStatus panics at boot for them.
+//   - Each other error status: no-store, unless ErrorCacheStatus sets a
+//     lifetime for it. A 503 is temporary (RFC 9110 §15.6.4): keep its
 //     lifetime short or zero.
-//   - ErrorCacheStatus(code, 0) sends no header for that status.
-//
-// A lifetime on 401, 403 or 407, or on a response to a request with
-// Authorization, is private (RFC 9111 §5.2.2.7, §3.5).
 //
 // The default is no-store because of cache-poisoned denial of service (CPDoS):
-// a bad header can make the origin answer with an error, and a cache that
-// stores that error by URL then serves it to every client.
+// a bad request header can make the origin send an error, and a cache that
+// stores it by URL serves it to every client.
 //
-// Put ErrorCache outside WeakEtag to decide the 412 of WeakEtag. Inside, the
-// 412 has no Cache-Control, which is safe.
+// A lifetime has the value "max-age=N, stale-while-revalidate=N,
+// stale-if-error=N". It has "private, " in front for 401, 403 and 407, and for
+// a request with Authorization (RFC 9111 §5.2.2.7, §3.5). No-store is the
+// plain value "no-store". ErrorCache(0) sends it for the default group.
+//
+// A Cache-Control that the handler or an inner middleware already set wins.
+//
+// Global and route: when several ErrorCache apply to a request, the one
+// closest to the handler decides. If it sends no header (an off switch), the
+// next one out can decide.
+//
+// Order: put ErrorCache outside WeakEtag to decide the 412 of WeakEtag. Inside,
+// the 412 has no Cache-Control, which is safe. A Timeout sets no Cache-Control
+// on its 503: put ErrorCache outside Timeout to get no-store (or the lifetime
+// of ErrorCacheStatus(503, ...)) on it.
 //
 // It needs only the status, so it does not buffer the body: the writer reads
 // the final status and passes every write through.

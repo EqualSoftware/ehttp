@@ -18,7 +18,7 @@ import (
 func TestCacheOrderMatrix(t *testing.T) {
 	t.Parallel()
 
-	min, hour := time.Minute, time.Hour
+	minute, hour := time.Minute, time.Hour
 	age := func(d time.Duration) string { return ehttp.CacheControl(d, false) }
 
 	type mws = []ehttp.MiddlewareHandlerFunc
@@ -29,27 +29,27 @@ func TestCacheOrderMatrix(t *testing.T) {
 		code          int
 		want          string
 	}{
-		{"nested Cache, inner wins", nil, mws{middleware.Cache(hour), middleware.Cache(min)}, 200, age(min)},
-		{"global Cache, route Cache wins", mws{middleware.Cache(hour)}, mws{middleware.Cache(min)}, 200, age(min)},
-		{"global Cache(1m), route Cache(1h)", mws{middleware.Cache(min)}, mws{middleware.Cache(hour)}, 200, age(hour)},
-		{"nested ErrorCache, inner wins", nil, mws{middleware.ErrorCache(min), middleware.ErrorCache(hour)}, 404, age(hour)},
-		{"global ErrorCache, route ErrorCache wins", mws{middleware.ErrorCache(hour)}, mws{middleware.ErrorCache(min)}, 404, age(min)},
-		{"Cache outside ErrorCache: 200", nil, mws{middleware.Cache(hour), middleware.ErrorCache(min)}, 200, age(hour)},
-		{"Cache outside ErrorCache: 404", nil, mws{middleware.Cache(hour), middleware.ErrorCache(min)}, 404, age(min)},
-		{"Cache outside ErrorCache: 500", nil, mws{middleware.Cache(hour), middleware.ErrorCache(min)}, 500, "no-store"},
-		{"ErrorCache outside Cache: 200", nil, mws{middleware.ErrorCache(min), middleware.Cache(hour)}, 200, age(hour)},
-		{"ErrorCache outside Cache: 404", nil, mws{middleware.ErrorCache(min), middleware.Cache(hour)}, 404, age(min)},
-		{"ErrorCache outside Cache: 500", nil, mws{middleware.ErrorCache(min), middleware.Cache(hour)}, 500, "no-store"},
-		{"global ErrorCache, route Cache: 200", mws{middleware.ErrorCache(min)}, mws{middleware.Cache(hour)}, 200, age(hour)},
-		{"global ErrorCache, route Cache: 404", mws{middleware.ErrorCache(min)}, mws{middleware.Cache(hour)}, 404, age(min)},
-		{"global Cache, route ErrorCache: 200", mws{middleware.Cache(hour)}, mws{middleware.ErrorCache(min)}, 200, age(hour)},
-		{"global Cache, route ErrorCache: 404", mws{middleware.Cache(hour)}, mws{middleware.ErrorCache(min)}, 404, age(min)},
+		{"nested Cache, inner wins", nil, mws{middleware.Cache(hour), middleware.Cache(minute)}, 200, age(minute)},
+		{"global Cache, route Cache wins", mws{middleware.Cache(hour)}, mws{middleware.Cache(minute)}, 200, age(minute)},
+		{"global Cache(1m), route Cache(1h)", mws{middleware.Cache(minute)}, mws{middleware.Cache(hour)}, 200, age(hour)},
+		{"nested ErrorCache, inner wins", nil, mws{middleware.ErrorCache(minute), middleware.ErrorCache(hour)}, 404, age(hour)},
+		{"global ErrorCache, route ErrorCache wins", mws{middleware.ErrorCache(hour)}, mws{middleware.ErrorCache(minute)}, 404, age(minute)},
+		{"Cache outside ErrorCache: 200", nil, mws{middleware.Cache(hour), middleware.ErrorCache(minute)}, 200, age(hour)},
+		{"Cache outside ErrorCache: 404", nil, mws{middleware.Cache(hour), middleware.ErrorCache(minute)}, 404, age(minute)},
+		{"Cache outside ErrorCache: 500", nil, mws{middleware.Cache(hour), middleware.ErrorCache(minute)}, 500, "no-store"},
+		{"ErrorCache outside Cache: 200", nil, mws{middleware.ErrorCache(minute), middleware.Cache(hour)}, 200, age(hour)},
+		{"ErrorCache outside Cache: 404", nil, mws{middleware.ErrorCache(minute), middleware.Cache(hour)}, 404, age(minute)},
+		{"ErrorCache outside Cache: 500", nil, mws{middleware.ErrorCache(minute), middleware.Cache(hour)}, 500, "no-store"},
+		{"global ErrorCache, route Cache: 200", mws{middleware.ErrorCache(minute)}, mws{middleware.Cache(hour)}, 200, age(hour)},
+		{"global ErrorCache, route Cache: 404", mws{middleware.ErrorCache(minute)}, mws{middleware.Cache(hour)}, 404, age(minute)},
+		{"global Cache, route ErrorCache: 200", mws{middleware.Cache(hour)}, mws{middleware.ErrorCache(minute)}, 200, age(hour)},
+		{"global Cache, route ErrorCache: 404", mws{middleware.Cache(hour)}, mws{middleware.ErrorCache(minute)}, 404, age(minute)},
 		{"inner off switch falls to the outer ErrorCache", nil,
-			mws{middleware.ErrorCache(hour), middleware.ErrorCache(min, middleware.ErrorCacheStatus(404, 0))}, 404, age(hour)},
+			mws{middleware.ErrorCache(hour), middleware.ErrorCache(minute, middleware.ErrorCacheStatus(404, 0))}, 404, age(hour)},
 		{"outer off switch, inner ErrorCache decides", nil,
-			mws{middleware.ErrorCache(min, middleware.ErrorCacheStatus(404, 0)), middleware.ErrorCache(hour)}, 404, age(hour)},
-		{"only an off switch: no header", nil, mws{middleware.ErrorCache(min, middleware.ErrorCacheStatus(404, 0))}, 404, ""},
-		{"three levels", mws{middleware.Cache(hour)}, mws{middleware.Cache(min), middleware.Cache(2 * min)}, 200, age(2 * min)},
+			mws{middleware.ErrorCache(minute, middleware.ErrorCacheStatus(404, 0)), middleware.ErrorCache(hour)}, 404, age(hour)},
+		{"only an off switch: no header", nil, mws{middleware.ErrorCache(minute, middleware.ErrorCacheStatus(404, 0))}, 404, ""},
+		{"three levels", mws{middleware.Cache(hour)}, mws{middleware.Cache(minute), middleware.Cache(2 * minute)}, 200, age(2 * minute)},
 	}
 
 	for _, tt := range tests {

@@ -7,11 +7,21 @@ import (
 	"github.com/EqualSoftware/ehttp/internal/hook"
 )
 
-// Cache sets Cache-Control on each response with a status below 400: errors
-// belong to ErrorCache. A Cache-Control from the handler or an inner middleware
-// wins. A response to a request with Authorization is private (RFC 9111 §3.5).
-// Zero sends "no-store, no-cache, must-revalidate, proxy-revalidate" (ErrorCache
-// sends only "no-store").
+// Cache decides Cache-Control for each response with a status below 400.
+// ErrorCache decides the error statuses. They never decide the same status.
+//
+// The value is "max-age=N, stale-while-revalidate=N, stale-if-error=N", with
+// "private, " in front for a request with Authorization (RFC 9111 §3.5).
+// Cache(0) sends "no-store, no-cache, must-revalidate, proxy-revalidate".
+// ErrorCache(0) sends only "no-store".
+//
+// A Cache-Control that the handler or an inner middleware already set wins.
+//
+// Global and route: when several Cache apply to a request, the one closest to
+// the handler wins. A route Cache wins over a global one.
+//
+// A Cache outside Timeout does not cover the 503 of Timeout. Use ErrorCache
+// for it.
 func Cache(duration time.Duration) ehttp.MiddlewareHandlerFunc {
 	if duration < 0 {
 		hook.BootPanic("Cache", "duration "+duration.String(), "max-age is delta-seconds, a non-negative integer (RFC 9111 §1.2.2)",
