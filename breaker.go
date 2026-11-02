@@ -26,7 +26,9 @@ const (
 type BreakerOptions struct {
 	Name string
 	// Interval is the length of the rolling window of a closed breaker. Its
-	// counts roll off bucket by bucket. Zero or less means 10s.
+	// counts roll off bucket by bucket. Zero or less means 10s. The value is
+	// rounded up to whole seconds (gobreaker adjusts it to a multiple of the 1 s
+	// bucket). A value under 1s gives one bucket, so it is a fixed window.
 	Interval        time.Duration
 	Timeout         time.Duration
 	PrometheusGauge *prometheus.GaugeVec
