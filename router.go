@@ -368,13 +368,13 @@ func (route *route) matchParam(i int, value string) bool {
 // returns 0, or the status to send instead of calling the handler: 400 for a
 // NUL or a backslash, 403 for a ".." part (RFC 9110 §15.5.1, §15.5.4).
 func (route *route) bind(req *Request, segments []string) int {
+	if status := route.checkValues(segments); status != 0 {
+		return status
+	}
+
 	for i, route_segment := range route.segments {
 		if route_segment == "..." {
-			rest, _ := decodeRest(segments[i:]) // match checked the escapes
-			if status := unsafeStatus(rest); status != 0 {
-				return status
-			}
-
+			rest, _ := decodeRest(segments[i:])
 			req.Request.SetPathValue("...", rest)
 
 			return 0
@@ -386,12 +386,41 @@ func (route *route) bind(req *Request, segments []string) int {
 
 		key, _, _ := strings.Cut(route_segment[1:], "|")
 		value, _ := decodeSegment(segments[i])
+		req.Request.SetPathValue(key, value)
+	}
 
+	return 0
+}
+
+// checkValues returns the status for the first refused param value, or 0. It
+// runs before any value is written, so a refused request keeps no params.
+func (route *route) checkValues(segments []string) int {
+	for i, route_segment := range route.segments {
+		if route_segment == "..." {
+			return restStatus(segments[i:])
+		}
+
+		if !strings.HasPrefix(route_segment, ":") {
+			continue
+		}
+
+		value, _ := decodeSegment(segments[i])
 		if status := unsafeStatus(value); status != 0 {
 			return status
 		}
+	}
 
-		req.Request.SetPathValue(key, value)
+	return 0
+}
+
+// restStatus checks each wildcard segment alone. The parts split on "/" of the
+// joined value are the parts of the segments, so this needs no join.
+func restStatus(segments []string) int {
+	for _, segment := range segments {
+		value, _ := decodeSegment(segment) // match checked the escapes
+		if status := unsafeStatus(value); status != 0 {
+			return status
+		}
 	}
 
 	return 0

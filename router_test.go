@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/EqualSoftware/ehttp/internal/ehttptest"
@@ -625,15 +624,13 @@ func TestRouterGroups(t *testing.T) {
 func TestRouterDecodedParamGuard(t *testing.T) {
 	t.Parallel()
 
-	var ran atomic.Int32
-
 	s := NewServer()
-	s.GET("/p/:v", func(res *ResponseWriter, req *Request) { ran.Add(1); res.String(req.Param("v")) })
-	s.GET("/w/...", func(res *ResponseWriter, req *Request) { ran.Add(1); res.String(req.Param("...")) })
+	s.GET("/p/:v", func(res *ResponseWriter, req *Request) { res.Set("X-Ran", "1"); res.String(req.Param("v")) })
+	s.GET("/w/...", func(res *ResponseWriter, req *Request) { res.Set("X-Ran", "1"); res.String(req.Param("...")) })
 	ts := httptest.NewServer(s)
 	t.Cleanup(ts.Close)
 
-	get := func(path string) (int, string) {
+	get := func(path string) (int, string, bool) {
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+path, http.NoBody)
 		if err != nil {
 			t.Fatal(err)
@@ -647,7 +644,7 @@ func TestRouterDecodedParamGuard(t *testing.T) {
 
 		body, _ := io.ReadAll(resp.Body)
 
-		return resp.StatusCode, string(body)
+		return resp.StatusCode, string(body), resp.Header.Get("X-Ran") == "1"
 	}
 
 	bad := []struct {
@@ -663,8 +660,9 @@ func TestRouterDecodedParamGuard(t *testing.T) {
 			t.Run(prefix+tt.value, func(t *testing.T) {
 				t.Parallel()
 
-				code, _ := get(prefix + tt.value)
+				code, _, ran := get(prefix + tt.value)
 				ehttptest.Eq(t, "RFC 9110 §15.5 (the send module: up-path 403, NUL 400)", code, tt.code)
+				ehttptest.Eq(t, "the handler does not run for a refused value", ran, false)
 			})
 		}
 	}
@@ -672,15 +670,17 @@ func TestRouterDecodedParamGuard(t *testing.T) {
 	t.Run("literal dot-dot in a wildcard", func(t *testing.T) {
 		t.Parallel()
 
-		code, _ := get("/w/../secret.txt")
+		code, _, ran := get("/w/../secret.txt")
 		ehttptest.Eq(t, "RFC 9110 §15.5.4", code, 403)
+		ehttptest.Eq(t, "the handler does not run for a refused value", ran, false)
 	})
 
 	t.Run("literal dot-dot in a param", func(t *testing.T) {
 		t.Parallel()
 
-		code, _ := get("/p/..")
+		code, _, ran := get("/p/..")
 		ehttptest.Eq(t, "RFC 9110 §15.5.4", code, 403)
+		ehttptest.Eq(t, "the handler does not run for a refused value", ran, false)
 	})
 
 	for _, tt := range []struct{ path, want string }{
@@ -693,11 +693,30 @@ func TestRouterDecodedParamGuard(t *testing.T) {
 		t.Run(tt.path, func(t *testing.T) {
 			t.Parallel()
 
-			code, body := get(tt.path)
+			code, body, ran := get(tt.path)
 			ehttptest.Eq(t, "RFC 3986 §2.1 (data stays data)", code, 200)
+			ehttptest.Eq(t, "the handler runs for a data value", ran, true)
 			ehttptest.Eq(t, "RFC 3986 §2.1", body, tt.want)
 		})
 	}
+}
 
-	t.Cleanup(func() { ehttptest.Eq(t, "the handler does not run for a refused value", int(ran.Load()), 5) })
+func TestRouterRefusedRequestKeepsNoParams(t *testing.T) {
+	t.Parallel()
+
+	seen := "unset"
+
+	s := NewServer()
+	s.Use(func(next Handler) HandlerFunc {
+		return func(res *ResponseWriter, req *Request) {
+			next.ServeHTTP(res, req)
+
+			seen = req.Param("a")
+		}
+	})
+	s.GET("/q/:a/:b", aText("ok"))
+
+	rec := aDo(s, "GET", "/q/ok/..")
+	ehttptest.Eq(t, "RFC 9110 §15.5.4", rec.Code, 403)
+	ehttptest.Eq(t, "a refused request keeps no partial params", seen, "")
 }
