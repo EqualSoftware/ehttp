@@ -186,3 +186,79 @@ func TestBreakerConcurrentCalls(t *testing.T) {
 
 	ehttptest.Eq(t, "a high failure rate trips the breaker", cb.State().String(), "open")
 }
+
+// The breaker needs 20 requests in the interval and a 50% failure rate.
+func TestBreakerBoundary(t *testing.T) {
+	t.Parallel()
+
+	t.Run("19 failures stay closed", func(t *testing.T) {
+		t.Parallel()
+
+		cb := bBreaker()
+		for range 19 {
+			_ = bFail(cb)
+		}
+
+		ehttptest.Eq(t, "fewer than 20 samples do not trip the breaker", cb.State().String(), "closed")
+	})
+
+	t.Run("20 failures open it", func(t *testing.T) {
+		t.Parallel()
+
+		cb := bBreaker()
+		for range 20 {
+			_ = bFail(cb)
+		}
+
+		ehttptest.Eq(t, "20 samples with 100% failure trip the breaker", cb.State().String(), "open")
+	})
+
+	t.Run("10 successes then 10 failures open it", func(t *testing.T) {
+		t.Parallel()
+
+		cb := bBreaker()
+		for range 10 {
+			_ = bSucceed(cb)
+		}
+
+		for range 10 {
+			_ = bFail(cb)
+		}
+
+		ehttptest.Eq(t, "20 samples with a 50% failure rate trip the breaker", cb.State().String(), "open")
+	})
+
+	t.Run("10 successes then 9 failures stay closed", func(t *testing.T) {
+		t.Parallel()
+
+		cb := bBreaker()
+		for range 10 {
+			_ = bSucceed(cb)
+		}
+
+		for range 9 {
+			_ = bFail(cb)
+		}
+
+		_ = bSucceed(cb) // 20 samples, 45% failed
+
+		ehttptest.Eq(t, "a rate below 50% does not trip the breaker", cb.State().String(), "closed")
+	})
+}
+
+// With no Interval set, the counts of a closed breaker reset after 10s.
+func TestBreakerDefaultIntervalResets(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		cb := bBreaker()
+		for range 19 {
+			_ = bFail(cb)
+		}
+
+		time.Sleep(11 * time.Second)
+		_ = bFail(cb) // the old 19 failures are gone: 1 sample
+
+		ehttptest.Eq(t, "the default interval resets the counts", cb.State().String(), "closed")
+	})
+}

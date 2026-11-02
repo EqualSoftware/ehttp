@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -133,18 +134,15 @@ func TestBodyLimitContract(t *testing.T) {
 func TestBodyLimitInvalidValue(t *testing.T) {
 	t.Parallel()
 
-	for _, v := range []string{"4 KB", "abc", "", "10XB", "K"} {
+	for _, v := range []string{"4 KB", "abc", "", "10XB", "K", "0"} {
 		t.Run("invalid "+v, func(t *testing.T) {
 			t.Parallel()
 
-			panicked := func() (p bool) {
-				defer func() { p = recover() != nil }()
-				middleware.BodyLimit(v)
+			msg := bootMessage(func() { middleware.BodyLimit(v) })
+			want := "ehttp: limit " + strconv.Quote(v) + " in BodyLimit: "
 
-				return false
-			}()
-
-			ehttptest.True(t, "an invalid limit panics at boot", panicked, "BodyLimit(%q) accepted an invalid limit at boot", v)
+			ehttptest.True(t, "an invalid limit panics at boot", strings.HasPrefix(msg, want), "BodyLimit(%q) message %q", v, msg)
+			ehttptest.True(t, "DX message: fix part", strings.Contains(msg, ". Fix: "), "message %q has no Fix part", msg)
 		})
 	}
 }

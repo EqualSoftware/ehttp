@@ -25,7 +25,7 @@ const (
 func BodyLimit(l string) ehttp.MiddlewareHandlerFunc {
 	limit, ok := parseBodyLimit(l)
 	if !ok {
-		hook.BootPanic("BodyLimit", "limit "+strconv.Quote(l), "a size is a positive number with an optional unit K, M, G, T or P, and an optional B (author decision)",
+		hook.BootPanic("BodyLimit", "limit "+strconv.Quote(l), "size format: a positive number with an optional K/M/G/T/P unit and an optional B",
 			`pass a value like "512", "4K", "4KB" or "1.5M"`)
 	}
 
