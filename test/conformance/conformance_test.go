@@ -607,7 +607,7 @@ func conformanceCases() []conformanceCase {
 				}
 				cAll(cHdr("Access-Control-Allow-Origin", fixtures.OriginA), cHasToken("Vary", "Origin"))(t, b, r)
 			}},
-		{name: "CORS: Allow-Credentials only ever \"true\"", basis: fcred, knownBug: "cors-credentials-false-sent", fixture: "cors-list", method: get, path: "/api", hdr: cors(fixtures.OriginA),
+		{name: "CORS: Allow-Credentials only ever \"true\"", basis: fcred, fixture: "cors-list", method: get, path: "/api", hdr: cors(fixtures.OriginA),
 			want: func(t testing.TB, b string, r *cResp) {
 				if v, ok := r.Header["Access-Control-Allow-Credentials"]; ok {
 					ehttptest.Eq(t, b, v[0], "true")

@@ -186,7 +186,7 @@ func TestServerWithCors(t *testing.T) {
 		rec := aDo(second, "OPTIONS", "/x", HeaderOrigin, "https://a.example", HeaderAccessControlRequestMethod, "GET")
 
 		ehttptest.Eq(t, "WithCors must not mutate DefaultCorsOptions", rec.Header().Get(HeaderAccessControlAllowMethods), "*")
-		ehttptest.Eq(t, "WithCors must not mutate DefaultCorsOptions", rec.Header().Get(HeaderAccessControlAllowCredentials), "false")
+		ehttptest.Eq(t, "WithCors must not mutate DefaultCorsOptions", rec.Header().Get(HeaderAccessControlAllowCredentials), "")
 	})
 
 	t.Run("NewServer copies the slices of the default options", func(t *testing.T) {

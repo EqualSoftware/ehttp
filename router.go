@@ -672,7 +672,10 @@ func corsUpdateHeaders(res *ResponseWriter, req *Request, options *CorsOptions) 
 	}
 
 	res.Own(HeaderAccessControlAllowOrigin, origin)
-	res.Own(HeaderAccessControlAllowCredentials, strconv.FormatBool(options.Credentials))
+
+	if options.Credentials {
+		res.Own(HeaderAccessControlAllowCredentials, "true")
+	}
 }
 
 // corsPreflightHeaders sets the headers that a browser reads only from the
