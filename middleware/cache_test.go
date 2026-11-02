@@ -52,7 +52,7 @@ func TestCache(t *testing.T) {
 		ehttptest.Eq(t, "middleware contract", rec.Body.String(), "ok")
 	})
 
-	t.Run("the handler cannot override the header (a middleware owns the header)", func(t *testing.T) {
+	t.Run("the handler can override the header (author decision: the last writer wins)", func(t *testing.T) {
 		t.Parallel()
 
 		h := fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
@@ -62,7 +62,7 @@ func TestCache(t *testing.T) {
 
 		rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
 
-		ehttptest.Eq(t, "middleware value kept (Production)", rec.Header().Get("Cache-Control"), "max-age=60, stale-while-revalidate=60, stale-if-error=60")
+		ehttptest.Eq(t, "handler value sent (Production)", rec.Header().Get("Cache-Control"), "no-store")
 	})
 
 	t.Run("same on every status the handler picks", func(t *testing.T) {

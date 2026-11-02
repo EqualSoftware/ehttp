@@ -12,7 +12,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-const ownBasis = "a middleware owns the header: the handler cannot change it"
+const ownBasis = "author decision: the last writer wins; Development warns on an override of a middleware header"
 
 // aOwner is a middleware that owns X-Owned and the Vary member Owner.
 func aOwner(next Handler) HandlerFunc {
@@ -23,47 +23,38 @@ func aOwner(next Handler) HandlerFunc {
 	}
 }
 
+const overrideRule = "handler overrides a middleware header"
+
 func TestOwnedHandlerOverride(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		do        HandlerFunc
-		attempted string
-		want      string // the owned value at the end
+		name string
+		do   HandlerFunc
+		want string // the value at the end; "" is removed
+		got  string // the handler value in the warning
 	}{
-		{"Set", func(res *ResponseWriter, _ *Request) { res.Set("x-owned", "handler"); res.String("ok") }, "handler", "mw"},
-		{"Append", func(res *ResponseWriter, _ *Request) { res.Append("X-Owned", "a", "b"); res.String("ok") }, "a, b", "mw"},
-		{"Remove", func(res *ResponseWriter, _ *Request) { res.Remove("X-Owned"); res.String("ok") }, "", "mw"},
-		{"raw Header().Set", func(res *ResponseWriter, _ *Request) { res.Header().Set("X-Owned", "raw"); res.String("ok") }, "raw", "mw"},
-		{"raw Header().Del", func(res *ResponseWriter, _ *Request) { res.Header().Del("X-Owned"); res.String("ok") }, "", "mw"},
+		{"Set", func(res *ResponseWriter, _ *Request) { res.Set("x-owned", "handler"); res.String("ok") }, "handler", "handler"},
+		{"Append", func(res *ResponseWriter, _ *Request) { res.Append("X-Owned", "a", "b"); res.String("ok") }, "mw, a, b", "a, b"},
+		{"Remove", func(res *ResponseWriter, _ *Request) { res.Remove("X-Owned"); res.String("ok") }, "", ""},
+		{"raw Header().Set", func(res *ResponseWriter, _ *Request) { res.Header().Set("X-Owned", "raw"); res.String("ok") }, "raw", "raw"},
+		{"raw Header().Del", func(res *ResponseWriter, _ *Request) { res.Header().Del("X-Owned"); res.String("ok") }, "", ""},
 		{"native handler", WrapHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("X-Owned", "native")
 			_, _ = w.Write([]byte("ok"))
-		})), "native", "mw"},
+		})), "native", "native"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name+"/Development", func(t *testing.T) {
 			t.Parallel()
 
-			_, _, msg := aServe(Development, tt.do, aOwner)
-
-			ehttptest.True(t, ownBasis, strings.HasPrefix(msg, "ehttp: "), "message %q", msg)
-			ehttptest.True(t, ownBasis+" (where)", strings.Contains(msg, " on GET /x: "), "message %q", msg)
-			ehttptest.True(t, ownBasis+" (why)", strings.Contains(msg, "header X-Owned is owned by a middleware, with the value \"mw\""), "message %q", msg)
-			ehttptest.True(t, ownBasis+" (fix)", strings.Contains(msg, ". Fix: do not set X-Owned in the handler"), "message %q", msg)
-		})
-
-		t.Run(tt.name+"/Production", func(t *testing.T) {
-			t.Parallel()
-
-			rec, logs, msg := aServe(Production, tt.do, aOwner)
+			rec, logs, msg := aServe(Development, tt.do, aOwner)
 
 			ehttptest.Eq(t, ownBasis+" (no panic)", msg, "")
-			ehttptest.Eq(t, ownBasis+" (middleware value kept)", rec.Result().Header.Get("X-Owned"), tt.want)
+			ehttptest.Eq(t, ownBasis+" (handler value sent)", rec.Result().Header.Get("X-Owned"), tt.want)
 
-			all := logs.FilterField(zap.String("rule", "handler overrides a middleware header")).All()
+			all := logs.FilterField(zap.String("rule", overrideRule)).All()
 			ehttptest.Eq(t, ownBasis+" (one warning)", len(all), 1)
 
 			if len(all) != 1 {
@@ -72,11 +63,23 @@ func TestOwnedHandlerOverride(t *testing.T) {
 
 			ctx := all[0].ContextMap()
 			ehttptest.Eq(t, ownBasis, all[0].Level, zapcore.WarnLevel)
+			ehttptest.True(t, ownBasis+" (message)", strings.HasPrefix(all[0].Message, "ehttp: ") &&
+				strings.Contains(all[0].Message, " on GET /x: ") && strings.Contains(all[0].Message, ". Fix: "), "message %q", all[0].Message)
 			ehttptest.Eq(t, ownBasis+" (header)", ctx["header"], any("X-Owned"))
 			ehttptest.Eq(t, ownBasis+" (middleware_value)", ctx["middleware_value"], any(`"mw"`))
-			ehttptest.Eq(t, ownBasis+" (attempted_value)", ctx["attempted_value"], any(strconv.Quote(tt.attempted)))
+			ehttptest.Eq(t, ownBasis+" (handler_value)", ctx["handler_value"], any(strconv.Quote(tt.got)))
+			ehttptest.Eq(t, ownBasis+" (method)", ctx["method"], any("GET"))
 			ehttptest.Eq(t, ownBasis+" (route)", ctx["route"], any("/x"))
-			ehttptest.Eq(t, ownBasis+" (one route field)", countKey(all[0], "route"), 1)
+		})
+
+		t.Run(tt.name+"/Production", func(t *testing.T) {
+			t.Parallel()
+
+			rec, logs, msg := aServe(Production, tt.do, aOwner)
+
+			ehttptest.Eq(t, ownBasis+" (no panic)", msg, "")
+			ehttptest.Eq(t, ownBasis+" (handler value sent)", rec.Result().Header.Get("X-Owned"), tt.want)
+			ehttptest.Eq(t, ownBasis+" (no log)", logs.Len(), 0)
 		})
 	}
 }
@@ -97,24 +100,16 @@ func TestOwnedHandlerCanAddVaryMembers(t *testing.T) {
 func TestOwnedVaryMemberIsRestored(t *testing.T) {
 	t.Parallel()
 
-	do := func(res *ResponseWriter, _ *Request) {
-		res.Header().Set("Vary", "Accept")
-		res.String("ok")
+	for _, mode := range []Mode{Development, Production} {
+		rec, logs, msg := aServe(mode, func(res *ResponseWriter, _ *Request) {
+			res.Header().Set("Vary", "Accept")
+			res.String("ok")
+		}, aOwner)
+
+		ehttptest.Eq(t, ownBasis, msg, "")
+		ehttptest.Eq(t, "RFC 9110 §12.5.5 (member kept, handler member kept)", rec.Result().Header.Get("Vary"), "Accept, Owner")
+		ehttptest.Eq(t, ownBasis+" (Vary does not log)", logs.Len(), 0)
 	}
-
-	rec, logs, msg := aServe(Production, do, aOwner)
-
-	ehttptest.Eq(t, ownBasis, msg, "")
-	ehttptest.Eq(t, ownBasis+" (member restored, handler member kept)", rec.Result().Header.Get("Vary"), "Accept, Owner")
-	ehttptest.Eq(t, ownBasis+" (one warning)", logs.Len(), 1)
-
-	ctx := logs.All()[0].ContextMap()
-	ehttptest.Eq(t, ownBasis, ctx["header"], any("Vary"))
-	ehttptest.Eq(t, ownBasis, ctx["middleware_value"], any(`"Owner"`))
-	ehttptest.Eq(t, ownBasis, ctx["attempted_value"], any(`"Accept"`))
-
-	_, _, msg = aServe(Development, do, aOwner)
-	ehttptest.True(t, ownBasis+" (Development panics)", strings.Contains(msg, "header Vary is owned by a middleware"), "message %q", msg)
 }
 
 func TestOwnedVaryWildcardKeepsMembers(t *testing.T) {
@@ -130,11 +125,11 @@ func TestOwnedVaryWildcardKeepsMembers(t *testing.T) {
 	ehttptest.Eq(t, ownBasis, rec.Header().Get("Vary"), "*")
 }
 
-func TestOwnedCorsRawVary(t *testing.T) {
+func TestOwnedCorsRawWrites(t *testing.T) {
 	t.Parallel()
 
 	l, logs := aObserved()
-	s := NewServer(WithLogger(l))
+	s := NewServer(WithLogger(l), WithMode(Development))
 	s.Use(Cors(CorsOptions{Origin: []string{"https://a.example"}}))
 	s.GET("/x", func(res *ResponseWriter, _ *Request) {
 		res.Header().Set("Vary", "Accept")
@@ -144,21 +139,23 @@ func TestOwnedCorsRawVary(t *testing.T) {
 
 	rec := aDo(s, "GET", "/x", "Origin", "https://a.example")
 
-	ehttptest.Eq(t, "Fetch §3.2.5 (Vary: Origin is restored)", rec.Header().Get("Vary"), "Accept, Origin")
-	ehttptest.Eq(t, ownBasis+" (ACAO is restored)", rec.Header().Get("Access-Control-Allow-Origin"), "https://a.example")
-	ehttptest.Eq(t, ownBasis+" (one warning for each field)", logs.Len(), 2)
+	ehttptest.Eq(t, "Fetch §3.2.5 (Vary: Origin stays)", rec.Header().Get("Vary"), "Accept, Origin")
+	ehttptest.Eq(t, ownBasis+" (the handler ACAO is sent)", rec.Header().Get("Access-Control-Allow-Origin"), "*")
+	ehttptest.Eq(t, ownBasis+" (one warning, for ACAO)", logs.Len(), 1)
 }
 
 func TestOwnedCorsHandlerSet(t *testing.T) {
 	t.Parallel()
 
-	s := NewServer(WithMode(Development))
+	l, logs := aObserved()
+	s := NewServer(WithLogger(l), WithMode(Development))
 	s.Use(Cors(CorsOptions{Origin: []string{"https://a.example"}}))
 	s.GET("/x", func(res *ResponseWriter, _ *Request) { res.Set("Access-Control-Allow-Origin", "*") })
 
-	msg := aPanics(func() { aDo(s, "GET", "/x", "Origin", "https://a.example") })
+	rec := aDo(s, "GET", "/x", "Origin", "https://a.example")
 
-	ehttptest.True(t, ownBasis, strings.Contains(msg, "header Access-Control-Allow-Origin is owned by a middleware"), "message %q", msg)
+	ehttptest.Eq(t, ownBasis, rec.Header().Get("Access-Control-Allow-Origin"), "*")
+	ehttptest.Eq(t, ownBasis+" (one warning)", logs.FilterField(zap.String("header", "Access-Control-Allow-Origin")).Len(), 1)
 }
 
 func TestOwnedMiddlewareReplacesMiddleware(t *testing.T) {
@@ -197,7 +194,7 @@ func TestOwnedAfterTheHandlerReplacesToo(t *testing.T) {
 	ehttptest.Eq(t, ownBasis, rec.Header().Get("X-Owned"), "after")
 }
 
-func TestOwnedInterceptorKeepsOwnership(t *testing.T) {
+func TestOwnedInterceptorWarnsInDevelopment(t *testing.T) {
 	t.Parallel()
 
 	buffered := func(next Handler) HandlerFunc {
@@ -208,13 +205,17 @@ func TestOwnedInterceptorKeepsOwnership(t *testing.T) {
 		}
 	}
 
-	rec, logs, _ := aServe(Production, func(res *ResponseWriter, _ *Request) { res.Set("X-Owned", "h"); res.String("ok") }, aOwner, buffered)
+	do := func(res *ResponseWriter, _ *Request) { res.Set("X-Owned", "h"); res.String("ok") }
 
-	ehttptest.Eq(t, ownBasis, rec.Header().Get("X-Owned"), "mw")
-	ehttptest.Eq(t, ownBasis, logs.Len(), 1)
+	rec, logs, msg := aServe(Production, do, aOwner, buffered)
+	ehttptest.Eq(t, ownBasis, msg, "")
+	ehttptest.Eq(t, ownBasis, rec.Header().Get("X-Owned"), "h")
+	ehttptest.Eq(t, ownBasis+" (Production: no log)", logs.Len(), 0)
 
-	_, _, msg := aServe(Development, func(res *ResponseWriter, _ *Request) { res.Set("X-Owned", "h") }, aOwner, buffered)
-	ehttptest.True(t, ownBasis+" (the inner writer panics too)", strings.Contains(msg, "is owned by a middleware"), "message %q", msg)
+	rec, logs, msg = aServe(Development, do, aOwner, buffered)
+	ehttptest.Eq(t, ownBasis, msg, "")
+	ehttptest.Eq(t, ownBasis, rec.Header().Get("X-Owned"), "h")
+	ehttptest.Eq(t, ownBasis+" (Development: one warning)", logs.Len(), 1)
 }
 
 func TestOwnRejectsSpecialFields(t *testing.T) {
@@ -230,7 +231,7 @@ func TestOwnRejectsSpecialFields(t *testing.T) {
 	ehttptest.True(t, ownBasis, strings.HasPrefix(msg, `ehttp: res.Own("Bad Name", ...) on GET /x: `), "message %q", msg)
 }
 
-func TestOwnManyFieldsSpillsWithoutLosingOne(t *testing.T) {
+func TestOwnManyFieldsKeepsEveryOne(t *testing.T) {
 	t.Parallel()
 
 	many := func(next Handler) HandlerFunc {
@@ -243,47 +244,24 @@ func TestOwnManyFieldsSpillsWithoutLosingOne(t *testing.T) {
 		}
 	}
 
-	rec, logs, _ := aServe(Production, func(res *ResponseWriter, _ *Request) { res.Set("X-N", "h"); res.String("ok") }, many)
+	rec, logs, _ := aServe(Development, func(res *ResponseWriter, _ *Request) { res.Set("X-N", "h"); res.String("ok") }, many)
 
-	ehttptest.Eq(t, ownBasis, rec.Header().Get("X-N"), "N")
+	ehttptest.Eq(t, ownBasis, rec.Header().Get("X-N"), "h")
+	ehttptest.Eq(t, ownBasis, rec.Header().Get("X-M"), "M")
 	ehttptest.Eq(t, ownBasis, logs.Len(), 1)
 }
 
-func TestOwnedFieldsDoNotAllocatePerRequest(t *testing.T) {
-	l, _ := aObserved()
-	names := []string{"X-A", "X-B"} // with the Vary member: the 3 inline slots
+func TestProductionTracksNoOwner(t *testing.T) {
+	t.Parallel()
 
-	raw := NewServer(WithLogger(l))
-	raw.GET("/x", func(res *ResponseWriter, _ *Request) { res.End() }, func(next Handler) HandlerFunc {
-		return func(res *ResponseWriter, req *Request) {
-			for _, n := range names {
-				res.Header().Set(n, "v")
-			}
+	var tracked bool
 
-			res.Header().Set("Vary", "Origin")
-			next.ServeHTTP(res, req)
-		}
-	})
+	aServe(Production, func(res *ResponseWriter, _ *Request) {
+		tracked = res.dev != nil
+		res.End()
+	}, aOwner)
 
-	owning := NewServer(WithLogger(l))
-	owning.GET("/x", func(res *ResponseWriter, _ *Request) { res.End() }, func(next Handler) HandlerFunc {
-		return func(res *ResponseWriter, req *Request) {
-			for _, n := range names {
-				res.Own(n, "v")
-			}
-
-			res.OwnVary("Origin")
-			next.ServeHTTP(res, req)
-		}
-	})
-
-	r := httptest.NewRequestWithContext(t.Context(), "GET", "/x", http.NoBody)
-	w := httptest.NewRecorder()
-
-	base := testing.AllocsPerRun(100, func() { raw.ServeHTTP(w, r) })
-	used := testing.AllocsPerRun(100, func() { owning.ServeHTTP(w, r) })
-
-	ehttptest.True(t, ownBasis+" (the first owned fields are inline)", used <= base, "raw %v, owned %v", base, used)
+	ehttptest.True(t, ownBasis+" (no owner list)", !tracked, "tracked")
 }
 
 func TestOwnedEqualValueIsNotAMistake(t *testing.T) {
@@ -303,7 +281,7 @@ func TestOwnedEqualValueIsNotAMistake(t *testing.T) {
 	ehttptest.Eq(t, ownBasis+" (no warning)", logs.Len(), 0)
 
 	do := func(res *ResponseWriter, _ *Request) { res.Append("X-Owned", "mw"); res.String("ok") }
-	rec, logs, msg := aServe(Production, do, aOwner)
+	rec, logs, msg := aServe(Development, do, aOwner)
 	ehttptest.Eq(t, ownBasis, msg, "")
 	ehttptest.Eq(t, ownBasis+" (Append of a member that is there)", logs.Len(), 0)
 	ehttptest.Eq(t, ownBasis, rec.Header().Get("X-Owned"), "mw")
@@ -322,9 +300,9 @@ func TestOwnedBufferedWriterOutsideOwner(t *testing.T) {
 
 	// The handler writes no body; the owner is inside the buffered writer.
 	do := func(res *ResponseWriter, _ *Request) { res.Header().Set("X-Owned", "raw") }
-	rec, logs, _ := aServe(Production, do, buffered, aOwner)
+	rec, logs, _ := aServe(Development, do, buffered, aOwner)
 
-	ehttptest.Eq(t, ownBasis, rec.Result().Header.Get("X-Owned"), "mw")
+	ehttptest.Eq(t, ownBasis, rec.Result().Header.Get("X-Owned"), "raw")
 	ehttptest.Eq(t, ownBasis+" (one warning)", logs.Len(), 1)
 
 	// The inner owner changes a value that the outer writer owns.
@@ -332,7 +310,7 @@ func TestOwnedBufferedWriterOutsideOwner(t *testing.T) {
 		return func(res *ResponseWriter, req *Request) { res.Own("X-Owned", "inner"); next.ServeHTTP(res, req) }
 	}
 
-	rec, logs, _ = aServe(Production, func(res *ResponseWriter, _ *Request) { res.End() }, aOwner, buffered, inner)
+	rec, logs, _ = aServe(Development, func(res *ResponseWriter, _ *Request) { res.End() }, aOwner, buffered, inner)
 	ehttptest.Eq(t, ownBasis+" (the inner owner is newer)", rec.Result().Header.Get("X-Owned"), "inner")
 	ehttptest.Eq(t, ownBasis+" (no warning)", logs.Len(), 0)
 }
@@ -340,16 +318,54 @@ func TestOwnedBufferedWriterOutsideOwner(t *testing.T) {
 func TestOwnedFieldValuesAreQuoted(t *testing.T) {
 	t.Parallel()
 
-	_, logs, _ := aServe(Production, func(res *ResponseWriter, _ *Request) {
-		res.Set("X-A", "a\r\nInjected: 1")
-		res.Set("X-Owned", "h\r\n")
+	_, logs, _ := aServe(Development, func(res *ResponseWriter, _ *Request) {
+		res.Set("X-Owned", "h\tb")
 		res.String("ok")
 	}, aOwner)
 
+	ehttptest.Eq(t, ownBasis, logs.Len(), 1)
+
 	for _, e := range logs.All() {
 		for _, f := range e.Context {
-			ehttptest.True(t, ownBasis+" (no raw CR or LF in a field)", !strings.ContainsAny(f.String, "\r\n"), "field %s = %q", f.Key, f.String)
+			ehttptest.True(t, ownBasis+" (no raw CR or LF in a field)", !strings.ContainsAny(f.String, "\t"), "field %s = %q", f.Key, f.String)
 		}
+	}
+}
+
+// TestOwnedRealServer sends the response over a real connection.
+func TestOwnedRealServer(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range []Mode{Development, Production} {
+		l, logs := aObserved()
+		s := NewServer(WithLogger(l), WithMode(mode))
+		s.Use(Cors(CorsOptions{Origin: []string{"https://a.example"}}))
+		s.GET("/x", func(res *ResponseWriter, _ *Request) {
+			res.Header().Del("Vary")
+			res.Set("Access-Control-Allow-Origin", "https://handler.example")
+			res.String("ok")
+		})
+
+		srv := httptest.NewServer(s)
+
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/x", http.NoBody)
+		ehttptest.Eq(t, ownBasis, err, nil)
+		req.Header.Set("Origin", "https://a.example")
+
+		resp, err := srv.Client().Do(req)
+		ehttptest.Eq(t, ownBasis, err, nil)
+		_ = resp.Body.Close()
+		srv.Close()
+
+		ehttptest.Eq(t, ownBasis+" (handler value wins)", resp.Header.Get("Access-Control-Allow-Origin"), "https://handler.example")
+		ehttptest.Eq(t, "Fetch §3.2.5 (Vary: Origin survives)", resp.Header.Get("Vary"), "Origin")
+
+		if mode == Development {
+			ehttptest.Eq(t, ownBasis+" (Development warns)", logs.FilterField(zap.String("rule", overrideRule)).Len(), 1)
+			continue
+		}
+
+		ehttptest.Eq(t, ownBasis+" (Production logs nothing)", logs.Len(), 0)
 	}
 }
 

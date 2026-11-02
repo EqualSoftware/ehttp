@@ -169,7 +169,7 @@ func TestTimeout503IsNotCached(t *testing.T) {
 	slow := func(_ *ehttp.ResponseWriter, req *ehttp.Request) { <-req.Context().Done() }
 
 	for name, outer := range map[string]ehttp.MiddlewareHandlerFunc{
-		"Cache outside":      middleware.Cache(time.Minute),
+		"no outer":           func(next ehttp.Handler) ehttp.HandlerFunc { return next.ServeHTTP },
 		"ErrorCache outside": middleware.ErrorCache(time.Minute),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -182,7 +182,7 @@ func TestTimeout503IsNotCached(t *testing.T) {
 			}
 
 			ehttptest.Eq(t, "RFC 9110 §15.6.4", resp.StatusCode, http.StatusServiceUnavailable)
-			ehttptest.Eq(t, "503 is not cached", strings.Join(resp.Header.Values("Cache-Control"), "|"), "no-store")
+			ehttptest.Eq(t, "Timeout sets no Cache-Control: a 503 is not heuristically cacheable", strings.Join(resp.Header.Values("Cache-Control"), "|"), "")
 		})
 	}
 }

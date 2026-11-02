@@ -15,7 +15,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-const ownBasis = "a middleware owns the header: the handler cannot change it"
+const ownBasis = "author decision: the last writer wins; Development warns on an override of a middleware header"
 
 func bObserved() (*zap.Logger, *observer.ObservedLogs) {
 	core, logs := observer.New(zapcore.DebugLevel)
@@ -62,14 +62,21 @@ func TestOwnerMiddlewareHeaders(t *testing.T) {
 
 			handler := func(res *ehttp.ResponseWriter, _ *ehttp.Request) { res.Set(tt.header, tt.set); res.String("ok") }
 
-			msg := bDevPanic(handler, tt.mw)
-			ehttptest.True(t, ownBasis+" (Development)", strings.Contains(msg, "header "+tt.header+" is owned by a middleware"), "message %q", msg)
+			for _, mode := range []ehttp.Mode{ehttp.Development, ehttp.Production} {
+				l, logs := bObserved()
+				s := ehttp.NewServer(ehttp.WithLogger(l), ehttp.WithMode(mode))
+				s.GET("/x", handler, tt.mw)
+				rec := ehttptest.Do(s, fixtures.Req("GET", "/x"))
 
-			l, logs := bObserved()
-			rec := ehttptest.Do(fixtures.HandlerLogged(l, handler, tt.mw), fixtures.Req("GET", "/x"))
+				ehttptest.Eq(t, ownBasis+" (handler value sent)", rec.Header().Get(tt.header), tt.set)
 
-			ehttptest.True(t, ownBasis+" (Production keeps the middleware value)", rec.Header().Get(tt.header) != tt.set, "%s = %q", tt.header, rec.Header().Get(tt.header))
-			ehttptest.Eq(t, ownBasis+" (one warning)", logs.FilterField(zap.String("header", tt.header)).Len(), 1)
+				want := 0
+				if mode == ehttp.Development {
+					want = 1
+				}
+
+				ehttptest.Eq(t, ownBasis+" (warnings)", logs.FilterField(zap.String("header", tt.header)).Len(), want)
+			}
 		})
 	}
 }
@@ -85,11 +92,16 @@ func TestOwnerMiddlewareNativeHandler(t *testing.T) {
 	l, logs := bObserved()
 	rec := ehttptest.Do(fixtures.HandlerLogged(l, native, middleware.Secure(middleware.SecureOptions{})), fixtures.Req("GET", "/x"))
 
-	ehttptest.Eq(t, ownBasis+" (restored before the header goes out)", rec.Result().Header.Get("X-Frame-Options"), "SAMEORIGIN")
-	ehttptest.Eq(t, ownBasis+" (one warning)", logs.Len(), 1)
+	ehttptest.Eq(t, ownBasis+" (the native value is sent)", rec.Result().Header.Get("X-Frame-Options"), "ALLOWALL")
+	ehttptest.Eq(t, ownBasis+" (Production: no log)", logs.Len(), 0)
 
-	msg := bDevPanic(native, middleware.Secure(middleware.SecureOptions{}))
-	ehttptest.True(t, ownBasis+" (Development)", strings.Contains(msg, "header X-Frame-Options is owned by a middleware"), "message %q", msg)
+	l, logs = bObserved()
+	s := ehttp.NewServer(ehttp.WithLogger(l), ehttp.WithMode(ehttp.Development))
+	s.GET("/x", native, middleware.Secure(middleware.SecureOptions{}))
+	rec = ehttptest.Do(s, fixtures.Req("GET", "/x"))
+
+	ehttptest.Eq(t, ownBasis+" (Development: the native value is sent)", rec.Result().Header.Get("X-Frame-Options"), "ALLOWALL")
+	ehttptest.Eq(t, ownBasis+" (Development: one warning)", logs.Len(), 1)
 }
 
 func TestOwnerMiddlewareVary(t *testing.T) {
@@ -114,8 +126,8 @@ func TestOwnerMiddlewareVary(t *testing.T) {
 	l, logs = bObserved()
 	rec = ehttptest.Do(fixtures.HandlerLogged(l, raw, middleware.AcceptEncoding()), fixtures.Req("GET", "/x"))
 
-	ehttptest.Eq(t, ownBasis+" (the member is restored)", rec.Header().Get("Vary"), "Accept, Accept-Encoding")
-	ehttptest.Eq(t, ownBasis+" (one warning)", logs.Len(), 1)
+	ehttptest.Eq(t, "RFC 9110 §12.5.5 (the member is restored)", rec.Header().Get("Vary"), "Accept, Accept-Encoding")
+	ehttptest.Eq(t, ownBasis+" (Vary does not log)", logs.Len(), 0)
 }
 
 func TestErrorCacheReplacesCacheWithoutWarning(t *testing.T) {
@@ -132,7 +144,7 @@ func TestErrorCacheReplacesCacheWithoutWarning(t *testing.T) {
 	ehttptest.Eq(t, ownBasis+" (no panic in Development)", msg, "")
 }
 
-func TestErrorCacheKeepsOwnerForTheHandler(t *testing.T) {
+func TestErrorCacheIsTheLastWriter(t *testing.T) {
 	t.Parallel()
 
 	handler := func(res *ehttp.ResponseWriter, _ *ehttp.Request) {
@@ -141,12 +153,16 @@ func TestErrorCacheKeepsOwnerForTheHandler(t *testing.T) {
 		res.String("gone")
 	}
 
-	msg := bDevPanic(handler, middleware.Cache(time.Minute), middleware.ErrorCache(time.Hour))
+	l, logs := bObserved()
+	s := ehttp.NewServer(ehttp.WithLogger(l), ehttp.WithMode(ehttp.Development))
+	s.GET("/x", handler, middleware.Cache(time.Minute), middleware.ErrorCache(time.Hour))
+	rec := ehttptest.Do(s, fixtures.Req("GET", "/x"))
 
-	ehttptest.True(t, ownBasis+" (the handler is still behind the interceptor)", strings.Contains(msg, "header Cache-Control is owned by a middleware"), "message %q", msg)
+	ehttptest.True(t, ownBasis+" (ErrorCache writes after the handler)", strings.Contains(rec.Header().Get("Cache-Control"), "max-age=3600"), "Cache-Control %q", rec.Header().Get("Cache-Control"))
+	ehttptest.Eq(t, ownBasis+" (one warning)", logs.FilterField(zap.String("header", "Cache-Control")).Len(), 1)
 }
 
-func TestTimeoutReplacesCacheWithoutWarning(t *testing.T) {
+func TestTimeoutKeepsCacheValue(t *testing.T) {
 	t.Parallel()
 
 	slow := func(res *ehttp.ResponseWriter, req *ehttp.Request) { <-req.Context().Done() }
@@ -155,7 +171,7 @@ func TestTimeoutReplacesCacheWithoutWarning(t *testing.T) {
 	rec := ehttptest.Do(fixtures.HandlerLogged(l, slow, middleware.Cache(time.Minute), middleware.Timeout(time.Millisecond)), fixtures.Req("GET", "/x"))
 
 	ehttptest.Eq(t, "RFC 9110 §15.6.4", rec.Code, 503)
-	ehttptest.Eq(t, ownBasis, rec.Header().Get("Cache-Control"), "no-store")
+	ehttptest.Eq(t, "RFC 9110 §15.6.4 (Timeout sets no Cache-Control)", rec.Header().Get("Cache-Control"), ehttp.CacheControl(time.Minute, false))
 	ehttptest.Eq(t, ownBasis+" (no warning)", logs.Len(), 0)
 }
 
@@ -167,15 +183,15 @@ func TestSetCacheHeaderIsNotAnOwner(t *testing.T) {
 		res.String("ok")
 	}
 
-	// Under Cache the handler cannot replace the owned value.
+	// Under Cache the handler value is sent in Production, with no log.
 	l, logs := bObserved()
 	rec := ehttptest.Do(fixtures.HandlerLogged(l, handler, middleware.Cache(time.Minute)), fixtures.Req("GET", "/x"))
 
-	ehttptest.Eq(t, ownBasis, rec.Header().Get("Cache-Control"), ehttp.CacheControl(time.Minute, false))
-	ehttptest.Eq(t, ownBasis+" (one warning)", logs.Len(), 1)
+	ehttptest.Eq(t, ownBasis, rec.Header().Get("Cache-Control"), ehttp.CacheControl(time.Hour, false))
+	ehttptest.Eq(t, ownBasis+" (no log)", logs.Len(), 0)
 
 	msg := bDevPanic(handler, middleware.Cache(time.Minute))
-	ehttptest.True(t, ownBasis+" (Development)", strings.Contains(msg, "header Cache-Control is owned by a middleware"), "message %q", msg)
+	ehttptest.Eq(t, ownBasis+" (Development: no panic)", msg, "")
 
 	// Without Cache the handler can call SetCacheHeader and then Set.
 	l, logs = bObserved()

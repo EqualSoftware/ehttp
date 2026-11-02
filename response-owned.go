@@ -2,32 +2,32 @@ package ehttp
 
 import (
 	"net/http"
-	"strings"
+	"slices"
 
 	"go.uber.org/zap"
 )
 
-// ownedInline is how many owned fields a response keeps without an allocation.
-const ownedInline = 3
-
-// ownedField is a field, or a Vary member, that a middleware owns.
+// ownedField is a field that a middleware owns. Only Development tracks it.
 type ownedField struct {
-	name  string // canonical field name, or the Vary member
-	value string // the owned value; empty for a Vary member
-	vary  bool
-	stamp uint32 // ownedSeq when the entry was last set
+	name  string // canonical field name
+	value string // the value that the middleware set
+	stamp uint32 // seq when the entry was last set
 }
 
-// Own sets the field name to value and marks it as owned by the middleware:
-// the handler cannot change it later. A handler that calls Set, Append or
-// Remove on an owned field, or writes it through Header, is making a mistake:
-// Development panics. Production logs a warning and keeps the value
-// of the middleware.
+// ownedDev is the owner list of Development. Production keeps no list: the
+// pointer of the writer stays nil, so the list costs nothing there.
+type ownedDev struct {
+	list []ownedField
+	seq  uint32
+}
+
+// Own sets the field name to value. In Development it also records that a
+// middleware set the field. A handler can still change the field (the last
+// writer wins), but Development then logs a warning: the handler overrides a
+// middleware. Production records nothing and logs nothing.
 //
-// Own is for middleware only: the library cannot tell a handler from a
-// middleware, so a handler that calls Own breaks the rule it protects. A
-// middleware can call Own again to replace the value that another middleware
-// owns; only the handler cannot. Own has the checks of Set, and Vary and
+// Own is for middleware only. A middleware can call Own again to replace the
+// value that another middleware set. Own has the checks of Set, and Vary and
 // Set-Cookie have their own methods (OwnVary, Cookie). Pass a canonical name
 // (for example "X-Xss-Protection") to avoid an allocation for each request.
 func (res *ResponseWriter) Own(name, value string) {
@@ -40,149 +40,194 @@ func (res *ResponseWriter) Own(name, value string) {
 	}
 
 	res.w.Header().Set(name, value)
-	res.markOwned(http.CanonicalHeaderKey(name), value, false)
+
+	if res.mode == Development {
+		res.markOwned(http.CanonicalHeaderKey(name), value)
+	}
 }
 
-// OwnVary is Vary, and it marks each name as an owned member of Vary: the
-// handler can add members, but a Vary member of the middleware cannot be
-// removed. Like Own, it is for middleware only.
+// OwnVary is Vary, and it also keeps each name as a member that the handler
+// cannot remove: Vary only grows (RFC 9110 §12.5.5). Both modes keep the
+// members, and the header re-gets them before it goes out. Like Own, it is
+// for middleware only.
 func (res *ResponseWriter) OwnVary(names ...string) {
 	if !res.addVary("OwnVary", names) {
 		return
 	}
 
 	for _, value := range names {
-		for value != "" {
-			var member string
-
-			member, value, _ = strings.Cut(value, ",")
-
-			if member = strings.TrimSpace(member); member != "" {
-				res.markOwned(member, "", true)
-			}
-		}
+		res.ownedVary = varyAdd(res.ownedVary, value)
 	}
 }
 
 // markOwned adds the entry, or replaces the entry that has the same name.
-func (res *ResponseWriter) markOwned(name, value string, vary bool) {
-	if res.owned == nil {
-		res.owned = res.ownedBuf[:0]
+func (res *ResponseWriter) markOwned(name, value string) {
+	if res.dev == nil {
+		res.dev = &ownedDev{}
 	}
 
-	res.ownedSeq++
+	res.dev.seq++
 
-	if o := res.lookupOwned(name, vary); o != nil {
-		o.value, o.stamp = value, res.ownedSeq
+	if i := res.findOwned(name); i >= 0 {
+		res.dev.list[i].value, res.dev.list[i].stamp = value, res.dev.seq
+
 		return
 	}
 
-	res.owned = append(res.owned, ownedField{name: name, value: value, vary: vary, stamp: res.ownedSeq})
+	res.dev.list = append(res.dev.list, ownedField{name: name, value: value, stamp: res.dev.seq})
 }
 
-// findOwned returns the entry of the field name, or nil. A name of Vary has no
-// entry: its members do.
-func (res *ResponseWriter) findOwned(name string) *ownedField {
-	return res.lookupOwned(name, false)
-}
+// findOwned returns the index of the entry of the field name, or -1.
+func (res *ResponseWriter) findOwned(name string) int {
+	if res.dev == nil {
+		return -1
+	}
 
-func (res *ResponseWriter) lookupOwned(name string, vary bool) *ownedField {
-	for i := range res.owned {
-		if o := &res.owned[i]; o.vary == vary && equalASCIIFold(o.name, name) {
-			return o
+	for i := range res.dev.list {
+		if equalASCIIFold(res.dev.list[i].name, name) {
+			return i
 		}
 	}
 
-	return nil
+	return -1
 }
 
-// inheritOwned copies the owned fields of from. An interceptor writer starts
-// with the owned fields of the writer it wraps.
-func (res *ResponseWriter) inheritOwned(from *ResponseWriter) {
-	res.ownedSeq = from.ownedSeq
+// dropOwned removes the entry i: the handler took the field.
+func (res *ResponseWriter) dropOwned(i int) {
+	res.dev.list = slices.Delete(res.dev.list, i, i+1)
+}
 
-	if len(from.owned) == 0 {
+// inheritOwned copies the owner state of from. An interceptor writer starts
+// with the state of the writer it wraps.
+func (res *ResponseWriter) inheritOwned(from *ResponseWriter) {
+	res.ownedVary = from.ownedVary
+
+	if from.dev == nil {
 		return
 	}
 
-	res.owned = append(res.ownedBuf[:0], from.owned...)
+	res.dev = &ownedDev{list: append([]ownedField(nil), from.dev.list...), seq: from.dev.seq}
 }
 
-// mergeOwned takes the owned fields of the inner writer of an interceptor.
-// base is the owned sequence when the interceptor was made. An entry that this
+// mergeOwned takes the owner state of the inner writer of an interceptor.
+// base is the sequence when the interceptor was made. An entry that this
 // writer changed after that point is newer (a middleware after the handler),
 // so it stays. Else the inner entry wins (a middleware inside the interceptor).
 func (res *ResponseWriter) mergeOwned(from *ResponseWriter, base uint32) {
-	for _, o := range from.owned {
-		e := res.lookupOwned(o.name, o.vary)
+	res.ownedVary = varyAdd(res.ownedVary, from.ownedVary)
+
+	if from.dev == nil {
+		return
+	}
+
+	for _, o := range from.dev.list {
+		i := res.findOwned(o.name)
 
 		switch {
-		case e == nil:
-			res.markOwned(o.name, o.value, o.vary)
-		case e.stamp <= base && !o.vary:
-			res.markOwned(o.name, o.value, false)
+		case i < 0:
+			res.markOwned(o.name, o.value)
+		case res.dev.list[i].stamp <= base:
+			res.markOwned(o.name, o.value)
+		}
+	}
+
+	res.dropTaken(from, base)
+}
+
+// dropTaken drops the old entries that the inner writer dropped: the handler
+// took those fields, and the warning is already out.
+func (res *ResponseWriter) dropTaken(from *ResponseWriter, base uint32) {
+	if res.dev == nil {
+		return
+	}
+
+	for i := len(res.dev.list) - 1; i >= 0; i-- {
+		o := res.dev.list[i]
+		if o.stamp > base {
+			continue
+		}
+
+		if from.dev == nil || from.findOwned(o.name) < 0 {
+			res.dropOwned(i)
 		}
 	}
 }
 
-// restoreOwned runs before the header goes out. It puts back an owned value
-// that a raw write through Header, or a native handler, changed.
-func (res *ResponseWriter) restoreOwned() {
-	if len(res.owned) == 0 {
+// checkOwned runs before the header goes out. In Development it warns about an
+// owned field that a raw write through Header, or a native handler, changed.
+// The value stays: the last writer wins. Then it makes sure that the Vary
+// members of the middleware are still there.
+func (res *ResponseWriter) checkOwned() {
+	if res.ownedVary != "" {
+		header := res.w.Header()
+		line := joinLines(header[HeaderVary])
+
+		if merged := varyAdd(line, res.ownedVary); merged != line {
+			header.Set(HeaderVary, merged)
+		}
+	}
+
+	if res.dev == nil {
 		return
 	}
 
 	header := res.w.Header()
 
-	for i := range res.owned {
-		if o := &res.owned[i]; o.vary {
-			res.restoreVary(header, o)
-		} else {
-			res.restoreField(header, o)
+	for i := len(res.dev.list) - 1; i >= 0; i-- {
+		o := res.dev.list[i]
+		if got := header[o.name]; len(got) != 1 || got[0] != o.value {
+			res.warnOverride("a raw write through res.Header()", o, joinLines(got))
+			res.dropOwned(i)
 		}
 	}
 }
 
-func (res *ResponseWriter) restoreField(header http.Header, o *ownedField) {
-	got := header[o.name]
-	if len(got) == 1 && got[0] == o.value {
+// warnOverride logs that the handler changed a field that a middleware set.
+// handler is the value that the handler wants (empty for a removal).
+func (res *ResponseWriter) warnOverride(what string, o ownedField, handler string) {
+	where := res.where()
+	middleware, mine := res.quoteField(o.name, o.value), res.quoteField(o.name, handler)
+
+	msg := "ehttp: " + what + " on " + where + ": header " + o.name + " has the value " + middleware +
+		" from a middleware and the handler changed it to " + mine + "; the handler value is sent. " +
+		"Fix: do not set " + o.name + " in the handler, or change the option of the middleware."
+
+	ce := res.logger().Check(zap.WarnLevel, msg)
+	if ce == nil {
 		return
 	}
 
-	res.failOverride("a raw write through res.Header()", o, joinLines(got))
-	header.Set(o.name, o.value)
+	fields := []zap.Field{
+		zap.String("rule", "handler overrides a middleware header"),
+		zap.String("header", fieldName(o.name)),
+		zap.String("middleware_value", middleware),
+		zap.String("handler_value", mine),
+	}
+
+	if res.request != nil {
+		fields = append(fields, zap.String("method", res.request.Method), zap.String("route", res.route()))
+	}
+
+	ce.Write(fields...)
 }
 
-func (res *ResponseWriter) restoreVary(header http.Header, o *ownedField) {
-	line := joinLines(header[HeaderVary])
-	if varyHasLine(line, o.name) || varyHasLine(line, "*") {
+// overrideOwned runs when the handler changes the owned field i with the call
+// what. It warns, and the field is the handler field from then on.
+func (res *ResponseWriter) overrideOwned(i int, what, value string) {
+	o := res.dev.list[i]
+	if value == o.value {
 		return
 	}
 
-	res.failOverride("a raw write through res.Header()", o, line)
-	header.Set(HeaderVary, varyAdd(line, o.name))
+	res.warnOverride(what, o, value)
+	res.dropOwned(i)
 }
 
-// failOverride reports that the handler changed an owned field. attempted is
-// the value that the handler wanted (empty for a removal).
-func (res *ResponseWriter) failOverride(what string, o *ownedField, attempted string) {
-	name := o.name
-	owned := o.value
-
-	if o.vary {
-		name, owned = HeaderVary, o.name
+// ownedSeq is the sequence of the owner list; 0 when there is no list.
+func (res *ResponseWriter) ownedSeq() uint32 {
+	if res.dev == nil {
+		return 0
 	}
 
-	res.fail(strictError{
-		level:  zap.WarnLevel,
-		rule:   "handler overrides a middleware header",
-		what:   what,
-		why:    "header " + name + " is owned by a middleware, with the value " + res.quoteField(name, owned) + "; the handler cannot change it to " + res.quoteField(name, attempted) + "",
-		fix:    "do not set " + name + " in the handler; change the option of the middleware, or remove the middleware from this route",
-		header: name,
-		extra: []zap.Field{
-			zap.String("middleware_value", res.quoteField(name, owned)),
-			zap.String("attempted_value", res.quoteField(name, attempted)),
-		},
-	})
+	return res.dev.seq
 }

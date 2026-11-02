@@ -92,7 +92,7 @@ func (i *ResponseWriterInterceptor) SendResponse(res *ResponseWriter) {
 		res.mergeOwned(i.inner, i.base)
 	}
 
-	res.restoreOwned()
+	res.checkOwned()
 	res.sent = true
 	res.bodySent = true
 
@@ -122,7 +122,7 @@ func WithResponseWriter(res *ResponseWriter) (*ResponseWriter, *ResponseWriterIn
 	}
 	inner.inheritOwned(res)
 	i.inner = inner
-	i.base = res.ownedSeq
+	i.base = res.ownedSeq()
 
 	return inner, i
 }
@@ -140,11 +140,10 @@ type ResponseWriter struct {
 	mode     Mode            // the mode of the server: how a strict error ends
 	redact   *redact.Matcher // the names whose values a log hides; nil is the default list
 
-	// owned are the fields that a middleware set before the handler (see Own).
-	// ownedBuf keeps the first ones without an allocation (CORS and Secure fit).
-	owned    []ownedField
-	ownedSeq uint32
-	ownedBuf [ownedInline]ownedField
+	// dev tracks the fields that a middleware set (see Own). Nil in Production.
+	dev *ownedDev
+	// ownedVary lists the Vary members that a middleware added (see OwnVary).
+	ownedVary string
 }
 
 func init() {
@@ -194,7 +193,7 @@ func (res *ResponseWriter) writeHeader(code int) {
 		return
 	}
 
-	res.restoreOwned()
+	res.checkOwned()
 
 	res.sent = true
 	res.w.WriteHeader(code)
@@ -607,9 +606,10 @@ func (res *ResponseWriter) checkSpecial(method, name string) bool {
 
 // Set replaces all values of the field name with value. These are mistakes:
 // an invalid name or value, Set-Cookie and Vary (use Cookie and
-// Vary), a call after the header was sent, and a field that a middleware owns
-// (see Own). Development panics. Production logs and does not change the
-// field. It does nothing after the client is gone.
+// Vary) and a call after the header was sent. Development panics. Production
+// logs and does not change the field. A field that a middleware set (see Own)
+// is not a mistake: the handler value wins, and Development logs a warning.
+// It does nothing after the client is gone.
 func (res *ResponseWriter) Set(name, value string) {
 	res.setField("Set", name, value)
 }
@@ -627,12 +627,8 @@ func (res *ResponseWriter) setField(method, name, value string) {
 		return
 	}
 
-	if o := res.findOwned(name); o != nil {
-		if value != o.value {
-			res.failOverride(call(method, name), o, value)
-		}
-
-		return
+	if i := res.findOwned(name); i >= 0 {
+		res.overrideOwned(i, call(method, name), value)
 	}
 
 	res.w.Header().Set(name, value)
@@ -646,7 +642,7 @@ func (res *ResponseWriter) setField(method, name, value string) {
 // These are mistakes, as for Set: an empty member (Production skips
 // it), a singleton field such as Content-Type (Production does a Set with the
 // last value), an invalid name or value, Set-Cookie and Vary, a call after the
-// header was sent, and a field that a middleware owns.
+// header was sent. A field that a middleware set is not a mistake, as for Set.
 //
 // Members are compared as whole strings. A value with a quoted comma, such as
 // `rel="x, y"`, is not parsed.
@@ -667,12 +663,8 @@ func (res *ResponseWriter) Append(name string, values ...string) {
 		return
 	}
 
-	if o := res.findOwned(name); o != nil {
-		if appendNews(o.value, values) {
-			res.failOverride(call("Append", name), o, strings.Join(values, ", "))
-		}
-
-		return
+	if i := res.findOwned(name); i >= 0 && appendNews(res.dev.list[i].value, values) {
+		res.overrideOwned(i, call("Append", name), strings.Join(values, ", "))
 	}
 
 	res.appendMembers(name, values)
@@ -817,9 +809,8 @@ func (res *ResponseWriter) Remove(name string) {
 		return
 	}
 
-	if o := res.findOwned(name); o != nil {
-		res.failOverride(call("Remove", name), o, "")
-		return
+	if i := res.findOwned(name); i >= 0 {
+		res.overrideOwned(i, call("Remove", name), "")
 	}
 
 	res.w.Header().Del(name)
@@ -880,7 +871,8 @@ func skipOWS(s string) string {
 // skipped, a name that is already there (ASCII case-insensitive) is skipped
 // and "*" replaces all. Vary stays one field line. An invalid value and a call
 // after the header was sent are mistakes, as for Set. It does nothing after the
-// client is gone. A handler can add members to a Vary that a middleware owns.
+// client is gone. A handler can add members to a Vary that a middleware set, but it cannot remove
+// the members of the middleware.
 func (res *ResponseWriter) Vary(names ...string) {
 	res.addVary("Vary", names)
 }
