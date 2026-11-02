@@ -2,6 +2,7 @@ package ehttp_test
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -53,28 +54,24 @@ func TestBreakerNeedsEvidenceToOpen(t *testing.T) {
 	t.Run("a single failure does not open it", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "breaker-opens-on-first-failure", func(t testing.TB) {
-			cb := bBreaker()
-			_ = bFail(cb)
+		cb := bBreaker()
+		_ = bFail(cb)
 
-			ehttptest.Eq(t, "a failure rate with a minimum of samples trips the breaker", cb.State().String(), "closed")
-			ehttptest.True(t, "a single failure does not trip the breaker", bSucceed(cb) == nil, "next call was rejected after one failure")
-		})
+		ehttptest.Eq(t, "a failure rate with a minimum of samples trips the breaker", cb.State().String(), "closed")
+		ehttptest.True(t, "a single failure does not trip the breaker", bSucceed(cb) == nil, "next call was rejected after one failure")
 	})
 
 	t.Run("one failure after many successes does not open it", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "breaker-opens-on-first-failure", func(t testing.TB) {
-			cb := bBreaker()
-			for range 99 {
-				_ = bSucceed(cb)
-			}
+		cb := bBreaker()
+		for range 99 {
+			_ = bSucceed(cb)
+		}
 
-			_ = bFail(cb) // 1% failure rate
+		_ = bFail(cb) // 1% failure rate
 
-			ehttptest.Eq(t, "a failure rate with a minimum of samples trips the breaker", cb.State().String(), "closed")
-		})
+		ehttptest.Eq(t, "a failure rate with a minimum of samples trips the breaker", cb.State().String(), "closed")
 	})
 
 	t.Run("sustained failure opens it and rejects calls", func(t *testing.T) {
@@ -161,4 +158,31 @@ func TestBreakerPrometheusGauge(t *testing.T) {
 		_ = bSucceed(cb)
 		ehttptest.Eq(t, "breaker.go state mapping (closed=0)", value(), 0.0)
 	})
+}
+
+// Calls from many goroutines must not race, and the counts must stay right:
+// a failure rate above the threshold with enough samples opens the breaker.
+func TestBreakerConcurrentCalls(t *testing.T) {
+	t.Parallel()
+
+	cb := bBreaker()
+
+	var wg sync.WaitGroup
+
+	for range 50 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for range 20 {
+				_ = bFail(cb)
+				_ = cb.State()
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	ehttptest.Eq(t, "a high failure rate trips the breaker", cb.State().String(), "open")
 }

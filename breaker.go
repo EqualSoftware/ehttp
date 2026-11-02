@@ -9,8 +9,22 @@ import (
 	"go.uber.org/zap"
 )
 
+// The breaker opens when at least breakerMinRequests calls ran in the
+// interval and at least breakerFailureRate of them failed. The values follow
+// Hystrix (requestVolumeThreshold 20, errorThresholdPercentage 50, a 10 s
+// rolling window), https://github.com/Netflix/Hystrix/wiki/Configuration, and
+// the 50 % threshold of resilience4j,
+// https://resilience4j.readme.io/docs/circuitbreaker.
+const (
+	breakerMinRequests = 20
+	breakerFailureRate = 0.5
+	breakerInterval    = 10 * time.Second
+)
+
 type BreakerOptions struct {
-	Name            string
+	Name string
+	// Interval is the period after which the counts of a closed breaker reset.
+	// Default 10s.
 	Interval        time.Duration
 	Timeout         time.Duration
 	PrometheusGauge *prometheus.GaugeVec
@@ -19,6 +33,10 @@ type BreakerOptions struct {
 type CircuitBreaker[T any] = gobreaker.CircuitBreaker[T]
 
 func NewCircuitBreaker[T any](opt BreakerOptions) *CircuitBreaker[T] {
+	if opt.Interval <= 0 {
+		opt.Interval = breakerInterval
+	}
+
 	cb := gobreaker.NewCircuitBreaker[T](gobreaker.Settings{
 		Name:     opt.Name,
 		Interval: opt.Interval,
@@ -36,8 +54,11 @@ func NewCircuitBreaker[T any](opt BreakerOptions) *CircuitBreaker[T] {
 			)
 		},
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			ratio := float64(counts.ConsecutiveFailures) / float64(counts.ConsecutiveSuccesses)
-			return ratio >= 0.5
+			if counts.Requests < breakerMinRequests {
+				return false
+			}
+
+			return float64(counts.TotalFailures)/float64(counts.Requests) >= breakerFailureRate
 		},
 	})
 
