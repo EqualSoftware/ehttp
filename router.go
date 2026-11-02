@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"go.uber.org/zap"
+
+	"github.com/EqualSoftware/ehttp/internal/redact"
 )
 
 type MiddlewareHandlerFunc func(next Handler) HandlerFunc
@@ -40,6 +42,7 @@ type Router struct {
 	proxies     trustedProxies
 	logger      *zap.Logger
 	mode        Mode
+	redact      *redact.Matcher // nil is the default list
 }
 
 type route struct {
@@ -251,6 +254,7 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		req:      req,
 		template: router.template,
 		mode:     router.mode,
+		redact:   router.redact,
 	}
 	req.res = res
 

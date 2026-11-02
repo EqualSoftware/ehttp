@@ -177,12 +177,12 @@ func (res *ResponseWriter) failOverride(what string, o *ownedField, attempted st
 		level:  zap.WarnLevel,
 		rule:   "handler overrides a middleware header",
 		what:   what,
-		why:    "header " + name + " is owned by a middleware, with the value " + quoteValue(owned) + "; the handler cannot change it to " + quoteValue(attempted) + "",
+		why:    "header " + name + " is owned by a middleware, with the value " + res.quoteField(name, owned) + "; the handler cannot change it to " + res.quoteField(name, attempted) + "",
 		fix:    "do not set " + name + " in the handler; change the option of the middleware, or remove the middleware from this route",
 		header: name,
 		extra: []zap.Field{
-			zap.String("middleware_value", quoteValue(owned)),
-			zap.String("attempted_value", quoteValue(attempted)),
+			zap.String("middleware_value", res.quoteField(name, owned)),
+			zap.String("attempted_value", res.quoteField(name, attempted)),
 		},
 	})
 }

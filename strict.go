@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"unicode/utf8"
 
+	"github.com/EqualSoftware/ehttp/internal/redact"
+
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -31,6 +33,16 @@ func quoteValue(v string) string {
 	}
 
 	return strconv.Quote(v[:n]) + "..."
+}
+
+// quoteField is quoteValue for the value of the field name. A sensitive name
+// gives redact.Mask, so a log or a message never holds the value.
+func (res *ResponseWriter) quoteField(name, value string) string {
+	if res.redact.Sensitive(name) {
+		return redact.Mask
+	}
+
+	return quoteValue(value)
 }
 
 // fieldName writes a header name for a log field: as is if it is a short
@@ -110,7 +122,7 @@ func (res *ResponseWriter) fail(e strictError) {
 	}
 
 	if e.value != "" {
-		fields = append(fields, zap.String("value", quoteValue(e.value)))
+		fields = append(fields, zap.String("value", res.quoteField(e.header, e.value)))
 	}
 
 	// The request logger has the route field when the request has a pattern.

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/EqualSoftware/ehttp/internal/redact"
 )
 
 type clientOptionFunc func(cfg *Client)
@@ -22,6 +24,7 @@ type Client struct {
 	httpClient    *http.Client
 	baseUrl       *url.URL
 	authorization string
+	redact        *redact.Matcher // nil is the default list
 }
 
 type clientRequestConfig struct {
@@ -63,6 +66,20 @@ func WithBaseUrl(value string) clientOptionFunc {
 func WithAuthorization(value string) clientOptionFunc {
 	return func(cfg *Client) {
 		cfg.authorization = value
+	}
+}
+
+// WithClientRedactNames adds name patterns to the deny list of the client. It
+// never replaces the default list. The syntax is the one of WithRedactNames.
+// An invalid pattern panics.
+func WithClientRedactNames(patterns ...string) clientOptionFunc {
+	if _, err := redact.Default().With(patterns...); err != nil {
+		bootPanic("WithClientRedactNames", "an invalid pattern", err.Error(),
+			"use a name, or a name with one \"*\" at the start, at the end or at both, for example WithClientRedactNames(\"*pin\")")
+	}
+
+	return func(cfg *Client) {
+		cfg.redact, _ = cfg.redact.With(patterns...)
 	}
 }
 

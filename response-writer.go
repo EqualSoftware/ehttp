@@ -24,6 +24,7 @@ import (
 
 	"github.com/EqualSoftware/ehttp/internal/etag"
 	"github.com/EqualSoftware/ehttp/internal/hook"
+	"github.com/EqualSoftware/ehttp/internal/redact"
 )
 
 type ResponseWriterInterceptor struct {
@@ -117,6 +118,7 @@ func WithResponseWriter(res *ResponseWriter) (*ResponseWriter, *ResponseWriterIn
 		code:     res.code,
 		template: res.template,
 		mode:     res.mode,
+		redact:   res.redact,
 	}
 	inner.inheritOwned(res)
 	i.inner = inner
@@ -134,8 +136,9 @@ type ResponseWriter struct {
 	code     int
 	template *template.Template
 	sent     bool
-	bodySent bool // a body was written; a status line alone is not a body
-	mode     Mode // the mode of the server: how a strict error ends
+	bodySent bool            // a body was written; a status line alone is not a body
+	mode     Mode            // the mode of the server: how a strict error ends
+	redact   *redact.Matcher // the names whose values a log hides; nil is the default list
 
 	// owned are the fields that a middleware set before the handler (see Own).
 	// ownedBuf keeps the first ones without an allocation (CORS and Secure fit).
@@ -558,7 +561,7 @@ func (res *ResponseWriter) checkValue(method, name, value string) bool {
 		level:  zap.ErrorLevel,
 		rule:   "invalid header value",
 		what:   call(method, name),
-		why:    "header " + name + " has the value " + quoteValue(value) + ", which has the byte " + byteName(value[i]) + " at position " + strconv.Itoa(i) + " (RFC 9110 §5.5)",
+		why:    "header " + name + " has the value " + res.quoteField(name, value) + ", which has the byte " + byteName(value[i]) + " at position " + strconv.Itoa(i) + " (RFC 9110 §5.5)",
 		fix:    "remove the control bytes from the value; encode data from a user before it goes in a header",
 		header: name,
 		value:  value,

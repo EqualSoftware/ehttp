@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/EqualSoftware/ehttp/internal/redact"
 )
 
 type CorsOptions struct {
@@ -67,6 +69,23 @@ func WithLogger(l *zap.Logger) serverOption {
 	}
 
 	return func(s *Server) { s.router.logger = l }
+}
+
+// WithRedactNames adds name patterns to the deny list that hides values in the
+// strict-mode logs and messages. It never replaces the default list (passwords,
+// secrets, tokens, authentication data, sessions, cookies and similar names).
+// A pattern ignores case and treats "-" as "_". "*x*" matches a name that
+// contains x, "*x" a name that ends with x, "x*" a name that starts with x and
+// "x" the name x. An invalid pattern panics.
+func WithRedactNames(patterns ...string) serverOption {
+	if _, err := redact.Default().With(patterns...); err != nil {
+		bootPanic("WithRedactNames", "an invalid pattern", err.Error(),
+			"use a name, or a name with one \"*\" at the start, at the end or at both, for example WithRedactNames(\"*pin\", \"x-internal-*\")")
+	}
+
+	return func(s *Server) {
+		s.router.redact, _ = s.router.redact.With(patterns...)
+	}
 }
 
 // presetLogger builds the logger of a mode. An error panics at boot.
