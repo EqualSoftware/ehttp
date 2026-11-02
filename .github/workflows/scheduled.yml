@@ -30,6 +30,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
+          cache: false
       - name: fuzz
         env:
           TARGET: ${{ matrix.target }}
@@ -73,6 +74,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
+          cache: false
       - run: make vuln
       - name: open issue
         if: failure()

@@ -33,8 +33,9 @@ tdd:
 allocs:
 	go test -count=1 -run='^TestAllocs' ./test/perf
 
+# Pending mode like `test`: an open bug is a skip.
 cover:
-	go test -count=1 -coverpkg=./... -coverprofile=coverage.out ./...
+	EHTTP_PENDING=1 go test -count=1 -coverpkg=./... -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out | tail -n 1
 
 lint:
