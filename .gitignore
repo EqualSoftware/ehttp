@@ -1,15 +1,10 @@
 .DS_Store
 
-# air
-bin/
-tmp/
-
 # claude
 .tasks/
 
 # test output
 coverage.out
-bench.txt
 bench-base.txt
 # fuzz crashers (each one becomes a regular test case)
 **/testdata/fuzz/
