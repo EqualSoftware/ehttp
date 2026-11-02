@@ -43,9 +43,13 @@ func True(t testing.TB, basis string, cond bool, format string, args ...any) {
 const PendingEnv = "EHTTP_PENDING"
 
 // KnownBug runs check for the open defect name. The name is a kebab-case
-// description of the defect, for example "accepts-q0-acceptable". A test
-// that covers two defects joins the names with "+".
-// The check asserts the correct behavior.
+// description of the defect, for example "sample-bug". A test that covers
+// two defects joins the names with "+". The check asserts the correct
+// behavior. Use it like this:
+//
+//	ehttptest.KnownBug(t, "sample-bug", func(t testing.TB) {
+//		ehttptest.Eq(t, "RFC 9110 §1", got, want)
+//	})
 //
 // Default mode: a failure of check fails the test with a message that starts
 // with "pending <name>:". A pass is a pass. This is the TDD view (red until the

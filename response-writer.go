@@ -1421,7 +1421,7 @@ func fileRequest(req *http.Request) *http.Request {
 
 	unit, set, ok := strings.Cut(rng, "=")
 
-	if !ok || unit == "" || !isToken(unit) {
+	if !ok || !isToken(unit) {
 		return req
 	}
 
