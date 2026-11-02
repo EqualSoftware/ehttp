@@ -78,9 +78,11 @@ func (r *Router) Use(m ...MiddlewareHandlerFunc) {
 //
 // If a root route and a group route match the same path, the 405 and OPTIONS
 // answers run the root middlewares only, and Allow lists the methods of both
-// routes. To keep the methods of a group hidden behind its authentication,
-// put every route of the path in that group and add the authentication
-// middleware to each route.
+// routes. To hide the methods of a protected route from unauthenticated
+// clients, put every route of that path in one group that has the
+// authentication middleware. Per-route middleware does not run on the
+// automatic 405 and OPTIONS answers, so Allow still lists a method that only
+// per-route middleware protects.
 func (r *Router) Route(prefix string, m ...MiddlewareHandlerFunc) *Router {
 	g := &Router{
 		parent:      r,
@@ -90,6 +92,10 @@ func (r *Router) Route(prefix string, m ...MiddlewareHandlerFunc) *Router {
 
 	full := r.fullPrefix() + prefix
 	segments := splitPath(full)
+	if len(segments) == 1 && segments[0] == "" {
+		segments = nil // "/" matches every path, as the empty prefix does
+	}
+
 	g.scope = &route{pattern: full, segments: segments, regexes: compileSegments(full, segments)}
 
 	root := r.root()
@@ -345,7 +351,8 @@ func (r *Router) TRACE(pattern string, h HandlerFunc, m ...MiddlewareHandlerFunc
 //   - 405 and OPTIONS: the group that owns every route that matches the path.
 //     If the routes belong to several groups or to the root, only the root
 //     middlewares run, as the router cannot pick one group. Allow then lists
-//     the methods of all these routes (see Route).
+//     the methods of all these routes. Per-route middleware never runs on
+//     these answers (see Route).
 //
 // The refusals of an unsafe path value (400, 403) run the root middlewares
 // only, so a group middleware never sees a path that was refused.
@@ -432,8 +439,11 @@ func (router *Router) warnPreflight(res *ResponseWriter, req *Request) {
 }
 
 // groupUnder returns the innermost group whose prefix matches the path, or
-// nil. Two groups with the same prefix are nested (Route panics for any other
-// pair), and among them the last one made wins, which is the deeper one.
+// nil. Route panics only for two groups with the same full prefix shape that
+// are not nested, so two groups with the same prefix are nested and the last
+// one made wins, which is the deeper one. Overlapping prefixes (for example
+// "/u/:id" and "/u/admin") are allowed: a 404 under both runs the group made
+// last.
 func (r *Router) groupUnder(segments []string) *Router {
 	var best *Router
 

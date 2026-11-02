@@ -371,6 +371,15 @@ func TestRouterSecondGroupWithSamePrefixPanics(t *testing.T) {
 		ehttptest.Eq(t, "no panic", aPanics(func() { s.Route("/api/:id|[a-z]+") }), "")
 	})
 
+	t.Run("the empty prefix and a slash are the same prefix", func(t *testing.T) {
+		t.Parallel()
+
+		s := NewServer()
+		s.Route("")
+
+		ehttptest.True(t, "both match every path", aPanics(func() { s.Route("/") }) != "", "no panic")
+	})
+
 	t.Run("a nested group is not a sibling", func(t *testing.T) {
 		t.Parallel()
 
