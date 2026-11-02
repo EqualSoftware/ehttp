@@ -159,7 +159,7 @@ func TestResponseWriterStatusCode(t *testing.T) {
 	})
 }
 
-func TestResponseWriterAppendReplaces(t *testing.T) {
+func TestResponseWriterAppendMergesMembers(t *testing.T) {
 	t.Parallel()
 
 	rec := aRes(func(res *ResponseWriter, _ *Request) {
@@ -168,7 +168,7 @@ func TestResponseWriterAppendReplaces(t *testing.T) {
 		res.End()
 	})
 
-	ehttptest.Eq(t, "2.1: Append has Header().Set semantics", strings.Join(rec.Header().Values("X-A"), ","), "2")
+	ehttptest.Eq(t, "author decision 2026-11-01 (strict premise / header API): Append merges list members in one line", strings.Join(rec.Header().Values("X-A"), "|"), "1, 2")
 }
 
 func TestResponseWriterVary(t *testing.T) {
@@ -251,6 +251,7 @@ func TestResponseWriterWriteTwiceOverRealServer(t *testing.T) {
 	t.Parallel()
 
 	s := NewServer()
+	s.Use(aRecoverAbort)
 	s.GET("/status-then-body", func(res *ResponseWriter, _ *Request) {
 		res.SendStatus(201)
 		res.String("x")
@@ -261,7 +262,6 @@ func TestResponseWriterWriteTwiceOverRealServer(t *testing.T) {
 	})
 	s.GET("/json-after-string", func(res *ResponseWriter, _ *Request) {
 		res.String("a")
-		res.Status(500)
 		res.JSON(1)
 	})
 	ts := aRealServer(t, s)
@@ -274,21 +274,44 @@ func TestResponseWriterWriteTwiceOverRealServer(t *testing.T) {
 		ehttptest.Eq(t, "S4 decision", body, "x")
 	})
 
-	t.Run("second String does not corrupt the first response", func(t *testing.T) {
+	t.Run("second String panics and the connection is aborted", func(t *testing.T) {
 		t.Parallel()
 
-		resp, body := aGetBody(t, ts.URL+"/body-twice")
-		ehttptest.Eq(t, "S4: first status wins", resp.StatusCode, 200)
-		ehttptest.Eq(t, "S4: net/http enforces the first Content-Length", body, "first")
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/body-twice", http.NoBody)
+		resp, err := http.DefaultClient.Do(req)
+		ehttptest.True(t, "S6", err == nil, "the header of the first body must reach the client: %v", err)
+		ehttptest.Eq(t, "S6: first status wins", resp.StatusCode, 200)
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		ehttptest.Eq(t, "S6: the first body is complete", string(body), "first")
+		ehttptest.True(t, "S6", err == nil, "sized body read: %v", err)
 	})
 
-	t.Run("later status and headers are ignored", func(t *testing.T) {
+	t.Run("JSON after String panics", func(t *testing.T) {
 		t.Parallel()
 
-		resp, _ := aGetBody(t, ts.URL+"/json-after-string")
-		ehttptest.Eq(t, "S4: first status wins", resp.StatusCode, 200)
-		ehttptest.Eq(t, "S4: headers are frozen once written", resp.Header.Get(HeaderContentType), MIMETextPlainCharsetUTF8)
+		resp, body := aGetBody(t, ts.URL+"/json-after-string")
+		ehttptest.Eq(t, "S6: first status wins", resp.StatusCode, 200)
+		ehttptest.Eq(t, "S6: the first body is the only body", body, "a")
+		ehttptest.Eq(t, "S6: headers are frozen once written", resp.Header.Get(HeaderContentType), MIMETextPlainCharsetUTF8)
 	})
+}
+
+// aRecoverAbort is the Recover middleware of the middleware package: after the
+// header is sent, it flushes and aborts the connection.
+func aRecoverAbort(next Handler) HandlerFunc {
+	return func(res *ResponseWriter, req *Request) {
+		defer func() {
+			if r := recover(); r != nil {
+				res.Flush()
+				panic(http.ErrAbortHandler)
+			}
+		}()
+
+		next.ServeHTTP(res, req)
+	}
 }
 
 func TestResponseWriterFinishedRequestIsInert(t *testing.T) {
@@ -548,15 +571,13 @@ func TestResponseWriterCookie(t *testing.T) {
 		ehttptest.Eq(t, "RFC 6265 §4.1.1", got[1], "b=2")
 	})
 
-	t.Run("invalid cookie is not sent", func(t *testing.T) {
+	t.Run("invalid cookie panics", func(t *testing.T) {
 		t.Parallel()
 
-		rec := aRes(func(res *ResponseWriter, _ *Request) {
-			res.Cookie(&http.Cookie{Name: "bad name", Value: "1"})
-			res.End()
-		})
+		res, _ := aCountedRes(t)
+		msg := aPanics(func() { res.Cookie(&http.Cookie{Name: "bad name", Value: "1"}) })
 
-		ehttptest.Eq(t, "2.1: invalid cookie is dropped", len(rec.Header().Values(HeaderSetCookie)), 0)
+		ehttptest.True(t, "author decision 2026-11-01 (strict premise / header API)", strings.HasPrefix(msg, "ehttp: Cookie"), "message %q", msg)
 	})
 
 	t.Run("ClearCookie expires the cookie at Path /", func(t *testing.T) {
@@ -611,6 +632,7 @@ func TestResponseWriterWriteHeaderOnce(t *testing.T) {
 		"Error":      func(res *ResponseWriter) { res.Error(errors.New("x")) },
 		"Redirect":   func(res *ResponseWriter) { res.Redirect("/y") },
 	}
+	bodies := map[string]bool{"Send": true, "String": true, "JSON": true, "Error": true, "Redirect": true}
 
 	for name, send := range sends {
 		t.Run(name, func(t *testing.T) {
@@ -618,10 +640,18 @@ func TestResponseWriterWriteHeaderOnce(t *testing.T) {
 
 			res, hc := aCountedRes(t)
 			send(res)
-			send(res)
 
 			ehttptest.Eq(t, "S4: WriteHeader is called once", hc.calls, 1)
 			ehttptest.True(t, "S4", res.HeadersSent(), "HeadersSent is false")
+
+			if bodies[name] {
+				msg := aPanics(func() { send(res) })
+				ehttptest.True(t, "author decision 2026-11-01 (strict premise / header API)", strings.Contains(msg, "response already sent"), "second body: message %q", msg)
+			} else if name == "End" {
+				send(res) // End after End is a no-op
+			}
+
+			ehttptest.Eq(t, "S4: WriteHeader is called once", hc.calls, 1)
 		})
 	}
 }
@@ -631,9 +661,9 @@ func TestResponseWriterStatusAfterSent(t *testing.T) {
 
 	res, hc := aCountedRes(t)
 	res.String("ok")
-	res.SendStatus(500)
-	res.Status(404)
 
+	ehttptest.True(t, "author decision 2026-11-01 (strict premise / header API)", strings.Contains(aPanics(func() { res.SendStatus(500) }), "already sent"), "SendStatus after send must panic")
+	ehttptest.True(t, "author decision 2026-11-01 (strict premise / header API)", strings.Contains(aPanics(func() { res.Status(404) }), "already sent"), "Status after send must panic")
 	ehttptest.Eq(t, "S4: StatusCode reports the wire code", res.StatusCode(), 200)
 	ehttptest.Eq(t, "S4: wire code", hc.Code, 200)
 }
@@ -660,9 +690,10 @@ func TestResponseWriterCookieNil(t *testing.T) {
 	t.Parallel()
 
 	res, hc := aCountedRes(t)
-	res.Cookie(nil)
+	msg := aPanics(func() { res.Cookie(nil) })
 
-	ehttptest.Eq(t, "2.1: nil cookie is dropped", len(hc.Header().Values(HeaderSetCookie)), 0)
+	ehttptest.True(t, "author decision 2026-11-01 (strict premise / header API)", strings.HasPrefix(msg, "ehttp: Cookie"), "message %q", msg)
+	ehttptest.Eq(t, "author decision 2026-11-01 (strict premise / header API)", len(hc.Header().Values(HeaderSetCookie)), 0)
 }
 
 func TestResponseWriterVaryArgument(t *testing.T) {

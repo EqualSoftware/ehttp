@@ -139,7 +139,7 @@ func TestErrorCacheAuthorizationWithHandlerCacheControl(t *testing.T) {
 	t.Parallel()
 
 	h := fixtures.Handler(func(res *ehttp.ResponseWriter, _ *ehttp.Request) {
-		res.Append("Cache-Control", "no-store")
+		res.Set("Cache-Control", "no-store")
 		res.Status(http.StatusNotFound)
 		res.String("nope")
 	}, middleware.ErrorCache(time.Minute))

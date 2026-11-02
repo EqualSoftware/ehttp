@@ -15,7 +15,7 @@ func SetCacheHeader(r *ResponseWriter, d time.Duration) {
 // cache must not store it (RFC 9111 §3.5).
 func SetCacheHeaderPrivate(r *ResponseWriter, d time.Duration, private bool) {
 	if d == 0 {
-		r.Append(HeaderCacheControl, "no-store, no-cache, must-revalidate, proxy-revalidate")
+		r.Set(HeaderCacheControl, "no-store, no-cache, must-revalidate, proxy-revalidate")
 
 		return
 	}
@@ -33,5 +33,5 @@ func SetCacheHeaderPrivate(r *ResponseWriter, d time.Duration, private bool) {
 		cache_control = append([]string{"private"}, cache_control...)
 	}
 
-	r.Append(HeaderCacheControl, strings.Join(cache_control, ", "))
+	r.Set(HeaderCacheControl, strings.Join(cache_control, ", "))
 }

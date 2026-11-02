@@ -36,6 +36,7 @@ func Recover() ehttp.MiddlewareHandlerFunc {
 				}
 
 				res.Status(ehttp.StatusInternalServerError)
+				res.Remove(ehttp.HeaderContentType) // the 500 body is JSON, not the type of the failed handler
 				res.JSON(map[string]interface{}{
 					"code":    http.StatusInternalServerError,
 					"message": http.StatusText(ehttp.StatusInternalServerError),

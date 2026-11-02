@@ -65,6 +65,10 @@ func (r *Router) Route(prefix string, m ...MiddlewareHandlerFunc) *Router {
 // Handle registers a route. A group passes its own middlewares to its
 // parent, so the middlewares of the outer group run first.
 func (r *Router) Handle(method, pattern string, h HandlerFunc, m ...MiddlewareHandlerFunc) {
+	if !validFieldName(method) {
+		panic("ehttp: Handle: method " + strconv.Quote(method) + " is not a token (RFC 9110 §9.1)")
+	}
+
 	if r.parent != nil {
 		all := make([]MiddlewareHandlerFunc, 0, len(r.middlewares)+len(m))
 		all = append(all, r.middlewares...)
@@ -296,7 +300,7 @@ func (r *Router) optionsHandler(res *ResponseWriter, req *Request) {
 
 func (r *Router) methodNotAllowedHandler(route_methods []string) HandlerFunc {
 	return func(res *ResponseWriter, req *Request) {
-		res.Append(HeaderAllow, strings.Join(route_methods, ", "))
+		res.Append(HeaderAllow, route_methods...)
 		res.SendStatus(StatusMethodNotAllowed)
 	}
 }
@@ -372,43 +376,67 @@ func corsUpdateHeaders(res *ResponseWriter, req *Request, options *CorsOptions) 
 		origin = "*"
 	}
 
-	res.Append(HeaderAccessControlAllowOrigin, origin)
-	res.Append(HeaderAccessControlAllowCredentials, strconv.FormatBool(options.Credentials))
+	res.Set(HeaderAccessControlAllowOrigin, origin)
+	res.Set(HeaderAccessControlAllowCredentials, strconv.FormatBool(options.Credentials))
 }
 
 // corsPreflightHeaders sets the headers that a browser reads only from the
 // preflight response (Fetch §3.2.3). With credentials, a literal * has no
 // meaning, so the request values are echoed.
 func corsPreflightHeaders(res *ResponseWriter, req *Request, options *CorsOptions) {
-	methods := corsJoin(options.Methods)
-	headers := corsJoin(options.Headers)
+	methods := options.Methods
+	headers := options.Headers
 
 	if options.Credentials && slices.Contains(options.Methods, "*") {
-		methods = req.Header(HeaderAccessControlRequestMethod)
+		methods = corsEcho(req, HeaderAccessControlRequestMethod)
 	}
 
 	if options.Credentials && slices.Contains(options.Headers, "*") {
-		headers = req.Header(HeaderAccessControlRequestHeaders)
+		headers = corsEcho(req, HeaderAccessControlRequestHeaders)
 	}
 
-	if methods != "" {
-		res.Append(HeaderAccessControlAllowMethods, methods)
+	if len(methods) > 0 {
+		res.Append(HeaderAccessControlAllowMethods, methods...)
 	}
 
-	if headers != "" {
-		res.Append(HeaderAccessControlAllowHeaders, headers)
+	if len(headers) > 0 {
+		res.Append(HeaderAccessControlAllowHeaders, headers...)
 	}
 
 	if d := options.CacheDuration; d > 0 {
-		res.Append(HeaderAccessControlMaxAge, strconv.Itoa(int(d.Seconds())))
+		res.Set(HeaderAccessControlMaxAge, strconv.Itoa(int(d.Seconds())))
 	}
 }
 
-// corsJoin does not allocate for a list of one item.
-func corsJoin(list []string) string {
-	if len(list) == 1 {
-		return list[0]
+// corsEcho returns the request header name as one list member, or none if the
+// header is empty.
+func corsEcho(req *Request, name string) []string {
+	if v := req.Header(name); v != "" {
+		return []string{v}
 	}
 
-	return strings.Join(list, ", ")
+	return nil
+}
+
+// validateCors panics at boot for an entry that would fail at each request:
+// an empty entry, an invalid origin value, or a method or header name that is
+// not a token (RFC 9110 §5.6.2, §9.1). "*" is allowed.
+func validateCors(o *CorsOptions) {
+	for _, origin := range o.Origin {
+		if origin == "" || !validFieldValue(origin) {
+			panic("ehttp: CORS Origin entry " + strconv.Quote(origin) + " is empty or not a valid field value (RFC 9110 §5.5)")
+		}
+	}
+
+	for _, method := range o.Methods {
+		if method != "*" && !validFieldName(method) {
+			panic("ehttp: CORS Methods entry " + strconv.Quote(method) + " is not a token (RFC 9110 §9.1)")
+		}
+	}
+
+	for _, header := range o.Headers {
+		if header != "*" && !validFieldName(header) {
+			panic("ehttp: CORS Headers entry " + strconv.Quote(header) + " is not a token (RFC 9110 §5.6.2)")
+		}
+	}
 }

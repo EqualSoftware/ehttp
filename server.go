@@ -225,6 +225,8 @@ func NewServer(options ...serverOption) *Server {
 		panic("ehttp: CORS Credentials cannot be used with the * origin")
 	}
 
+	validateCors(server.router.cors)
+
 	if server.router.logger == nil {
 		server.router.logger = presetLogger(server.router.mode)
 	}

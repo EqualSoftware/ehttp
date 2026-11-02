@@ -98,9 +98,9 @@ func Secure(o SecureOptions) ehttp.MiddlewareHandlerFunc {
 
 	return func(next ehttp.Handler) ehttp.HandlerFunc {
 		return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
-			res.Append(ehttp.HeaderXXSSProtection, o.XSSProtection)
-			res.Append(ehttp.HeaderXContentTypeOptions, o.ContentTypeNosniff)
-			res.Append(ehttp.HeaderXFrameOptions, o.XFrameOptions)
+			res.Set(ehttp.HeaderXXSSProtection, o.XSSProtection)
+			res.Set(ehttp.HeaderXContentTypeOptions, o.ContentTypeNosniff)
+			res.Set(ehttp.HeaderXFrameOptions, o.XFrameOptions)
 
 			if req.Protocol() == "https" && o.HSTSMaxAge != 0 {
 				subdomains := ""
@@ -113,19 +113,19 @@ func Secure(o SecureOptions) ehttp.MiddlewareHandlerFunc {
 					subdomains = fmt.Sprintf("%s; preload", subdomains)
 				}
 
-				res.Append(ehttp.HeaderStrictTransportSecurity, fmt.Sprintf("max-age=%d%s", o.HSTSMaxAge, subdomains))
+				res.Set(ehttp.HeaderStrictTransportSecurity, fmt.Sprintf("max-age=%d%s", o.HSTSMaxAge, subdomains))
 			}
 
 			if o.ContentSecurityPolicy != "" {
 				if o.CSPReportOnly {
-					res.Append(ehttp.HeaderContentSecurityPolicyReportOnly, o.ContentSecurityPolicy)
+					res.Set(ehttp.HeaderContentSecurityPolicyReportOnly, o.ContentSecurityPolicy)
 				} else {
-					res.Append(ehttp.HeaderContentSecurityPolicy, o.ContentSecurityPolicy)
+					res.Set(ehttp.HeaderContentSecurityPolicy, o.ContentSecurityPolicy)
 				}
 			}
 
 			if o.ReferrerPolicy != "" {
-				res.Append(ehttp.HeaderReferrerPolicy, o.ReferrerPolicy)
+				res.Set(ehttp.HeaderReferrerPolicy, o.ReferrerPolicy)
 			}
 
 			next.ServeHTTP(res, req)

@@ -19,7 +19,7 @@ func LastModified(last_modified time.Time) ehttp.MiddlewareHandlerFunc {
 				return
 			}
 
-			res.Append(ehttp.HeaderLastModified, last_modified.Format(http.TimeFormat))
+			res.Set(ehttp.HeaderLastModified, last_modified.Format(http.TimeFormat))
 
 			if_modified_since := req.Header(ehttp.HeaderIfModifiedSince)
 

@@ -56,7 +56,7 @@ func TestCache(t *testing.T) {
 		t.Parallel()
 
 		h := fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
-			res.Append("Cache-Control", "no-store")
+			res.Set("Cache-Control", "no-store")
 			res.String("ok")
 		}, middleware.Cache(time.Minute))
 

@@ -16,7 +16,7 @@ func RequestId() ehttp.MiddlewareHandlerFunc {
 				req.Request.Header.Set(ehttp.HeaderXRequestID, rid)
 			}
 
-			res.Append(ehttp.HeaderXRequestID, rid)
+			res.Set(ehttp.HeaderXRequestID, rid)
 
 			next.ServeHTTP(res, req)
 		}

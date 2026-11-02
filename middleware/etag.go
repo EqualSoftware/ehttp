@@ -25,7 +25,7 @@ func WeakEtag() ehttp.MiddlewareHandlerFunc {
 			next.ServeHTTP(ires, req)
 
 			if skip_body {
-				res.Append(ehttp.HeaderContentLength, strconv.FormatInt(i.Size, 10))
+				res.Set(ehttp.HeaderContentLength, strconv.FormatInt(i.Size, 10))
 			}
 
 			if i.Code != ehttp.StatusOK || i.Size == 0 {
@@ -39,7 +39,7 @@ func WeakEtag() ehttp.MiddlewareHandlerFunc {
 			}
 
 			etag := fmt.Sprintf(`W/"%d-%08x"`, i.Size, crc32.ChecksumIEEE(i.Buffer.Bytes()))
-			res.Append(ehttp.HeaderEtag, etag)
+			res.Set(ehttp.HeaderEtag, etag)
 
 			if_none_match := req.Header(ehttp.HeaderIfNoneMatch)
 			is_same_content := if_none_match == strings.TrimPrefix(etag, "W/") || if_none_match == etag

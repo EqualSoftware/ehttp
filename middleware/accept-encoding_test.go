@@ -34,7 +34,7 @@ func TestAcceptEncoding(t *testing.T) {
 			outer := func(next ehttp.Handler) ehttp.HandlerFunc {
 				return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
 					if tt.existing != "" {
-						res.Append("Vary", tt.existing)
+						res.Vary(tt.existing)
 					}
 
 					next.ServeHTTP(res, req)
@@ -74,7 +74,7 @@ func TestAcceptEncodingVarySubstring(t *testing.T) {
 
 	outer := func(next ehttp.Handler) ehttp.HandlerFunc {
 		return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
-			res.Append("Vary", "X-Accept-Encoding-Hint")
+			res.Vary("X-Accept-Encoding-Hint")
 			next.ServeHTTP(res, req)
 		}
 	}

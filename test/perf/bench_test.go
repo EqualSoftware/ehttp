@@ -185,3 +185,11 @@ func BenchmarkCorsSimple(b *testing.B) {
 	req.Header.Set("Origin", "http://localhost:3000")
 	bench(b, s, req)
 }
+
+func BenchmarkMethodNotAllowed(b *testing.B) {
+	s := ehttp.NewServer()
+	s.POST("/x", noop)
+	s.PUT("/x", noop)
+
+	bench(b, s, httptest.NewRequestWithContext(context.Background(), "GET", "/x", http.NoBody))
+}
