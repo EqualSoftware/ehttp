@@ -269,15 +269,24 @@ func dRangeValid(header string) bool {
 // dRangeBody is the body of the file that the range targets serve.
 const dRangeBody = "0123456789"
 
-// dRangeServer serves a file of dRangeBody at /f, and at /missing with the
-// status 404 set before SendFile.
-func dRangeServer(tb testing.TB) *Server {
+// dRangeFile writes a file of dRangeBody and returns its path.
+func dRangeFile(tb testing.TB) string {
 	tb.Helper()
 
 	name := filepath.Join(tb.TempDir(), "f.txt")
 	if err := os.WriteFile(name, []byte(dRangeBody), 0o600); err != nil {
 		tb.Fatal(err)
 	}
+
+	return name
+}
+
+// dRangeServer serves a file of dRangeBody at /f, and at /missing with the
+// status 404 set before SendFile.
+func dRangeServer(tb testing.TB) *Server {
+	tb.Helper()
+
+	name := dRangeFile(tb)
 
 	s := NewServer()
 	s.GET("/f", func(res *ResponseWriter, _ *Request) { res.SendFile(name) })
@@ -650,6 +659,9 @@ func TestSendFileRange(t *testing.T) {
 		{"set of suffixes of no byte", "bytes=-0,-0", 416, "bytes */10", ""},
 		{"suffix of no byte is dropped", "bytes=-0,1-2", 206, "bytes 1-2/10", "12"},
 		{"suffix of no byte is dropped at the end", "bytes=1-2,-0", 206, "bytes 1-2/10", "12"},
+		{"double minus is invalid", "bytes=0-1,--0", 416, "bytes */10", ""},
+		{"minus plus is invalid", "bytes=0-1,-+0", 416, "bytes */10", ""},
+		{"plus in a number is invalid", "bytes=+1-2", 416, "bytes */10", ""},
 		{"empty member is skipped", "bytes=1-2,", 206, "bytes 1-2/10", "12"},
 	}
 
@@ -772,6 +784,23 @@ func TestSendFileStatusBefore(t *testing.T) {
 		ehttptest.True(t, "RFC 9110 §8.8.2", rec.Header().Get(HeaderLastModified) != "", "no Last-Modified")
 	})
 
+	t.Run("204 and 304 have no content", func(t *testing.T) {
+		t.Parallel()
+
+		for _, code := range []int{204, 304} {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
+			res := &ResponseWriter{w: rec, request: req}
+			res.Status(code)
+			res.SendFile(dRangeFile(t))
+
+			ehttptest.Eq(t, "RFC 9110 §15.3.5", rec.Code, code)
+			ehttptest.Eq(t, "RFC 9110 §15.3.5", rec.Body.Len(), 0)
+			ehttptest.Eq(t, "RFC 9110 §8.6", rec.Header().Get(HeaderContentLength), "")
+			ehttptest.Eq(t, "RFC 9110 §8.3", rec.Header().Get(HeaderContentType), "")
+		}
+	})
+
 	t.Run("HEAD has no body", func(t *testing.T) {
 		t.Parallel()
 
@@ -791,7 +820,6 @@ func TestSendFileInvalidEtagFields(t *testing.T) {
 	tests := []struct{ name, field, value string }{
 		{"If-Match unquoted", "If-Match", "abc"},
 		{"If-None-Match star with a tag", HeaderIfNoneMatch, `*, "a"`},
-		{"If-None-Match empty", HeaderIfNoneMatch, ""},
 	}
 
 	for _, tt := range tests {

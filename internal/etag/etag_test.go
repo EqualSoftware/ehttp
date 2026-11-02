@@ -24,8 +24,9 @@ func TestMatchAndValid(t *testing.T) {
 		{"unquoted", []string{"abc"}, false, false},
 		{"unterminated", []string{`"abc`}, false, false},
 		{"space in a tag", []string{`"a b"`}, false, false},
-		{"empty value", []string{""}, false, false},
-		{"only commas", []string{" , ,"}, false, false},
+		{"empty value", []string{""}, true, false},
+		{"only commas", []string{" , ,"}, true, false},
+		{"only a space", []string{" "}, true, false},
 		{"junk after a tag", []string{`"a" x`}, false, false},
 		{"one bad line", []string{`"a"`, "abc"}, false, false},
 	}

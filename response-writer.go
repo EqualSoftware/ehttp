@@ -1332,7 +1332,13 @@ func (res *ResponseWriter) SendFile(name string) {
 	// section 13 and 14): If-Match, If-None-Match, If-Modified-Since,
 	// If-Unmodified-Since, If-Range and Range with one or more ranges.
 	w := http.ResponseWriter(res)
-	req := fileRequest(res.request)
+	req, none := fileRequest(res.request)
+
+	if none {
+		res.Header().Set(HeaderContentRange, "bytes */"+strconv.FormatInt(file_size, 10))
+		res.SendStatus(StatusRequestedRangeNotSatisfiable)
+		return
+	}
 
 	if req.Header.Get(HeaderRange) != "" {
 		w = rangeWriter{ResponseWriter: res, size: file_size}
@@ -1360,13 +1366,19 @@ func (res *ResponseWriter) sendFileWithStatus(code int, file *os.File, name stri
 	}
 
 	h := res.Header()
-	h.Set(HeaderContentType, ctype)
-	h.Set(HeaderContentLength, strconv.FormatInt(info.Size(), 10))
 	h.Set(HeaderLastModified, info.ModTime().UTC().Format(http.TimeFormat))
+
+	// A 204 and a 304 have no content (RFC 9110 sections 15.3.5, 15.4.5).
+	noContent := code == StatusNoContent || code == StatusNotModified
+
+	if !noContent {
+		h.Set(HeaderContentType, ctype)
+		h.Set(HeaderContentLength, strconv.FormatInt(info.Size(), 10))
+	}
 
 	res.writeHeader(code)
 
-	if res.request.Method == MethodHead {
+	if noContent || res.request.Method == MethodHead {
 		return
 	}
 
@@ -1396,36 +1408,43 @@ func (w rangeWriter) WriteHeader(code int) {
 // fileRequest returns the request that http.ServeContent gets. Range is
 // defined for GET only, so any other method loses Range and If-Range (RFC 9110
 // section 14.2). A Range with a unit that is not "bytes" is ignored (section
-// 14.2), and the unit is not case-sensitive (section 14.1). The empty
-// members of a range set are dropped, and a set with no member left is
-// invalid: the server answers 416 (sections 14.1.1 and 14.1.2). Any other
-// value stays, and ServeContent answers 416 when the syntax is invalid.
-func fileRequest(req *http.Request) *http.Request {
+// 14.2), and the unit is not case-sensitive (section 14.1). A suffix of no
+// byte is dropped from the set (section 14.1.2). none is true when the set has
+// no member left: it is not satisfiable, and the caller answers 416 (sections
+// 14.1.1 and 14.1.2). Any other value stays, and ServeContent answers 416 when
+// the syntax is invalid.
+func fileRequest(req *http.Request) (_ *http.Request, none bool) {
 	rng := req.Header.Get(HeaderRange)
 
 	if rng == "" {
-		return req
+		return req, false
 	}
 
 	if req.Method != MethodGet {
-		return fileHeaderEdit(req, "")
+		return fileHeaderEdit(req, ""), false
 	}
 
 	unit, set, ok := strings.Cut(rng, "=")
 
 	if !ok || unit == "" || !isToken(unit) {
-		return req
+		return req, false
 	}
 
 	if !strings.EqualFold(unit, "bytes") {
-		return fileHeaderEdit(req, "")
+		return fileHeaderEdit(req, ""), false
 	}
 
-	if fixed := "bytes=" + fileRangeSet(set); fixed != rng {
-		return fileHeaderEdit(req, fixed)
+	set, none = fileRangeSet(set)
+
+	if none {
+		return req, true
 	}
 
-	return req
+	if fixed := "bytes=" + set; fixed != rng {
+		return fileHeaderEdit(req, fixed), false
+	}
+
+	return req, false
 }
 
 // fileHeaderEdit returns a copy of req with the Range value set, or without
@@ -1447,14 +1466,18 @@ func fileHeaderEdit(req *http.Request, value string) *http.Request {
 }
 
 // fileRangeSet drops the members of a bytes range set that have no byte: the
-// empty ones and the suffix of length 0 (RFC 9110 section 14.1.2). The set "-"
-// stays when no member is left. It is invalid, so the answer is 416.
-func fileRangeSet(set string) string {
+// empty ones and the suffix of length 0 (RFC 9110 section 14.1.2). none is
+// true when no member is left, or a member has a sign.
+func fileRangeSet(set string) (_ string, none bool) {
 	kept, drop := 0, false
 
 	for rest := set; rest != ""; {
 		var m string
 		m, rest, _ = strings.Cut(rest, ",")
+
+		if fileRangeBad(m) {
+			return "", true
+		}
 
 		if fileRangeHasByte(m) {
 			kept++
@@ -1465,9 +1488,9 @@ func fileRangeSet(set string) string {
 
 	switch {
 	case kept == 0:
-		return "-"
+		return "", true
 	case !drop:
-		return set
+		return set, false
 	}
 
 	var b strings.Builder
@@ -1487,7 +1510,15 @@ func fileRangeSet(set string) string {
 		b.WriteString(m)
 	}
 
-	return b.String()
+	return b.String(), false
+}
+
+// fileRangeBad reports that the member m has a sign. A number is digits only
+// (RFC 9110 section 14.1.2), and ParseInt in ServeContent accepts a sign.
+func fileRangeBad(m string) bool {
+	_, last, _ := strings.Cut(m, "-")
+
+	return strings.Contains(m, "+") || strings.HasPrefix(strings.TrimSpace(last), "-")
 }
 
 // fileRangeHasByte reports that the member m is not empty and is not a suffix

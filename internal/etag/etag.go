@@ -14,21 +14,22 @@ func ValidRequest(h http.Header) bool {
 }
 
 // Valid reports that each value is "*" alone or a list of entity-tags
-// (RFC 9110 section 13.1.1, 13.1.2). A field without a member is not valid.
+// (RFC 9110 section 13.1.1, 13.1.2). A field with no member is valid: the
+// list allows zero elements (section 5.6.1.2).
 func Valid(values []string) bool {
 	_, ok := scan(values, "")
-	return ok || len(values) == 0
+	return ok
 }
 
 // Match reports that the field is valid and has "*" or a tag with the
-// opaque value opaque, by weak comparison.
+// opaque value opaque, by weak comparison. An empty list does not match.
 func Match(values []string, opaque string) bool {
 	match, ok := scan(values, opaque)
 	return match && ok
 }
 
 // scan reads the field lines. ok is false when a member is not an
-// entity-tag, "*" is not the only member, or the field has no member.
+// entity-tag, or "*" is not the only member.
 func scan(values []string, opaque string) (match, ok bool) {
 	members, star := 0, false
 
@@ -58,7 +59,7 @@ func scan(values []string, opaque string) (match, ok bool) {
 		}
 	}
 
-	return match, members > 0 && (!star || members == 1)
+	return match, !star || members == 1
 }
 
 // scanETag returns the length of the member at the start of s: "*" or an
