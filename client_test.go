@@ -1,6 +1,7 @@
 package ehttp_test
 
 import (
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -691,9 +692,11 @@ func TestClientRedirectAuthorization(t *testing.T) {
 		t.Helper()
 
 		var got atomic.Value
+		var hit atomic.Bool
 		got.Store("")
 
 		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hit.Store(true)
 			got.Store(r.Header.Get("Authorization"))
 		}))
 		t.Cleanup(target.Close)
@@ -706,6 +709,7 @@ func TestClientRedirectAuthorization(t *testing.T) {
 		var front *httptest.Server
 		front = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if sameHost && r.URL.Path == "/final" {
+				hit.Store(true)
 				got.Store(r.Header.Get("Authorization"))
 				return
 			}
@@ -728,6 +732,7 @@ func TestClientRedirectAuthorization(t *testing.T) {
 		res, err := ehttp.NewClient(ehttp.WithAuthorization("Bearer secret")).Execute(ehttp.WithSource("GET", from))
 		ehttptest.True(t, "the request works", err == nil, "err = %v", err)
 		res.Body.Close()
+		ehttptest.True(t, "the redirect was followed", hit.Load(), "the final server got no request")
 
 		return got.Load().(string)
 	}
@@ -798,6 +803,7 @@ func TestClientErrorMasksURL(t *testing.T) {
 	}
 
 	ehttptest.Eq(t, "Op stays", urlErr.Op, "Get")
+	ehttptest.Eq(t, "the URL of the error is masked", urlErr.URL, "http://***:***@127.0.0.1:1/p?token=***&page=2")
 
 	var opErr *net.OpError
 	ehttptest.True(t, "errors.As reaches the cause", errors.As(err, &opErr), "err = %v", err)
@@ -887,5 +893,80 @@ func TestClientMaxResponseBytes(t *testing.T) {
 
 		defer func() { ehttptest.True(t, "panic", recover() != nil, "no panic") }()
 		ehttp.WithMaxResponseBytes(-1)
+	})
+}
+
+// After a redirect the error shows the failing hop, masked.
+func TestClientErrorMasksRedirectHop(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://127.0.0.1:1/final?token=SECRET&page=2", http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := ehttp.NewClient().Execute(ehttp.WithSource("GET", srv.URL+"/start"))
+
+	ehttptest.True(t, "an error", err != nil, "no error")
+
+	text := err.Error()
+	ehttptest.True(t, "the failing hop shows", strings.Contains(text, "/final") && strings.Contains(text, "token=***"), "err = %v", text)
+	ehttptest.True(t, "no secret and no first hop", !strings.Contains(text, "SECRET") && !strings.Contains(text, "/start"), "err = %v", text)
+}
+
+// A timeout keeps its type through the masking.
+func TestClientErrorMaskKeepsTimeout(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := ehttp.NewClient(ehttp.WithTimeout(50 * time.Millisecond)).Execute(ehttp.WithSource("GET", srv.URL+"/p?token=S"))
+
+	var terr interface{ Timeout() bool }
+	ehttptest.True(t, "Timeout() works", errors.As(err, &terr) && terr.Timeout(), "err = %v", err)
+	ehttptest.True(t, "errors.Is DeadlineExceeded", errors.Is(err, context.DeadlineExceeded), "err = %v", err)
+	ehttptest.True(t, "the secret is masked", !strings.Contains(err.Error(), "=S"), "err = %v", err)
+}
+
+func TestClientMaxResponseBytesHeadAndGzip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("HEAD keeps Content-Length with no body", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", "5000")
+		}))
+		t.Cleanup(srv.Close)
+
+		res, err := ehttp.NewClient(ehttp.WithMaxResponseBytes(100)).Execute(ehttp.WithSource("HEAD", srv.URL))
+		ehttptest.True(t, "request works", err == nil, "err = %v", err)
+
+		_, err = res.Bytes()
+		ehttptest.True(t, "no error for HEAD", err == nil, "err = %v", err)
+	})
+
+	t.Run("limit counts decoded bytes", func(t *testing.T) {
+		t.Parallel()
+
+		plain := strings.Repeat("a", 5000)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Encoding", "gzip")
+			zw := gzip.NewWriter(w)
+			_, _ = io.WriteString(zw, plain)
+			_ = zw.Close()
+		}))
+		t.Cleanup(srv.Close)
+
+		res, _ := ehttp.NewClient(ehttp.WithMaxResponseBytes(1000)).Execute(ehttp.WithSource("GET", srv.URL))
+		_, err := res.Bytes()
+		ehttptest.True(t, "5000 decoded bytes are over 1000", errors.Is(err, ehttp.ErrResponseTooLarge), "err = %v", err)
+
+		res, _ = ehttp.NewClient(ehttp.WithMaxResponseBytes(5000)).Execute(ehttp.WithSource("GET", srv.URL))
+		b, err := res.Bytes()
+		ehttptest.True(t, "at the decoded size is fine", err == nil && len(b) == 5000, "len=%d err=%v", len(b), err)
 	})
 }

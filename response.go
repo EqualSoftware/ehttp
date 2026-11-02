@@ -35,7 +35,10 @@ func (res *Response) reader(where string) (io.Reader, error) {
 		return res.Body, nil
 	}
 
-	if res.ContentLength > res.maxBytes {
+	// A HEAD response keeps the Content-Length of the resource with no body.
+	head := res.Request != nil && res.Request.Method == http.MethodHead
+
+	if !head && res.ContentLength > res.maxBytes {
 		return nil, res.tooLarge(where)
 	}
 

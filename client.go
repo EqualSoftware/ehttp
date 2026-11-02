@@ -89,7 +89,9 @@ func WithClientRedactNames(patterns ...string) clientOptionFunc {
 // value panics. If Content-Length is known and above the limit, the helpers
 // return ErrResponseTooLarge without a read of the body. Else they stop at one
 // byte over the limit. Response.Body stays unlimited, for streaming. The
-// limit is opt-in, as in resty (SetResponseBodyLimit) and req
+// limit counts decoded bytes when the Transport decompresses gzip. If the
+// caller sets Accept-Encoding by hand, the Transport does not decompress and the
+// limit counts the compressed bytes. The limit is opt-in, as in resty (SetResponseBodyLimit) and req
 // (SetMaxResponseSize).
 func WithMaxResponseBytes(n int64) clientOptionFunc {
 	if n < 0 {
@@ -261,7 +263,7 @@ func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 			zap.Error(logErr(err)),
 		)
 
-		return nil, maskErr(err, req_url, client.redact)
+		return nil, maskErr(err, client.redact)
 	}
 
 	if cfg.jsonPayload != nil {
@@ -287,7 +289,7 @@ func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 			zap.Error(logErr(err)),
 		)
 
-		return nil, maskErr(err, req.URL, client.redact)
+		return nil, maskErr(err, client.redact)
 	}
 
 	zap.L().Debug("request executed",
@@ -319,16 +321,24 @@ func logTarget(u *url.URL) string {
 	return u.Scheme + "://" + u.Host
 }
 
-// maskErr hides the secrets of the URL in a *url.Error. The new error has the
-// same Op and Err, so errors.Is, errors.As and Timeout keep working. Other
-// errors do not change.
-func maskErr(err error, u *url.URL, m *redact.Matcher) error {
+// maskErr hides the secrets of the URL in a *url.Error. The URL is the one in
+// the error, which after a redirect is the URL of the failing hop. The new
+// error has the same Op and Err, so errors.Is, errors.As and Timeout keep
+// working. If that URL does not parse, it becomes the mask. Other errors do not
+// change.
+func maskErr(err error, m *redact.Matcher) error {
 	var urlErr *url.Error
 	if !errors.As(err, &urlErr) {
 		return err
 	}
 
-	return &url.Error{Op: urlErr.Op, URL: m.URL(u), Err: urlErr.Err}
+	masked := redact.Mask
+
+	if u, perr := url.Parse(urlErr.URL); perr == nil {
+		masked = m.URL(u)
+	}
+
+	return &url.Error{Op: urlErr.Op, URL: masked, Err: urlErr.Err}
 }
 
 // misuse logs a developer mistake once at Error level and returns it.
