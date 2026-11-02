@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"html/template"
 	"io"
 	"mime"
@@ -19,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -1264,8 +1264,12 @@ func (res *ResponseWriter) JSON(v interface{}) {
 //
 // A status set before SendFile other than 200 is the status of the response:
 // the file is the body, and Range and the conditional fields are not used.
-// Otherwise SendFile answers them (RFC 9110 sections 13 and 14), and an
-// If-Match or If-None-Match with an invalid syntax gets 400.
+// Otherwise SendFile sets a strong ETag from the modification time and the
+// size, answers the conditional fields and Range (RFC 9110 sections 13 and
+// 14), and an If-Match or If-None-Match with an invalid syntax gets 400.
+// The ETag is only as strong as the file mtime: a tool that restores the mtime
+// (for example rsync -t, touch -d, or image layers with a fixed mtime) with
+// new content of the same size keeps the same tag (RFC 9110 section 8.8.1).
 func (res *ResponseWriter) SendFile(name string) {
 	if res.finished() {
 		return
@@ -1320,8 +1324,7 @@ func (res *ResponseWriter) SendFile(name string) {
 		return
 	}
 
-	hash := crc32.ChecksumIEEE([]byte(file_name + file_modtime.String() + strconv.FormatInt(file_size, 10)))
-	res.Header().Set(HeaderEtag, fmt.Sprintf(`W/"%d-%08x"`, file_size, hash))
+	res.Header().Set(HeaderEtag, fileETag(file_modtime, file_size))
 
 	// http.ServeContent answers the conditional and range fields (RFC 9110
 	// section 13 and 14): If-Match, If-None-Match, If-Modified-Since,
@@ -1540,4 +1543,21 @@ func hasDotDot(name string) bool {
 	}
 
 	return false
+}
+
+// fileETag builds the strong entity tag of a file: the hex modification time
+// in nanoseconds and the hex size, like nginx but with sub-second resolution
+// (RFC 9110 section 8.8.3.1). It uses the instant, not its zoned text, so the
+// value does not depend on the time zone of the server. A time before 1970
+// is formatted as uint64, so the tag has no sign.
+func fileETag(mod time.Time, size int64) string {
+	var buf [40]byte
+
+	b := append(buf[:0], '"')
+	b = strconv.AppendUint(b, uint64(mod.UnixNano()), 16)
+	b = append(b, '-')
+	b = strconv.AppendInt(b, size, 16)
+	b = append(b, '"')
+
+	return string(b)
 }

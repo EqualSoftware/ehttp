@@ -515,8 +515,8 @@ func TestWeakEtagIfMatch(t *testing.T) {
 	})
 }
 
-// SendFile sets a weak ETag, so a tag list of If-Match never matches it
-// (strong comparison, RFC 9110 section 13.1.1) and "*" does.
+// SendFile sets a strong ETag, so If-Match matches it by strong comparison
+// (RFC 9110 section 13.1.1), a weak form of it never matches, and "*" does.
 func TestSendFileIfMatchStrong(t *testing.T) {
 	t.Parallel()
 
@@ -534,9 +534,10 @@ func TestSendFileIfMatchStrong(t *testing.T) {
 		name, im string
 		code     int
 	}{
-		{"weak tag of the response", etag, 412},
-		{"strong form of the tag", strings.TrimPrefix(etag, "W/"), 412},
-		{"list with the tag", `"zzz", ` + etag, 412},
+		{"tag of the response", etag, 200},
+		{"weak form of the tag", "W/" + etag, 412},
+		{"another tag", `"zzz"`, 412},
+		{"list with the tag", `"zzz", ` + etag, 200},
 		{"wildcard", "*", 200},
 	}
 

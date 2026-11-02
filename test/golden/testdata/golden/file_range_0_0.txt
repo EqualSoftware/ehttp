@@ -5,7 +5,7 @@ header Content-Length: 1
 header Content-Range: bytes 0-0/332549
 header Content-Type: image/png
 header Date: <volatile>
-header Etag: W/"332549-32658cc8"
+header Etag: "17a668b730013200-51305"
 header Last-Modified: Tue, 02 Jan 2024 03:04:05 GMT
 header Vary: Accept-Encoding, Origin
 header X-Content-Type-Options: nosniff
