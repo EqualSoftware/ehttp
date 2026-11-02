@@ -3,6 +3,7 @@ package ehttp
 import (
 	"html/template"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -230,61 +231,96 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	corsUpdateHeaders(res, req, router.cors)
 
 	method := req.Method()
-	url := req.Path()
-	url_segments := strings.Split(url, "/")
+	path := req.Path()
+	url_segments := strings.Split(path, "/")
 
 	if url_segments[len(url_segments)-1] == "" {
 		url_segments = url_segments[:len(url_segments)-1]
 	}
 
-	for _, endpoint := range router.routes {
-		if match := endpoint.match(req, url_segments); !match {
-			continue
-		}
+	endpoint, matched := router.find(method, url_segments)
 
-		if method == endpoint.method || method == MethodHead && endpoint.method == MethodGet {
-			req.Request.Pattern = endpoint.pattern
-			endpoint.handle(res, req)
-			return
-		}
+	if endpoint != nil {
+		endpoint.bind(req, url_segments)
+		req.Request.Pattern = endpoint.pattern
+		endpoint.handle(res, req)
 
-		if method != MethodOptions {
-			var selected_route *route
-			methods := []string{}
+		return
+	}
 
-			for _, route := range router.routes {
-				if match := route.match(req, url_segments); match {
-					methods = append(methods, route.method)
-
-					if selected_route == nil && method == route.method {
-						selected_route = route
-					}
-				}
-			}
-
-			if slices.Contains(methods, MethodGet) && !slices.Contains(methods, MethodHead) {
-				methods = append(methods, MethodHead)
-			}
-
-			if !slices.Contains(methods, MethodOptions) {
-				methods = append(methods, MethodOptions)
-			}
-
-			router.wrap(router.methodNotAllowedHandler(methods)).ServeHTTP(res, req)
-
-			return
-		}
+	if matched && method != MethodOptions {
+		router.wrap(router.methodNotAllowedHandler(url_segments)).ServeHTTP(res, req)
+		return
 	}
 
 	if method == MethodOptions {
+		if matched {
+			router.setAllow(res, url_segments)
+		}
+
 		router.wrap(router.optionsHandler).ServeHTTP(res, req)
+
 		return
 	}
 
 	router.wrap(router.notFoundHandler).ServeHTTP(res, req)
 }
 
-func (route *route) match(req *Request, segments []string) bool {
+// find returns the route that serves the method, and whether any route
+// matched the path. A route of the exact method wins. HEAD falls back to the
+// first GET route when no HEAD route matches (RFC 9110 §9.3.2).
+func (r *Router) find(method string, segments []string) (*route, bool) {
+	var fallback *route
+
+	matched := false
+
+	for _, endpoint := range r.routes {
+		if !endpoint.match(segments) {
+			continue
+		}
+
+		matched = true
+
+		if endpoint.method == method {
+			return endpoint, true
+		}
+
+		if method == MethodHead && endpoint.method == MethodGet && fallback == nil {
+			fallback = endpoint
+		}
+	}
+
+	return fallback, matched
+}
+
+// setAllow sets the Allow header (RFC 9110 §10.2.1) from the routes that
+// match the path. GET implies HEAD, and OPTIONS is always served. Call it only
+// when a route matched.
+func (r *Router) setAllow(res *ResponseWriter, segments []string) {
+	var buf [9]string
+
+	methods := buf[:0]
+
+	for _, endpoint := range r.routes {
+		if endpoint.match(segments) {
+			methods = append(methods, endpoint.method)
+		}
+	}
+
+	if slices.Contains(methods, MethodGet) && !slices.Contains(methods, MethodHead) {
+		methods = append(methods, MethodHead)
+	}
+
+	if !slices.Contains(methods, MethodOptions) {
+		methods = append(methods, MethodOptions)
+	}
+
+	res.Append(HeaderAllow, methods...)
+}
+
+// match reports whether the route matches the path segments. It does not
+// change the request.
+func (route *route) match(segments []string) bool {
 	if !strings.HasSuffix(route.pattern, "/...") && len(segments) != len(route.segments) {
 		return false
 	}
@@ -295,34 +331,81 @@ func (route *route) match(req *Request, segments []string) bool {
 		}
 
 		if route_segment == "..." {
-			req.Request.SetPathValue("...", strings.Join(segments[i:], "/"))
 			return true
 		}
 
-		if strings.HasPrefix(route_segment, ":") {
-			key, _, contains_regex := strings.Cut(strings.TrimPrefix(route_segment, ":"), "|")
-
-			if contains_regex {
-				if route.regexes[i].MatchString(segments[i]) {
-					req.Request.SetPathValue(key, segments[i])
-					continue
-				}
+		if !strings.HasPrefix(route_segment, ":") {
+			if segments[i] != route_segment {
+				return false
 			}
 
-			if !contains_regex && segments[i] != "" {
-				req.Request.SetPathValue(key, segments[i])
-				continue
-			}
-
-			return false
+			continue
 		}
 
-		if segments[i] != route_segment {
+		value, ok := decodeSegment(segments[i])
+		if !ok || !route.matchParam(i, value) {
 			return false
 		}
 	}
 
 	return true
+}
+
+// matchParam checks one decoded value against the parameter at index i.
+func (route *route) matchParam(i int, value string) bool {
+	if route.regexes[i] != nil {
+		return route.regexes[i].MatchString(value)
+	}
+
+	return value != ""
+}
+
+// bind writes the parameters of a fully matched route to the request.
+func (route *route) bind(req *Request, segments []string) {
+	for i, route_segment := range route.segments {
+		if route_segment == "..." {
+			req.Request.SetPathValue("...", decodeRest(segments[i:]))
+
+			return
+		}
+
+		if !strings.HasPrefix(route_segment, ":") {
+			continue
+		}
+
+		key, _, _ := strings.Cut(route_segment[1:], "|")
+		value, _ := decodeSegment(segments[i])
+		req.Request.SetPathValue(key, value)
+	}
+}
+
+// decodeRest joins the segments of a wildcard and decodes each one.
+func decodeRest(segments []string) string {
+	rest := strings.Join(segments, "/")
+
+	if !strings.Contains(rest, "%") {
+		return rest
+	}
+
+	decoded := make([]string, len(segments))
+
+	for i, segment := range segments {
+		decoded[i], _ = decodeSegment(segment)
+	}
+
+	return strings.Join(decoded, "/")
+}
+
+// decodeSegment decodes the percent escapes of one path segment (RFC 3986
+// §2.1). A decoded %2F stays inside the value, as the path is split first.
+func decodeSegment(segment string) (string, bool) {
+	if !strings.Contains(segment, "%") {
+		return segment, true
+	}
+
+	value, err := url.PathUnescape(segment)
+
+	return value, err == nil
 }
 
 func (r *Router) wrap(h HandlerFunc) HandlerFunc {
@@ -355,9 +438,9 @@ func (r *Router) optionsHandler(res *ResponseWriter, req *Request) {
 	)
 }
 
-func (r *Router) methodNotAllowedHandler(route_methods []string) HandlerFunc {
+func (r *Router) methodNotAllowedHandler(segments []string) HandlerFunc {
 	return func(res *ResponseWriter, req *Request) {
-		res.Append(HeaderAllow, route_methods...)
+		r.setAllow(res, segments)
 		res.SendStatus(StatusMethodNotAllowed)
 	}
 }

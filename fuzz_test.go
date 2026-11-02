@@ -557,15 +557,13 @@ func TestFuzzKnownBugs(t *testing.T) {
 
 	t.Run("params leak from a route that did not match", func(t *testing.T) {
 		t.Parallel()
-		ehttptest.KnownBug(t, "params-leak-from-unmatched-route", func(t testing.TB) {
-			var seen string
-			r := &Router{cors: &CorsOptions{}}
-			r.GET("/u/:a/x", func(*ResponseWriter, *Request) {})
-			r.GET("/u/:b/y", func(_ *ResponseWriter, req *Request) { seen = req.Param("a") })
-			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/u/5/y", http.NoBody)
-			ehttptest.Do(r, req)
-			ehttptest.Eq(t, "params come only from the matched route", seen, "")
-		})
+		var seen string
+		r := &Router{cors: &CorsOptions{}}
+		r.GET("/u/:a/x", func(*ResponseWriter, *Request) {})
+		r.GET("/u/:b/y", func(_ *ResponseWriter, req *Request) { seen = req.Param("a") })
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/u/5/y", http.NoBody)
+		ehttptest.Do(r, req)
+		ehttptest.Eq(t, "params come only from the matched route", seen, "")
 	})
 
 	t.Run("route regex is not anchored", func(t *testing.T) {

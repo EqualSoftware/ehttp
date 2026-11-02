@@ -448,11 +448,11 @@ func conformanceCases() []conformanceCase {
 			want: cAll(cStatus(405), cHasHdr("Allow"), cHasToken("Allow", "GET"))},
 		{name: "405 Allow lists every method on the path", basis: h1556, fixture: "main", method: http.MethodDelete, path: "/shared",
 			want: cAll(cStatus(405), cHasToken("Allow", "GET"), cHasToken("Allow", "POST"))},
-		{name: "method registered after another on same path is routed", basis: h1556, knownBug: "second-method-on-path-returns-405", fixture: "main", method: http.MethodPost, path: "/shared",
+		{name: "method registered after another on same path is routed", basis: h1556, fixture: "main", method: http.MethodPost, path: "/shared",
 			want: cAll(cStatus(200), cBody("post"))},
 		{name: "OPTIONS answers 2xx", basis: h937, fixture: "main", method: opts, path: "/only",
 			want: cStatus(200, 204)},
-		{name: "OPTIONS advertises Allow (SHOULD)", basis: h937, knownBug: "options-response-lacks-allow", fixture: "main", method: opts, path: "/only",
+		{name: "OPTIONS advertises Allow (SHOULD)", basis: h937, fixture: "main", method: opts, path: "/only",
 			want: cAll(cHasToken("Allow", "GET"), cHasToken("Allow", "OPTIONS"))},
 
 		// ---- SendFile: Range (RFC 9110 §14) ---------------------------------------

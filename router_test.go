@@ -120,9 +120,7 @@ func TestRouterEncodedSlashStaysInOneSegment(t *testing.T) {
 
 	ehttptest.Eq(t, "RFC 3986 §2.2 (%2F is data, not a separator)", rec.Code, 200)
 
-	ehttptest.KnownBug(t, "route-params-not-decoded", func(t testing.TB) {
-		ehttptest.Eq(t, "RFC 3986 §2.1 (the param value is decoded)", rec.Body.String(), "file:a/b")
-	})
+	ehttptest.Eq(t, "RFC 3986 §2.1 (the param value is decoded)", rec.Body.String(), "file:a/b")
 }
 
 func TestRouterRegistrationOrderDecidesStaticVsParam(t *testing.T) {
@@ -263,10 +261,8 @@ func TestRouterMethods(t *testing.T) {
 	t.Run("OPTIONS response advertises Allow", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "options-response-lacks-allow", func(t testing.TB) {
-			rec := aDo(h, "OPTIONS", "/get-only")
-			ehttptest.Eq(t, "RFC 9110 §9.3.7 (SHOULD send Allow)", aAllow(rec), "GET,HEAD,OPTIONS")
-		})
+		rec := aDo(h, "OPTIONS", "/get-only")
+		ehttptest.Eq(t, "RFC 9110 §9.3.7 (SHOULD send Allow)", aAllow(rec), "GET,HEAD,OPTIONS")
 	})
 
 	t.Run("HEAD runs the GET handler", func(t *testing.T) {
@@ -277,9 +273,7 @@ func TestRouterMethods(t *testing.T) {
 	t.Run("explicit HEAD route wins over GET registered first", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "explicit-head-route-shadowed-by-get", func(t testing.TB) {
-			ehttptest.Eq(t, "net/http ServeMux: HEAD pattern is more specific than GET", aDo(h, "HEAD", "/with-head").Body.String(), "h")
-		})
+		ehttptest.Eq(t, "net/http ServeMux: HEAD pattern is more specific than GET", aDo(h, "HEAD", "/with-head").Body.String(), "h")
 	})
 }
 
@@ -339,19 +333,15 @@ func TestRouterMethodOrder(t *testing.T) {
 	t.Run("method registered later on the same path", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "second-method-on-path-returns-405", func(t testing.TB) {
-			rec := aDo(h, "POST", "/x")
-			ehttptest.Eq(t, "the route of the right method must be found", rec.Code, 200)
-			ehttptest.Eq(t, "the route of the right method must be found", rec.Body.String(), "post")
-		})
+		rec := aDo(h, "POST", "/x")
+		ehttptest.Eq(t, "the route of the right method must be found", rec.Code, 200)
+		ehttptest.Eq(t, "the route of the right method must be found", rec.Body.String(), "post")
 	})
 
 	t.Run("static route of another method behind a param route", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "second-method-on-path-returns-405", func(t testing.TB) {
-			ehttptest.Eq(t, "a static route of the right method wins over a param route", aDo(h, "POST", "/a/new").Body.String(), "post-static")
-		})
+		ehttptest.Eq(t, "a static route of the right method wins over a param route", aDo(h, "POST", "/a/new").Body.String(), "post-static")
 	})
 
 	t.Run("method that no route has still gets 405", func(t *testing.T) {
@@ -374,9 +364,7 @@ func TestRouterPathParamsCommittedOnlyOnFullMatch(t *testing.T) {
 
 	ehttptest.Eq(t, "route's own param is set", strings.Contains(rec.Body.String(), "name=5"), true)
 
-	ehttptest.KnownBug(t, "params-leak-from-unmatched-route", func(t testing.TB) {
-		ehttptest.Eq(t, "a route that did not match must not leave its params", rec.Body.String(), "id=;name=5")
-	})
+	ehttptest.Eq(t, "a route that did not match must not leave its params", rec.Body.String(), "id=;name=5")
 }
 
 func TestRouterParamDecoding(t *testing.T) {
@@ -399,9 +387,7 @@ func TestRouterParamDecoding(t *testing.T) {
 		t.Run(tt.target, func(t *testing.T) {
 			t.Parallel()
 
-			ehttptest.KnownBug(t, "route-params-not-decoded", func(t testing.TB) {
-				ehttptest.Eq(t, "params are decoded (Express, net/http PathValue)", aDo(h, "GET", tt.target).Body.String(), tt.want)
-			})
+			ehttptest.Eq(t, "params are decoded (Express, net/http PathValue)", aDo(h, "GET", tt.target).Body.String(), tt.want)
 		})
 	}
 }

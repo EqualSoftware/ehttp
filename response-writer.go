@@ -329,7 +329,13 @@ func (res *ResponseWriter) Header() http.Header {
 	return res.w.Header()
 }
 
+// StatusCode returns the status of the response. It is 200 until a handler
+// sets another one.
 func (res *ResponseWriter) StatusCode() int {
+	if res.code == 0 {
+		return StatusOK
+	}
+
 	return res.code
 }
 

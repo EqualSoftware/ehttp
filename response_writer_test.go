@@ -153,9 +153,7 @@ func TestResponseWriterStatusCode(t *testing.T) {
 	t.Run("default before anything is written", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "status-code-zero-before-write", func(t testing.TB) {
-			ehttptest.Eq(t, "Node http.ServerResponse.statusCode defaults to 200", before, 200)
-		})
+		ehttptest.Eq(t, "Node http.ServerResponse.statusCode defaults to 200", before, 200)
 	})
 }
 

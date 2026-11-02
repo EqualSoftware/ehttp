@@ -279,7 +279,7 @@ func TestGolden(t *testing.T) {
 		{name: "method_not_allowed", method: "POST", path: "/healthcheck"},
 		{name: "body_created", method: "POST", path: "/body", body: "hello"},
 		{name: "body_over_limit_declared", method: "POST", path: "/body", body: strings.Repeat("a", 5000)},
-		{name: "param_route_encoded", bug: "route-params-not-decoded", method: "GET", path: "/api/v1/hello/John%20Doe"},
+		{name: "param_route_encoded", method: "GET", path: "/api/v1/hello/John%20Doe"},
 		{name: "native_handler", method: "GET", path: "/native"},
 		{name: "request_id_echo", method: "GET", path: "/healthcheck", headers: map[string]string{"X-Request-Id": "fixed-id-1"}},
 	}
