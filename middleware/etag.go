@@ -216,6 +216,7 @@ func (w *etagWriter) preconditionFailed() {
 	h.Del(ehttp.HeaderContentEncoding)
 	h.Del(ehttp.HeaderLastModified)
 	h.Del(ehttp.HeaderContentDisposition)
+	h.Del(ehttp.HeaderCacheControl) // ErrorCache decides for the 412
 
 	w.i.Buffer.Reset()
 	w.code = ehttp.StatusPreconditionFailed

@@ -1,6 +1,8 @@
 package middleware_test
 
 import (
+	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -65,17 +67,47 @@ func TestCache(t *testing.T) {
 		ehttptest.Eq(t, "handler value sent (Production)", rec.Header().Get("Cache-Control"), "no-store")
 	})
 
-	t.Run("same on every status the handler picks", func(t *testing.T) {
+	t.Run("applies below 400 only", func(t *testing.T) {
 		t.Parallel()
 
-		ok := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Cache(time.Minute)), fixtures.Req("GET", "/x"))
-		h := fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) { res.SendStatus(404) }, middleware.Cache(time.Minute))
-		rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
-		cc := rec.Header().Get("Cache-Control")
+		for code, want := range map[int]bool{200: true, 204: true, 301: true, 304: true, 399: true, 400: false, 404: false, 500: false, 503: false} {
+			rec := ehttptest.Do(fixtures.Handler(fixtures.Status(code, ""), middleware.Cache(time.Minute)), fixtures.Req("GET", "/x"))
+			cc := rec.Header().Get("Cache-Control")
 
-		ehttptest.Eq(t, "middleware contract", rec.Code, 404)
-		ehttptest.True(t, "RFC 9111 §5.2.2.1", strings.Contains(cc, "max-age=60"), "Cache-Control %q lacks max-age=60 on 404", cc)
-		ehttptest.Eq(t, "middleware contract (same value on every status)", cc, ok.Header().Get("Cache-Control"))
+			ehttptest.Eq(t, "Cache contract (errors belong to ErrorCache) status "+strconv.Itoa(code), strings.Contains(cc, "max-age=60"), want)
+		}
+	})
+
+	t.Run("Cache(1h) with a 500: ErrorCache decides", func(t *testing.T) {
+		t.Parallel()
+
+		h := fixtures.Handler(fixtures.Status(500, "x"), middleware.ErrorCache(time.Minute), middleware.Cache(time.Hour))
+		rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
+
+		ehttptest.Eq(t, "ErrorCache contract", rec.Header().Get("Cache-Control"), "no-store")
+	})
+
+	t.Run("a raw header set before WriteHeader wins", func(t *testing.T) {
+		t.Parallel()
+
+		h := fixtures.Handler(func(res *ehttp.ResponseWriter, _ *ehttp.Request) {
+			res.Header().Set("Cache-Control", "max-age=7")
+			res.String("ok")
+		}, middleware.Cache(time.Minute))
+
+		ehttptest.Eq(t, "Cache contract", ehttptest.Do(h, fixtures.Req("GET", "/x")).Header().Get("Cache-Control"), "max-age=7")
+	})
+
+	t.Run("a native handler and HEAD", func(t *testing.T) {
+		t.Parallel()
+
+		native := ehttp.WrapHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) }))
+
+		for _, method := range []string{"GET", "HEAD"} {
+			rec := ehttptest.Do(fixtures.Handler(native, middleware.Cache(time.Minute)), fixtures.Req(method, "/x"))
+
+			ehttptest.True(t, "Cache contract "+method, strings.Contains(rec.Header().Get("Cache-Control"), "max-age=60"), "Cache-Control %q", rec.Header().Get("Cache-Control"))
+		}
 	})
 }
 

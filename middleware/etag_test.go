@@ -498,6 +498,21 @@ func TestWeakEtagIfMatch(t *testing.T) {
 
 		ehttptest.Eq(t, "RFC 9110 §13.2.2", rec.Code, 412)
 	})
+
+	t.Run("the 412 drops the Cache-Control of the dropped response, ErrorCache decides", func(t *testing.T) {
+		t.Parallel()
+
+		req := fixtures.Req("GET", "/x", "If-Match", `"nope"`)
+
+		// Cache inside WeakEtag sets its header on the 200 that is then dropped.
+		rec := ehttptest.Do(fixtures.Handler(bString(body), middleware.WeakEtag(), middleware.Cache(time.Hour)), req)
+		ehttptest.Eq(t, "RFC 9110 §15.5.13", rec.Code, 412)
+		ehttptest.Eq(t, "dropped representation headers go with it", rec.Header().Get("Cache-Control"), "")
+
+		rec = ehttptest.Do(fixtures.Handler(bString(body), middleware.ErrorCache(time.Minute), middleware.WeakEtag(), middleware.Cache(time.Hour)), req)
+		ehttptest.Eq(t, "RFC 9110 §15.5.13", rec.Code, 412)
+		ehttptest.Eq(t, "ErrorCache decides: 412 is no-store", rec.Header().Get("Cache-Control"), "no-store")
+	})
 }
 
 // SendFile sets a weak ETag, so a tag list of If-Match never matches it

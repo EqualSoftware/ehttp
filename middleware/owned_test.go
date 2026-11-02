@@ -48,7 +48,6 @@ func TestOwnerMiddlewareHeaders(t *testing.T) {
 		header string
 		set    string // the value the handler tries
 	}{
-		{"Cache", middleware.Cache(time.Minute), "Cache-Control", "no-store"},
 		{"Secure X-Frame-Options", middleware.Secure(middleware.SecureOptions{}), "X-Frame-Options", "ALLOWALL"},
 		{"Secure X-Content-Type-Options", middleware.Secure(middleware.SecureOptions{}), "X-Content-Type-Options", "x"},
 		{"Secure Referrer-Policy", middleware.Secure(middleware.SecureOptions{ReferrerPolicy: "no-referrer"}), "Referrer-Policy", "unsafe-url"},
@@ -130,49 +129,60 @@ func TestOwnerMiddlewareVary(t *testing.T) {
 	ehttptest.Eq(t, ownBasis+" (Vary does not log)", logs.Len(), 0)
 }
 
-func TestErrorCacheKeepsCacheWithoutWarning(t *testing.T) {
+// Cache applies only below 400: ErrorCache decides an error, with no warning.
+func TestErrorCacheDecidesErrorsOverCache(t *testing.T) {
 	t.Parallel()
 
 	l, logs := bObserved()
-	h := fixtures.HandlerLogged(l, fixtures.Status(404, "gone"), middleware.Cache(time.Minute), middleware.ErrorCache(time.Hour))
+	h := fixtures.HandlerLogged(l, fixtures.Status(404, "gone"), middleware.Cache(time.Hour), middleware.ErrorCache(time.Minute))
 	rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
 
-	ehttptest.True(t, ownBasis+" (an existing middleware value wins)", strings.Contains(rec.Header().Get("Cache-Control"), "max-age=60,"), "Cache-Control %q", rec.Header().Get("Cache-Control"))
+	ehttptest.Eq(t, "ErrorCache contract (404 gets the ErrorCache lifetime)", rec.Header().Get("Cache-Control"), ehttp.CacheControl(time.Minute, false))
 	ehttptest.Eq(t, ownBasis+" (no warning)", logs.Len(), 0)
 
-	msg := bDevPanic(fixtures.Status(404, "gone"), middleware.Cache(time.Minute), middleware.ErrorCache(time.Hour))
+	rec = ehttptest.Do(fixtures.Handler(fixtures.Status(500, "x"), middleware.Cache(time.Hour)), fixtures.Req("GET", "/x"))
+	ehttptest.Eq(t, "Cache contract (below 400 only)", rec.Header().Get("Cache-Control"), "")
+
+	msg := bDevPanic(fixtures.Status(404, "gone"), middleware.Cache(time.Hour), middleware.ErrorCache(time.Minute))
 	ehttptest.Eq(t, ownBasis+" (no panic in Development)", msg, "")
 }
 
-func TestErrorCacheIsTheLastWriter(t *testing.T) {
+// A Cache-Control of the handler wins over ErrorCache, with no warning.
+func TestErrorCacheKeepsHandlerValue(t *testing.T) {
 	t.Parallel()
 
 	handler := func(res *ehttp.ResponseWriter, _ *ehttp.Request) {
 		res.Status(404)
-		res.Set("Cache-Control", "no-store")
+		res.Set("Cache-Control", "max-age=7")
 		res.String("gone")
 	}
 
 	l, logs := bObserved()
 	s := ehttp.NewServer(ehttp.WithLogger(l), ehttp.WithMode(ehttp.Development))
-	s.GET("/x", handler, middleware.Cache(time.Minute), middleware.ErrorCache(time.Hour))
+	s.GET("/x", handler, middleware.Cache(time.Hour), middleware.ErrorCache(time.Minute))
 	rec := ehttptest.Do(s, fixtures.Req("GET", "/x"))
 
-	ehttptest.True(t, ownBasis+" (ErrorCache writes after the handler)", strings.Contains(rec.Header().Get("Cache-Control"), "max-age=3600"), "Cache-Control %q", rec.Header().Get("Cache-Control"))
-	ehttptest.Eq(t, ownBasis+" (one warning)", logs.FilterField(zap.String("header", "Cache-Control")).Len(), 1)
+	ehttptest.Eq(t, "ErrorCache contract (the handler value wins)", rec.Header().Get("Cache-Control"), "max-age=7")
+	ehttptest.Eq(t, ownBasis+" (no warning)", logs.FilterField(zap.String("header", "Cache-Control")).Len(), 0)
 }
 
-func TestTimeoutKeepsCacheValue(t *testing.T) {
+// Timeout sets no Cache-Control. A Cache outside it does not cover the 503.
+func TestTimeoutWithCacheOutside(t *testing.T) {
 	t.Parallel()
 
-	slow := func(res *ehttp.ResponseWriter, req *ehttp.Request) { <-req.Context().Done() }
+	slow := func(_ *ehttp.ResponseWriter, req *ehttp.Request) { <-req.Context().Done() }
 
 	l, logs := bObserved()
-	rec := ehttptest.Do(fixtures.HandlerLogged(l, slow, middleware.Cache(time.Minute), middleware.Timeout(time.Millisecond)), fixtures.Req("GET", "/x"))
+	rec := ehttptest.Do(fixtures.HandlerLogged(l, slow, middleware.ErrorCache(time.Minute), middleware.Cache(time.Minute), middleware.Timeout(time.Millisecond)), fixtures.Req("GET", "/x"))
 
 	ehttptest.Eq(t, "RFC 9110 §15.6.4", rec.Code, 503)
-	ehttptest.Eq(t, "RFC 9110 §15.6.4 (Timeout sets no Cache-Control)", rec.Header().Get("Cache-Control"), ehttp.CacheControl(time.Minute, false))
+	ehttptest.Eq(t, "RFC 9110 §15.6.4 (a 503 is no-store with ErrorCache)", rec.Header().Get("Cache-Control"), "no-store")
 	ehttptest.Eq(t, ownBasis+" (no warning)", logs.Len(), 0)
+
+	rec = ehttptest.Do(fixtures.Handler(slow, middleware.Cache(time.Minute), middleware.Timeout(time.Millisecond)), fixtures.Req("GET", "/x"))
+
+	ehttptest.Eq(t, "RFC 9110 §15.6.4", rec.Code, 503)
+	ehttptest.True(t, "Cache contract (below 400 only)", !strings.Contains(rec.Header().Get("Cache-Control"), "max-age"), "Cache-Control %q", rec.Header().Get("Cache-Control"))
 }
 
 func TestSetCacheHeaderIsNotAnOwner(t *testing.T) {
