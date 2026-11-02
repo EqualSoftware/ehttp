@@ -586,6 +586,11 @@ func TestResponseGetCacheControlMaxAge(t *testing.T) {
 		{"above 64 bits is 2^31", "RFC 9111 §1.2.2", []string{"max-age=99999999999999999999"}, 1 << 31 * time.Second},
 		{"the first max-age wins, even if invalid", "RFC 9111 §4.2.1", []string{"max-age=abc, max-age=30"}, 0},
 		{"a quoted-string hides a comma", "RFC 9110 §5.6.4", []string{`community="a, max-age=5"`}, 0},
+		{"quoted 2^31 is 2^31", "RFC 9111 §1.2.2", []string{`max-age="2147483648"`}, 1 << 31 * time.Second},
+		{"2^31 is 2^31", "RFC 9111 §1.2.2", []string{"max-age=2147483648"}, 1 << 31 * time.Second},
+		{"an empty value is invalid, stale", "RFC 9111 §1.2.2", []string{"max-age="}, 0},
+		{"another name ending in max-age is not max-age", "RFC 9111 §5.2", []string{"x-max-age=5, max-age=9"}, 9 * time.Second},
+		{"an unterminated quote stops only its own line", "RFC 9111 §4.2.1", []string{`ext="a`, "max-age=5"}, 5 * time.Second},
 		{"a quoted comma does not split", "RFC 9110 §5.6.4", []string{`ext="x, max-age=5", max-age=7`}, 7 * time.Second},
 	}
 

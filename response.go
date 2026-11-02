@@ -26,7 +26,8 @@ const maxAgeCap = 1 << 31
 // section 5.2). The value is delta-seconds: digits only (RFC 9111 section
 // 1.2.2), and a value above 2^31 is 2^31. The first max-age directive wins
 // (RFC 9111 section 4.2.1): if its value is invalid the result is zero, which
-// means stale.
+// means stale. A quote that does not end stops the scan of that line only: the
+// next line is still read (an invalid directive is ignored).
 func (res *Response) GetCacheControlMaxAge() time.Duration {
 	for _, line := range res.Header.Values("Cache-Control") {
 		for rest, more := line, true; more; {
