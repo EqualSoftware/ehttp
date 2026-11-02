@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 
 	"go.uber.org/zap"
+
+	"github.com/EqualSoftware/ehttp/internal/redact"
 )
 
 var ErrRequestBodyTooLarge = errors.New("request body too large")
@@ -56,6 +58,21 @@ func (req *Request) baseLogger() *zap.Logger {
 // newLogger builds the logger of the request and does not cache it. The
 // library uses it, so its own log calls never freeze the fields before a
 // middleware like RequestId has run.
+// quoteField is quoteValue for the value of the header name, with the deny
+// list of the server (the default one if the request has no response).
+func (req *Request) quoteField(name, value string) string {
+	var m *redact.Matcher
+	if req.res != nil {
+		m = req.res.redact
+	}
+
+	if m.Sensitive(name) {
+		return redact.Mask
+	}
+
+	return quoteValue(value)
+}
+
 func (req *Request) newLogger() *zap.Logger {
 	fields := make([]zap.Field, 0, 3)
 
@@ -204,7 +221,7 @@ func (req *Request) acceptBest(typ, sub string) (best acceptMatch, seen, ok bool
 			rng, valid := parseAcceptRange(member)
 
 			if !ok || !valid {
-				req.newLogger().Warn("ehttp: invalid Accept header", zap.String("value", quoteValue(line)))
+				req.newLogger().Warn("ehttp: invalid Accept header", zap.String("value", req.quoteField(HeaderAccept, line)))
 				return best, seen, false
 			}
 

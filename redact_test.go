@@ -86,3 +86,28 @@ func TestWithClientRedactNamesAdds(t *testing.T) {
 	ehttptest.True(t, redactBasis+" (default stays)", c.redact.Sensitive("Authorization"), "default pattern is missing")
 	ehttptest.True(t, redactBasis+" (default client)", !NewClient().redact.Sensitive("tenant"), "pattern leaked to the default list")
 }
+
+func TestRequestLogsUseAddedPatterns(t *testing.T) {
+	t.Parallel()
+
+	serve := func(options ...serverOption) any {
+		l, logs := aObserved()
+		s := NewServer(append(options, WithLogger(l))...)
+		s.GET("/x", func(res *ResponseWriter, req *Request) { req.Accepts("text/html"); res.String("ok") })
+
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/x", http.NoBody)
+		r.Header.Set(HeaderAccept, "garbage")
+		s.ServeHTTP(httptest.NewRecorder(), r)
+
+		for _, e := range logs.All() {
+			if v, ok := e.ContextMap()["value"]; ok {
+				return v
+			}
+		}
+
+		return nil
+	}
+
+	ehttptest.Eq(t, redactBasis+" (plain)", serve(), any(`"garbage"`))
+	ehttptest.Eq(t, redactBasis+" (added)", serve(WithRedactNames("accept")), any("***"))
+}

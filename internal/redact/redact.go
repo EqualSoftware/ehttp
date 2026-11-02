@@ -246,10 +246,17 @@ func (m *Matcher) Header(h http.Header) http.Header {
 // URL returns u as a string that is safe to log. Userinfo becomes "***:***@",
 // or "***@" if there is no password. The value of each sensitive query
 // parameter, also of a repeated key, becomes Mask. The path stays and the
-// fragment goes. u does not change. A nil u returns "".
+// fragment goes. The path is encoded again by url.URL.String (a space becomes
+// "%20"). "&" and ";" both separate query parameters (RFC 3986 section 3.4),
+// and a key that is empty or does not decode is masked. u does not change. A nil u returns "".
 func (m *Matcher) URL(u *url.URL) string {
 	if u == nil {
 		return ""
+	}
+
+	if u.Opaque != "" {
+		// The opaque part can hold userinfo ("http:user:pass@host/x").
+		return u.Scheme + ":" + Mask + queryPart(m.Query(u.RawQuery), u.ForceQuery)
 	}
 
 	c := *u
@@ -283,7 +290,7 @@ func (m *Matcher) Query(raw string) string {
 
 	for pos := 0; pos < len(raw); {
 		end := len(raw)
-		if i := strings.IndexByte(raw[pos:], '&'); i >= 0 {
+		if i := strings.IndexAny(raw[pos:], "&;"); i >= 0 {
 			end = pos + i
 		}
 
@@ -307,12 +314,27 @@ func (m *Matcher) Query(raw string) string {
 	return out.String()
 }
 
+func queryPart(q string, force bool) string {
+	if q == "" && !force {
+		return ""
+	}
+
+	return "?" + q
+}
+
 // sensitiveKey decodes a query key only if it has an escape.
 func (m *Matcher) sensitiveKey(key string) bool {
 	if strings.ContainsAny(key, "%+") {
-		if k, err := url.QueryUnescape(key); err == nil {
-			key = k
+		k, err := url.QueryUnescape(key)
+		if err != nil {
+			return true // a key that does not decode is masked
 		}
+
+		key = k
+	}
+
+	if key == "" {
+		return true
 	}
 
 	return m.Sensitive(key)

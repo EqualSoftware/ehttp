@@ -176,7 +176,7 @@ func (req *Request) warnInvalidForwarded(name, value, fix string) {
 	}
 
 	req.newLogger().Warn("ehttp: ignored an invalid forwarded header from a trusted proxy",
-		zap.String("header", fieldName(name)), zap.String("value", quoteValue(value)),
+		zap.String("header", fieldName(name)), zap.String("value", req.quoteField(name, value)),
 		zap.String("peer", req.Request.RemoteAddr), zap.String("fix", fix))
 }
 
