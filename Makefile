@@ -2,6 +2,7 @@
 # `make check` is the gate for the push hook: test + allocs + lint + vuln.
 
 GOVULNCHECK_VERSION ?= v1.9.0
+GOLANGCI_LINT_VERSION ?= v2.15.0
 BENCHSTAT_VERSION   ?= v0.0.0-20261009192801-be2c69fb417e
 BENCHCPUS           ?= 2
 BENCHMEM            ?= 1g
@@ -37,7 +38,7 @@ cover:
 	go tool cover -func=coverage.out | tail -n 1
 
 lint:
-	golangci-lint run ./...
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
 
 vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...

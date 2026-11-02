@@ -1,0 +1,81 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: test (go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        go: [mod, stable]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ matrix.go == 'mod' && 'go.mod' || '' }}
+          go-version: ${{ matrix.go == 'stable' && 'stable' || '' }}
+      # known-bugs runs the test target first, so this is test + known-bugs.
+      - name: test and known-bugs
+        env:
+          TESTLOG: ${{ runner.temp }}/ehttp-test-${{ matrix.go }}.log
+        run: make known-bugs
+      - name: allocs
+        run: make allocs
+
+  static:
+    name: lint, vuln and modules
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - run: make lint
+      - run: make vuln
+      - run: go mod tidy -diff
+      - run: go mod verify
+
+  coverage:
+    name: coverage (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: coverage summary
+        run: |
+          make cover
+          {
+            echo '### Coverage'
+            echo
+            go tool cover -func=coverage.out | tail -n 1
+            echo
+            echo '<details><summary>Per function</summary>'
+            echo
+            echo '```'
+            go tool cover -func=coverage.out
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
