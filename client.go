@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,7 +32,13 @@ type clientRequestConfig struct {
 	headers       http.Header
 	jsonPayload   interface{}
 	stringPayload *string
+	err           error
 }
+
+// defaultTimeout bounds a request when the caller sets no timeout. It matches
+// the 30 s dial timeout of http.DefaultTransport.
+// https://pkg.go.dev/net/http#DefaultTransport
+const defaultTimeout = 30 * time.Second
 
 func WithTimeout(value time.Duration) clientOptionFunc {
 	return func(cfg *Client) {
@@ -84,10 +92,9 @@ func WithSource(m, u string) requestOptionFunc {
 		parsed_url, err := url.Parse(u)
 
 		if err != nil {
-			zap.L().Panic("invalid source url option",
-				zap.String("url", u),
-				zap.Error(err),
-			)
+			cfg.err = err
+
+			return
 		}
 
 		cfg.url = parsed_url
@@ -113,7 +120,7 @@ func WithStringPayload(value string) requestOptionFunc {
 }
 
 func NewClient(options ...clientOptionFunc) *Client {
-	http_client := &http.Client{}
+	http_client := &http.Client{Timeout: defaultTimeout}
 
 	c := &Client{
 		httpClient: http_client,
@@ -141,6 +148,12 @@ func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 		apply(cfg)
 	}
 
+	if cfg.err != nil {
+		zap.L().Error("invalid source url option", zap.Error(logErr(cfg.err)))
+
+		return nil, cfg.err
+	}
+
 	if cfg.method == "" {
 		zap.L().Panic("you are trying to execute a request without define a method.")
 	}
@@ -165,10 +178,10 @@ func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 				zap.Dict("request",
 					zap.Bool("context", cfg.ctx != nil),
 					zap.String("method", cfg.method),
-					zap.String("url", req_url.String()),
+					zap.String("url", logURL(req_url)),
 					zap.Duration("timeout", cfg.timeout),
 				),
-				zap.Error(err),
+				zap.Error(logErr(err)),
 			)
 
 			return nil, err
@@ -181,34 +194,39 @@ func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 				zap.Dict("request",
 					zap.Bool("context", cfg.ctx != nil),
 					zap.String("method", cfg.method),
-					zap.String("url", req_url.String()),
+					zap.String("url", logURL(req_url)),
 					zap.Duration("timeout", cfg.timeout),
 				),
-				zap.Error(err),
+				zap.Error(logErr(err)),
 			)
 
 			return nil, err
 		}
 	}
 
-	if cfg.ctx == nil {
-		req, err = http.NewRequest(cfg.method, req_url.String(), body) //nolint:noctx // no context is set: the caller did not ask for one
-	} else {
-		req, err = http.NewRequestWithContext(cfg.ctx, cfg.method, req_url.String(), body)
+	ctx := cfg.ctx
+	if ctx == nil {
+		ctx = context.Background()
 	}
+
+	req, err = http.NewRequestWithContext(ctx, cfg.method, req_url.String(), body)
 
 	if err != nil {
 		zap.L().Error("failure to create the request",
 			zap.Dict("request",
 				zap.Bool("context", cfg.ctx != nil),
 				zap.String("method", cfg.method),
-				zap.String("url", req_url.String()),
+				zap.String("url", logURL(req_url)),
 				zap.Duration("timeout", cfg.timeout),
 			),
-			zap.Error(err),
+			zap.Error(logErr(err)),
 		)
 
 		return nil, err
+	}
+
+	if cfg.jsonPayload != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 
 	if client.authorization != "" {
@@ -221,31 +239,52 @@ func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 
 	res, err = client.httpClient.Do(req) //nolint:bodyclose // the caller closes the body through Response
 
-	result := &Response{res}
-
 	if err != nil {
 		zap.L().Error("failure to execute the request",
 			zap.Dict("request",
 				zap.String("method", req.Method),
-				zap.String("url", req.URL.String()),
+				zap.String("url", logURL(req.URL)),
 			),
-			zap.Error(err),
+			zap.Error(logErr(err)),
 		)
 
-		return result, err
+		return nil, err
 	}
 
 	zap.L().Debug("request executed",
 		zap.Dict("payload",
 			zap.String("method", req.Method),
-			zap.String("url", req.URL.String()),
+			zap.String("url", logURL(req.URL)),
 		),
 		zap.Dict("response",
 			zap.Int("code", res.StatusCode),
 		),
 	)
 
-	return result, nil
+	return &Response{res}, nil
+}
+
+// logErr removes the URL from a *url.Error, because the URL can hold secrets.
+func logErr(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return fmt.Errorf("%s: %w", urlErr.Op, urlErr.Err)
+	}
+
+	return err
+}
+
+// logURL gives the URL for a log line. It drops the credentials, the query
+// and the fragment, because they can hold secrets.
+func logURL(u *url.URL) string {
+	safe := *u
+	safe.User = nil
+	safe.RawQuery = ""
+	safe.ForceQuery = false
+	safe.Fragment = ""
+	safe.RawFragment = ""
+
+	return safe.String()
 }
 
 // joinBaseURL puts the path of target under the path of base. The path stays

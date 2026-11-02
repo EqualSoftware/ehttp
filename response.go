@@ -50,7 +50,9 @@ func (res *Response) GetCacheControlMaxAge() time.Duration {
 
 // Read the response.Body as JSON
 func (res *Response) JSON(value interface{}) error {
-	err := json.NewDecoder(res.Body).Decode(&value)
+	defer res.Body.Close()
+
+	err := json.NewDecoder(res.Body).Decode(value)
 
 	if err != nil {
 		zap.L().Error("failure to parse the json response", zap.Error(err))
@@ -58,11 +60,16 @@ func (res *Response) JSON(value interface{}) error {
 		return err
 	}
 
+	// Read to EOF so the connection can be reused.
+	_, _ = io.Copy(io.Discard, res.Body)
+
 	return nil
 }
 
 // Read the response.Body as String
 func (res *Response) String() (string, error) {
+	defer res.Body.Close()
+
 	bytes, err := io.ReadAll(res.Body)
 
 	if err != nil {
@@ -76,6 +83,8 @@ func (res *Response) String() (string, error) {
 
 // Read the response.Body as Bytes
 func (res *Response) Bytes() ([]byte, error) {
+	defer res.Body.Close()
+
 	bytes, err := io.ReadAll(res.Body)
 
 	if err != nil {

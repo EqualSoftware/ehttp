@@ -196,14 +196,12 @@ func TestClientJSONPayloadContentType(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { ct.Store(r.Header.Get("Content-Type")) }))
 	t.Cleanup(srv.Close)
 
-	ehttptest.KnownBug(t, "json-payload-lacks-content-type", func(t testing.TB) {
-		_, err := ehttp.NewClient().Execute(ehttp.WithSource("POST", srv.URL), ehttp.WithJsonPayload(map[string]int{"n": 1}))
-		if err != nil {
-			t.Fatal(err)
-		}
+	_, err := ehttp.NewClient().Execute(ehttp.WithSource("POST", srv.URL), ehttp.WithJsonPayload(map[string]int{"n": 1}))
+	if err != nil {
+		t.Fatal(err)
+	}
 
-		ehttptest.Eq(t, "RFC 9110 §8.3", fmt.Sprint(ct.Load()), "application/json")
-	})
+	ehttptest.Eq(t, "RFC 9110 §8.3", fmt.Sprint(ct.Load()), "application/json")
 }
 
 // bDeadlineSeen runs one request and returns the time left on the request
@@ -256,10 +254,8 @@ func TestClientDefaultTimeout(t *testing.T) {
 			return ehttp.NewClient(ehttp.WithTransport(tr))
 		})
 
-		ehttptest.KnownBug(t, "client-no-default-timeout", func(t testing.TB) {
-			ehttptest.True(t, "a client has a default deadline", has, "no deadline: a silent server blocks the caller forever")
-			ehttptest.True(t, "the default deadline is bounded", has && left <= 5*time.Minute, "deadline %v is not bounded", left)
-		})
+		ehttptest.True(t, "a client has a default deadline", has, "no deadline: a silent server blocks the caller forever")
+		ehttptest.True(t, "the default deadline is bounded", has && left <= 5*time.Minute, "deadline %v is not bounded", left)
 	})
 }
 
@@ -272,23 +268,19 @@ func TestClientErrorReturnsNilResponse(t *testing.T) {
 	addr := srv.URL
 	srv.Close()
 
-	ehttptest.KnownBug(t, "client-error-returns-non-nil-response", func(t testing.TB) {
-		res, err := ehttp.NewClient().Execute(ehttp.WithSource("GET", addr))
+	res, err := ehttp.NewClient().Execute(ehttp.WithSource("GET", addr))
 
-		ehttptest.True(t, "net/http Client.Do contract", err != nil, "no error from a closed server")
-		ehttptest.True(t, "net/http convention: a response is nil when an error is returned", res == nil, "response is non-nil (%T) alongside an error", res)
-	})
+	ehttptest.True(t, "net/http Client.Do contract", err != nil, "no error from a closed server")
+	ehttptest.True(t, "net/http convention: a response is nil when an error is returned", res == nil, "response is non-nil (%T) alongside an error", res)
 }
 
 // A bad URL is a runtime input error, not a reason to panic the caller.
 func TestClientInvalidURLIsAnError(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "client-invalid-url-panics", func(t testing.TB) {
-		_, err := ehttp.NewClient().Execute(ehttp.WithSource("GET", "http://[::1"))
+	_, err := ehttp.NewClient().Execute(ehttp.WithSource("GET", "http://[::1"))
 
-		ehttptest.True(t, "a bad URL is an error, not a panic", err != nil, "no error for an unparsable URL")
-	})
+	ehttptest.True(t, "a bad URL is an error, not a panic", err != nil, "no error for an unparsable URL")
 }
 
 type bTrackBody struct {
@@ -323,33 +315,29 @@ func TestResponseHelpersCloseBody(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			ehttptest.KnownBug(t, "client-helpers-leave-body-open", func(t testing.TB) {
-				body := &bTrackBody{r: strings.NewReader(`{"a":1}`)}
-				res := &ehttp.Response{Response: &http.Response{Body: body}}
+			body := &bTrackBody{r: strings.NewReader(`{"a":1}`)}
+			res := &ehttp.Response{Response: &http.Response{Body: body}}
 
-				if err := read(res); err != nil {
-					t.Fatal(err)
-				}
+			if err := read(res); err != nil {
+				t.Fatal(err)
+			}
 
-				ehttptest.True(t, "net/http Response.Body doc: the reader closes the body", body.closed, "%s left the body open", name)
-			})
+			ehttptest.True(t, "net/http Response.Body doc: the reader closes the body", body.closed, "%s left the body open", name)
 		})
 	}
 
 	t.Run("JSON reads to EOF so the connection can be reused", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "client-json-stops-before-eof", func(t testing.TB) {
-			body := &bTrackBody{r: strings.NewReader(`{"a":1}` + strings.Repeat(" ", 4096))}
-			res := &ehttp.Response{Response: &http.Response{Body: body}}
+		body := &bTrackBody{r: strings.NewReader(`{"a":1}` + strings.Repeat(" ", 4096))}
+		res := &ehttp.Response{Response: &http.Response{Body: body}}
 
-			var v map[string]int
-			if err := res.JSON(&v); err != nil {
-				t.Fatal(err)
-			}
+		var v map[string]int
+		if err := res.JSON(&v); err != nil {
+			t.Fatal(err)
+		}
 
-			ehttptest.True(t, "net/http Response.Body doc: read to EOF to reuse the connection", body.eof, "JSON stopped before EOF")
-		})
+		ehttptest.True(t, "net/http Response.Body doc: read to EOF to reuse the connection", body.eof, "JSON stopped before EOF")
 	})
 }
 
@@ -370,23 +358,21 @@ func TestClientReusesConnection(t *testing.T) {
 	srv.Start()
 	t.Cleanup(srv.Close)
 
-	ehttptest.KnownBug(t, "client-helpers-do-not-reuse-connection", func(t testing.TB) {
-		c := ehttp.NewClient(ehttp.WithTransport(&http.Transport{}))
+	c := ehttp.NewClient(ehttp.WithTransport(&http.Transport{}))
 
-		for range 3 {
-			res, err := c.Execute(ehttp.WithSource("GET", srv.URL))
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			var v map[string]int
-			if err := res.JSON(&v); err != nil {
-				t.Fatal(err)
-			}
+	for range 3 {
+		res, err := c.Execute(ehttp.WithSource("GET", srv.URL))
+		if err != nil {
+			t.Fatal(err)
 		}
 
-		ehttptest.Eq(t, "net/http Response.Body doc: a drained body lets the connection be reused", conns.Load(), 1)
-	})
+		var v map[string]int
+		if err := res.JSON(&v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ehttptest.Eq(t, "net/http Response.Body doc: a drained body lets the connection be reused", conns.Load(), 1)
 }
 
 // Tokens often travel in the query string; they must not reach the log.
@@ -402,19 +388,16 @@ func TestClientDoesNotLogQuery(t *testing.T) {
 			t.Cleanup(srv.Close)
 		}
 
-		ehttptest.KnownBug(t, "client-logs-query-token", func(tb testing.TB) {
-			res, _ := ehttp.NewClient().Execute(ehttp.WithSource("GET", url))
-			if res != nil && res.Response != nil {
-				res.Body.Close()
-			}
+		res, _ := ehttp.NewClient().Execute(ehttp.WithSource("GET", url))
+		if res != nil && res.Response != nil {
+			res.Body.Close()
+		}
 
-			for _, e := range logs.All() {
-				tb.(interface{ Helper() }).Helper()
-				ehttptest.True(tb, "the query string stays out of the log", !strings.Contains(fmt.Sprint(e.ContextMap()), "secret-123"), "log %q leaks the query: %v", e.Message, e.ContextMap())
-			}
+		for _, e := range logs.All() {
+			ehttptest.True(t, "the query string stays out of the log", !strings.Contains(fmt.Sprint(e.ContextMap()), "secret-123"), "log %q leaks the query: %v", e.Message, e.ContextMap())
+		}
 
-			ehttptest.True(tb, "harness: something was logged", len(logs.All()) > 0, "no log lines captured")
-		})
+		ehttptest.True(t, "harness: something was logged", len(logs.All()) > 0, "no log lines captured")
 	}
 
 	t.Run("success path", func(t *testing.T) {
@@ -637,12 +620,10 @@ func TestResponseBodyHelpers(t *testing.T) {
 	t.Run("JSON into a non-pointer reports an error", func(t *testing.T) {
 		t.Parallel()
 
-		ehttptest.KnownBug(t, "json-into-non-pointer-returns-nil", func(t testing.TB) {
-			var v struct{ A int }
-			err := mk(`{"A":3}`).JSON(v)
+		var v struct{ A int }
+		err := mk(`{"A":3}`).JSON(v)
 
-			ehttptest.True(t, "encoding/json Unmarshal contract (InvalidUnmarshalError)", err != nil, "decoded into a copy and returned nil")
-		})
+		ehttptest.True(t, "encoding/json Unmarshal contract (InvalidUnmarshalError)", err != nil, "decoded into a copy and returned nil")
 	})
 }
 
