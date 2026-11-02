@@ -163,14 +163,29 @@ func FuzzRouterMatch(f *testing.F) {
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, req) // invariant 1: no panic
 
+		// A refused value (403 for "..", 400 for NUL or backslash) never reaches
+		// the handler. Only a path with "..", "%" or a backslash can be refused.
+		if rec.Code == http.StatusForbidden || rec.Code == http.StatusBadRequest {
+			if e := req.URL.EscapedPath(); !strings.ContainsAny(e, "%\\") && !strings.Contains(e, "..") {
+				t.Errorf("[RFC 9110 §15.5] %q was refused with %d", e, rec.Code)
+			}
+
+			if got.pattern != "" {
+				t.Errorf("[RFC 9110 §15.5] %q was refused but the handler ran", req.URL.EscapedPath())
+			}
+
+			return
+		}
+
 		// invariant 4: the matched route is the one that the segment rules
 		// give (README routing), by an oracle independent of route.match.
 		// A path with percent-encoding is the percent-decoding domain: the router may decode
 		// segments before it matches (RFC 3986 §2.1), so the oracle on the
 		// escaped form does not apply. TestRouterParamDecoding covers it.
 		// A decoded "/" must not change the route: when %2F is the only escape,
-		// the oracle on the escaped form still applies.
-		oracleApplies := !strings.Contains(req.URL.EscapedPath(), "%") || onlySlashEscapes(req.URL.EscapedPath()) && !strings.Contains(req.URL.EscapedPath(), "..")
+		// the oracle on the escaped form still applies. A refused value (403,
+		// 400) never reaches the handler, so it records no match.
+		oracleApplies := !strings.Contains(req.URL.EscapedPath(), "%") || onlySlashEscapes(req.URL.EscapedPath())
 		if want := dExpectedRoute(req.URL.EscapedPath()); oracleApplies && got.pattern != want {
 			t.Errorf("[README routing] %q routed to %q, want %q", req.URL.EscapedPath(), got.pattern, want)
 		}

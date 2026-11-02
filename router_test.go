@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/EqualSoftware/ehttp/internal/ehttptest"
@@ -619,13 +620,16 @@ func TestRouterGroups(t *testing.T) {
 	})
 }
 
-// A decoded value must not create new path structure (RFC 3986 §2.4).
+// A param or wildcard value with a ".." part gets 403 and a NUL or backslash
+// gets 400, and the handler does not run (RFC 9110 §15.5.4, §15.5.1).
 func TestRouterDecodedParamGuard(t *testing.T) {
 	t.Parallel()
 
+	var ran atomic.Int32
+
 	s := NewServer()
-	s.GET("/p/:v", func(res *ResponseWriter, req *Request) { res.String(req.Param("v")) })
-	s.GET("/w/...", func(res *ResponseWriter, req *Request) { res.String(req.Param("...")) })
+	s.GET("/p/:v", func(res *ResponseWriter, req *Request) { ran.Add(1); res.String(req.Param("v")) })
+	s.GET("/w/...", func(res *ResponseWriter, req *Request) { ran.Add(1); res.String(req.Param("...")) })
 	ts := httptest.NewServer(s)
 	t.Cleanup(ts.Close)
 
@@ -646,16 +650,38 @@ func TestRouterDecodedParamGuard(t *testing.T) {
 		return resp.StatusCode, string(body)
 	}
 
-	for _, v := range []string{"%2e%2e%2f", "..%2f", "%2e%2e", "%00", "%5c", "a%2f..%2fb"} {
+	bad := []struct {
+		value string
+		code  int
+	}{
+		{"%2e%2e%2f", 403}, {"..%2f", 403}, {"%2e%2e", 403}, {"%2E%2E", 403}, {".%2e", 403},
+		{"%2e.", 403}, {"a%2f..%2fb", 403}, {"%00", 400}, {"%5c", 400}, {"%5C", 400},
+	}
+
+	for _, tt := range bad {
 		for _, prefix := range []string{"/p/", "/w/"} {
-			t.Run(prefix+v, func(t *testing.T) {
+			t.Run(prefix+tt.value, func(t *testing.T) {
 				t.Parallel()
 
-				code, _ := get(prefix + v)
-				ehttptest.Eq(t, "RFC 3986 §2.4 (decoding must not create path structure)", code, 404)
+				code, _ := get(prefix + tt.value)
+				ehttptest.Eq(t, "RFC 9110 §15.5 (the send module: up-path 403, NUL 400)", code, tt.code)
 			})
 		}
 	}
+
+	t.Run("literal dot-dot in a wildcard", func(t *testing.T) {
+		t.Parallel()
+
+		code, _ := get("/w/../secret.txt")
+		ehttptest.Eq(t, "RFC 9110 §15.5.4", code, 403)
+	})
+
+	t.Run("literal dot-dot in a param", func(t *testing.T) {
+		t.Parallel()
+
+		code, _ := get("/p/..")
+		ehttptest.Eq(t, "RFC 9110 §15.5.4", code, 403)
+	})
 
 	for _, tt := range []struct{ path, want string }{
 		{"/p/a%2Fb", "a/b"},
@@ -672,4 +698,6 @@ func TestRouterDecodedParamGuard(t *testing.T) {
 			ehttptest.Eq(t, "RFC 3986 §2.1", body, tt.want)
 		})
 	}
+
+	t.Cleanup(func() { ehttptest.Eq(t, "the handler does not run for a refused value", int(ran.Load()), 5) })
 }

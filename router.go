@@ -241,7 +241,11 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	endpoint, matched := router.find(method, url_segments)
 
 	if endpoint != nil {
-		endpoint.bind(req, url_segments)
+		if status := endpoint.bind(req, url_segments); status != 0 {
+			router.wrap(router.statusHandler(status)).ServeHTTP(res, req)
+			return
+		}
+
 		req.Request.Pattern = endpoint.pattern
 		endpoint.handle(res, req)
 
@@ -360,14 +364,20 @@ func (route *route) matchParam(i int, value string) bool {
 	return value != ""
 }
 
-// bind writes the parameters of a fully matched route to the request.
-func (route *route) bind(req *Request, segments []string) {
+// bind writes the parameters of a fully matched route to the request. It
+// returns 0, or the status to send instead of calling the handler: 400 for a
+// NUL or a backslash, 403 for a ".." part (RFC 9110 §15.5.1, §15.5.4).
+func (route *route) bind(req *Request, segments []string) int {
 	for i, route_segment := range route.segments {
 		if route_segment == "..." {
 			rest, _ := decodeRest(segments[i:]) // match checked the escapes
+			if status := unsafeStatus(rest); status != 0 {
+				return status
+			}
+
 			req.Request.SetPathValue("...", rest)
 
-			return
+			return 0
 		}
 
 		if !strings.HasPrefix(route_segment, ":") {
@@ -376,8 +386,37 @@ func (route *route) bind(req *Request, segments []string) {
 
 		key, _, _ := strings.Cut(route_segment[1:], "|")
 		value, _ := decodeSegment(segments[i])
+
+		if status := unsafeStatus(value); status != 0 {
+			return status
+		}
+
 		req.Request.SetPathValue(key, value)
 	}
+
+	return 0
+}
+
+// unsafeStatus checks a decoded param value, as the send module does: a NUL or
+// a backslash gives 400, and a ".." part between "/" gives 403. A decoded "/"
+// alone is data, and so is a single "." part. A value without ".." costs one
+// scan.
+func unsafeStatus(value string) int {
+	if strings.ContainsAny(value, "\\\x00") {
+		return StatusBadRequest
+	}
+
+	if !strings.Contains(value, "..") {
+		return 0
+	}
+
+	for part := range strings.SplitSeq(value, "/") {
+		if part == ".." {
+			return StatusForbidden
+		}
+	}
+
+	return 0
 }
 
 // validEscapes reports whether every segment has valid percent escapes. It
@@ -393,10 +432,10 @@ func validEscapes(segments []string) bool {
 }
 
 // decodeRest joins the segments of a wildcard and decodes each one, once. The
-// value can hold "/" and ".": a decoded ".." part, NUL or backslash gives no
-// match (see safeDecoded). The caller must still confine the value before file
-// use (for example with os.Root or filepath.IsLocal). An invalid escape gives
-// no match, as for a single param. Over HTTP this cannot run: Request.Path is
+// value can hold "/" and ".". A ".." part gives 403 and a NUL or backslash
+// gives 400 (see unsafeStatus). The caller must still confine the value before
+// file use (for example with os.Root or filepath.IsLocal). An invalid escape
+// gives no match, as for a single param. Over HTTP this cannot run: Request.Path is
 // URL.EscapedPath and net/http answers 400 for a bad escape.
 func decodeRest(segments []string) (string, bool) {
 	rest := strings.Join(segments, "/")
@@ -421,7 +460,6 @@ func decodeRest(segments []string) (string, bool) {
 
 // decodeSegment decodes the percent escapes of one path segment (RFC 3986
 // §2.1). A decoded %2F stays inside the value, as the path is split first.
-// A decoded value that fails safeDecoded gives no match, so the client gets 404.
 func decodeSegment(segment string) (string, bool) {
 	if !strings.Contains(segment, "%") {
 		return segment, true
@@ -429,24 +467,7 @@ func decodeSegment(segment string) (string, bool) {
 
 	value, err := url.PathUnescape(segment)
 
-	return value, err == nil && safeDecoded(value)
-}
-
-// safeDecoded reports whether decoding made no new path structure (RFC 3986
-// §2.4): the value has no NUL, no backslash and no ".." part between "/". A
-// decoded "/" alone is data, and a single "." part is allowed.
-func safeDecoded(value string) bool {
-	if strings.ContainsAny(value, "\\\x00") {
-		return false
-	}
-
-	for part := range strings.SplitSeq(value, "/") {
-		if part == ".." {
-			return false
-		}
-	}
-
-	return true
+	return value, err == nil
 }
 
 func (r *Router) wrap(h HandlerFunc) HandlerFunc {
@@ -483,6 +504,13 @@ func (r *Router) methodNotAllowedHandler(segments []string) HandlerFunc {
 	return func(res *ResponseWriter, req *Request) {
 		r.setAllow(res, segments)
 		res.SendStatus(StatusMethodNotAllowed)
+	}
+}
+
+// statusHandler sends a status that the router chose before the handler ran.
+func (r *Router) statusHandler(status int) HandlerFunc {
+	return func(res *ResponseWriter, _ *Request) {
+		res.SendStatus(status)
 	}
 }
 
