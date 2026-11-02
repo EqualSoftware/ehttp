@@ -1332,13 +1332,7 @@ func (res *ResponseWriter) SendFile(name string) {
 	// section 13 and 14): If-Match, If-None-Match, If-Modified-Since,
 	// If-Unmodified-Since, If-Range and Range with one or more ranges.
 	w := http.ResponseWriter(res)
-	req, none := fileRequest(res.request)
-
-	if none {
-		res.Header().Set(HeaderContentRange, "bytes */"+strconv.FormatInt(file_size, 10))
-		res.SendStatus(StatusRequestedRangeNotSatisfiable)
-		return
-	}
+	req := fileRequest(res.request)
 
 	if req.Header.Get(HeaderRange) != "" {
 		w = rangeWriter{ResponseWriter: res, size: file_size}
@@ -1409,42 +1403,43 @@ func (w rangeWriter) WriteHeader(code int) {
 // defined for GET only, so any other method loses Range and If-Range (RFC 9110
 // section 14.2). A Range with a unit that is not "bytes" is ignored (section
 // 14.2), and the unit is not case-sensitive (section 14.1). A suffix of no
-// byte is dropped from the set (section 14.1.2). none is true when the set has
-// no member left: it is not satisfiable, and the caller answers 416 (sections
+// byte is dropped from the set (section 14.1.2). A set with no member left, or
+// with a sign in a number, becomes the invalid value "bytes=-": ServeContent
+// checks the preconditions first (section 13.2.2), then answers 416 (sections
 // 14.1.1 and 14.1.2). Any other value stays, and ServeContent answers 416 when
 // the syntax is invalid.
-func fileRequest(req *http.Request) (_ *http.Request, none bool) {
+func fileRequest(req *http.Request) *http.Request {
 	rng := req.Header.Get(HeaderRange)
 
 	if rng == "" {
-		return req, false
+		return req
 	}
 
 	if req.Method != MethodGet {
-		return fileHeaderEdit(req, ""), false
+		return fileHeaderEdit(req, "")
 	}
 
 	unit, set, ok := strings.Cut(rng, "=")
 
 	if !ok || unit == "" || !isToken(unit) {
-		return req, false
+		return req
 	}
 
 	if !strings.EqualFold(unit, "bytes") {
-		return fileHeaderEdit(req, ""), false
+		return fileHeaderEdit(req, "")
 	}
 
-	set, none = fileRangeSet(set)
+	set, none := fileRangeSet(set)
 
 	if none {
-		return req, true
+		set = "-"
 	}
 
 	if fixed := "bytes=" + set; fixed != rng {
-		return fileHeaderEdit(req, fixed), false
+		return fileHeaderEdit(req, fixed)
 	}
 
-	return req, false
+	return req
 }
 
 // fileHeaderEdit returns a copy of req with the Range value set, or without

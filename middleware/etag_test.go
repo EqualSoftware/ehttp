@@ -280,6 +280,23 @@ func TestWeakEtagFlushStreams(t *testing.T) {
 	ehttptest.Eq(t, "middleware contract", string(rest), "second")
 }
 
+// A flush under WeakEtag commits the response without an ETag: it works.
+func TestFlushInsideWeakEtagWorks(t *testing.T) {
+	t.Parallel()
+
+	var got error
+
+	h := fixtures.Handler(func(res *ehttp.ResponseWriter, _ *ehttp.Request) {
+		got = http.NewResponseController(res).Flush()
+		res.String("x")
+	}, middleware.WeakEtag())
+
+	rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
+
+	ehttptest.Eq(t, "ResponseController.Flush", got, nil)
+	ehttptest.Eq(t, "body still sent once", rec.Body.String(), "x")
+}
+
 // Composition with ErrorCache, in both orders (the pair must work).
 func TestWeakEtagWithErrorCache(t *testing.T) {
 	t.Parallel()

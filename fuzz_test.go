@@ -840,3 +840,51 @@ func TestSendFileInvalidEtagFields(t *testing.T) {
 	s.ServeHTTP(rec, req)
 	ehttptest.Eq(t, "RFC 9110 §15.5.1", rec.Code, 400)
 }
+
+// A Range that cannot be satisfied is answered after the preconditions (RFC
+// 9110 §13.2.2: Range is step 5, and §13.1.5: a false If-Range ignores the
+// Range). SendFile gives such a Range to http.ServeContent as an invalid
+// value, so these tests guard the dependency on its parseRange.
+func TestSendFileUnsatisfiableRangeAfterPreconditions(t *testing.T) {
+	t.Parallel()
+
+	s := dRangeServer(t)
+	past := time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC).Format(http.TimeFormat)
+	future := time.Now().Add(24 * time.Hour).UTC().Format(http.TimeFormat)
+
+	conditions := []struct {
+		name     string
+		kv       []string
+		code     int
+		body     string
+		hasRange bool
+	}{
+		{"no conditional", nil, 416, "", true},
+		{"If-Match fails", []string{"If-Match", `"nope"`}, 412, "", false},
+		{"If-Unmodified-Since in the past", []string{"If-Unmodified-Since", past}, 412, "", false},
+		{"If-None-Match star", []string{HeaderIfNoneMatch, "*"}, 304, "", false},
+		{"If-Modified-Since in the future", []string{HeaderIfModifiedSince, future}, 304, "", false},
+		{"If-Range with another ETag", []string{"If-Range", `"x"`}, 200, dRangeBody, false},
+		{"If-Range with a date in the past", []string{"If-Range", past}, 200, dRangeBody, false},
+	}
+
+	for _, header := range []string{"bytes=", "bytes=-0", "bytes=0-1,+1-2", "bytes=0-1,--0"} {
+		for _, c := range conditions {
+			t.Run(header+"/"+c.name, func(t *testing.T) {
+				t.Parallel()
+
+				rec := dSend(s, http.MethodGet, "/f", append([]string{HeaderRange, header}, c.kv...)...)
+
+				ehttptest.Eq(t, "RFC 9110 §13.2.2", rec.Code, c.code)
+
+				if c.code != 416 && c.code != 412 {
+					ehttptest.Eq(t, "RFC 9110 §13.2.2", rec.Body.String(), c.body)
+				}
+
+				if c.hasRange {
+					ehttptest.Eq(t, "RFC 9110 §15.5.17", rec.Header().Get(HeaderContentRange), "bytes */10")
+				}
+			})
+		}
+	}
+}
