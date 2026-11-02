@@ -299,6 +299,12 @@ func (m *Matcher) Query(raw string) string {
 			out.WriteString(raw[done : pos+eq+1])
 			out.WriteString(Mask)
 
+			// A secret can hold ";": hide it up to the next "&".
+			end = len(raw)
+			if i := strings.IndexByte(raw[pos+eq:], '&'); i >= 0 {
+				end = pos + eq + i
+			}
+
 			done = end
 		}
 

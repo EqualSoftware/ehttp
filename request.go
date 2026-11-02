@@ -55,9 +55,6 @@ func (req *Request) baseLogger() *zap.Logger {
 	return req.logger
 }
 
-// newLogger builds the logger of the request and does not cache it. The
-// library uses it, so its own log calls never freeze the fields before a
-// middleware like RequestId has run.
 // quoteField is quoteValue for the value of the header name, with the deny
 // list of the server (the default one if the request has no response).
 func (req *Request) quoteField(name, value string) string {
@@ -73,6 +70,9 @@ func (req *Request) quoteField(name, value string) string {
 	return quoteValue(value)
 }
 
+// newLogger builds the logger of the request and does not cache it. The
+// library uses it, so its own log calls never freeze the fields before a
+// middleware like RequestId has run.
 func (req *Request) newLogger() *zap.Logger {
 	fields := make([]zap.Field, 0, 3)
 

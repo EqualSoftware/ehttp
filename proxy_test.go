@@ -339,3 +339,20 @@ func TestInvalidForwardedHeaderWarnsOnceConcurrently(t *testing.T) {
 
 	ehttptest.Eq(t, "one warning for each request", logs.FilterLevelExact(zap.WarnLevel).Len(), 1)
 }
+
+func TestForwardedWarningUsesAddedRedactNames(t *testing.T) {
+	t.Parallel()
+
+	l, logs := aObserved()
+	s := NewServer(WithLogger(l), WithTrustedProxies("192.0.2.1"), WithRedactNames("x-forwarded-host"))
+	s.GET("/x", func(res *ResponseWriter, req *Request) { res.String(req.Host()) })
+
+	aWhoDo(s, "192.0.2.1:1", "X-Forwarded-Host", "evil.com/x")
+
+	entries := logs.FilterLevelExact(zap.WarnLevel).All()
+	ehttptest.Eq(t, "one warning for each request", len(entries), 1)
+
+	if len(entries) == 1 {
+		ehttptest.Eq(t, "an added name hides the value", fmt.Sprint(entries[0].ContextMap()["value"]), "***")
+	}
+}

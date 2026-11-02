@@ -131,6 +131,7 @@ func TestURL(t *testing.T) {
 		{"https://host/p?token=", "https://host/p?token=***"},
 		{"https://host/p?a=1&&token=x&", "https://host/p?a=1&&token=***&"},
 		{"https://host/p?x=1;api_key=S&b=2", "https://host/p?x=1;api_key=***&b=2"},
+		{"https://host/p?password=a;b&x=1", "https://host/p?password=***&x=1"},
 		{"https://host/p?tok%zzen=V&a=1", "https://host/p?tok%zzen=***&a=1"},
 		{"https://host/p?=S&a=1", "https://host/p?=***&a=1"},
 		{"http:user:pass@host/x?token=S&a=1", "http:***?token=***&a=1"},
