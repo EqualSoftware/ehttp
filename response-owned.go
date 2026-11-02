@@ -20,8 +20,8 @@ type ownedField struct {
 
 // Own sets the field name to value and marks it as owned by the middleware:
 // the handler cannot change it later. A handler that calls Set, Append or
-// Remove on an owned field, or writes it through Header, is making a mistake
-// (see fail): Development panics. Production logs a warning and keeps the value
+// Remove on an owned field, or writes it through Header, is making a mistake:
+// Development panics. Production logs a warning and keeps the value
 // of the middleware.
 //
 // Own is for middleware only: the library cannot tell a handler from a

@@ -7,7 +7,10 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,7 +66,7 @@ func TestWeakEtag(t *testing.T) {
 			{"weak match", etag, 304},
 			{"strong form of the same tag (weak comparison)", etag[2:], 304},
 			{"different tag", `W/"1-00000000"`, 200},
-			{"garbage", "nope", 200},
+			{"garbage is an invalid syntax", "nope", 400},
 		}
 
 		for _, tt := range tests {
@@ -73,6 +76,11 @@ func TestWeakEtag(t *testing.T) {
 				rec := ehttptest.Do(fixtures.Handler(bString(body), middleware.WeakEtag()), fixtures.Req("GET", "/x", "If-None-Match", tt.inm))
 
 				ehttptest.Eq(t, "RFC 9110 §13.1.2", rec.Code, tt.want)
+
+				if tt.want == 400 {
+					return
+				}
+
 				ehttptest.Eq(t, "RFC 9110 §15.4.5 (304 carries ETag)", rec.Header().Get("ETag"), etag)
 
 				if tt.want == 304 {
@@ -149,8 +157,7 @@ func TestWeakEtagHead(t *testing.T) {
 	ehttptest.Eq(t, "RFC 9110 §9.3.2", len(b), 0)
 }
 
-// If-None-Match is a list or "*" (RFC 9110 §13.1.2). The middleware only
-// compares the whole header with a single tag.
+// If-None-Match is a list or "*" (RFC 9110 §13.1.2).
 func TestWeakEtagIfNoneMatchList(t *testing.T) {
 	t.Parallel()
 
@@ -168,11 +175,9 @@ func TestWeakEtagIfNoneMatchList(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			ehttptest.KnownBug(t, "if-none-match-list-ignored", func(t testing.TB) {
-				rec := ehttptest.Do(fixtures.Handler(bString(body), middleware.WeakEtag()), fixtures.Req("GET", "/x", "If-None-Match", tt.inm))
+			rec := ehttptest.Do(fixtures.Handler(bString(body), middleware.WeakEtag()), fixtures.Req("GET", "/x", "If-None-Match", tt.inm))
 
-				ehttptest.Eq(t, "RFC 9110 §13.1.2", rec.Code, 304)
-			})
+			ehttptest.Eq(t, "RFC 9110 §13.1.2", rec.Code, 304)
 		})
 	}
 }
@@ -182,17 +187,15 @@ func TestWeakEtagIfNoneMatchList(t *testing.T) {
 func TestWeakEtagLargeResponseIsNot413(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "large-response-returns-413", func(t testing.TB) {
-		h := fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
-			res.String("x")
-			res.Unwrap().(*ehttp.ResponseWriterInterceptor).Size = math.MaxUint32 + 1
-		}, middleware.WeakEtag())
+	h := fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+		res.String("x")
+		res.Unwrap().(*ehttp.ResponseWriterInterceptor).Size = math.MaxUint32 + 1
+	}, middleware.WeakEtag())
 
-		rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
+	rec := ehttptest.Do(h, fixtures.Req("GET", "/x"))
 
-		ehttptest.True(t, "RFC 9110 §15.5.14", rec.Code != 413, "response of >4GiB was answered 413")
-		ehttptest.Eq(t, "middleware contract", rec.Code, 200)
-	})
+	ehttptest.True(t, "RFC 9110 §15.5.14", rec.Code != 413, "response of >4GiB was answered 413")
+	ehttptest.Eq(t, "middleware contract", rec.Code, 200)
 }
 
 // Composition with ErrorCache, in both orders (the pair must work).
@@ -249,6 +252,90 @@ func TestWrapHandlerInsideInterceptors(t *testing.T) {
 
 			ehttptest.Eq(t, "intercepted status", rec.Code, 404)
 			ehttptest.Eq(t, "intercepted body, once", rec.Body.String(), "nope")
+		})
+	}
+}
+
+// SendFile answers its own conditionals and ranges. When WeakEtag or
+// LastModified is also active, the response has one decision and a 304 has no
+// content. The check runs on a real connection, and a second request on the
+// same connection proves that the first one ended clean.
+func TestSendFileWithValidatorMiddleware(t *testing.T) {
+	t.Parallel()
+
+	name := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(name, []byte(strings.Repeat("0123456789", 100)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	modified := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	send := func(res *ehttp.ResponseWriter, _ *ehttp.Request) { res.SendFile(name) }
+	servers := map[string]http.Handler{
+		"WeakEtag":     fixtures.Handler(send, middleware.WeakEtag()),
+		"LastModified": fixtures.Handler(send, middleware.LastModified(modified)),
+	}
+
+	do := func(t *testing.T, c *http.Client, url string, kv ...string) (*http.Response, string) {
+		t.Helper()
+
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, http.NoBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for i := 0; i < len(kv); i += 2 {
+			req.Header.Set(kv[i], kv[i+1])
+		}
+
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return resp, string(body)
+	}
+
+	for label, h := range servers {
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+
+			ts := httptest.NewServer(h)
+			defer ts.Close()
+
+			url := ts.URL + "/x"
+			c := ts.Client()
+			first, full := do(t, c, url)
+			etag := first.Header.Get("ETag")
+
+			ehttptest.Eq(t, "RFC 9110 §15.3.1", first.StatusCode, 200)
+			ehttptest.Eq(t, "RFC 9110 §15.3.1", len(full), 1000)
+			ehttptest.True(t, "RFC 9110 §8.8.3", etag != "", "a 200 has no ETag")
+
+			// The validator of the response gives one 304 without content.
+			nm, body := do(t, c, url, "If-None-Match", etag)
+			ehttptest.Eq(t, "RFC 9110 §13.1.2", nm.StatusCode, 304)
+			ehttptest.Eq(t, "RFC 9110 §15.4.5", body, "")
+
+			// A date of the file gives one 304 without content.
+			ims, body := do(t, c, url, "If-Modified-Since", time.Now().UTC().Format(http.TimeFormat))
+			ehttptest.Eq(t, "RFC 9110 §13.1.3", ims.StatusCode, 304)
+			ehttptest.Eq(t, "RFC 9110 §15.4.5", body, "")
+
+			// A precondition that fails is 412, never turned into 304.
+			pre, _ := do(t, c, url, "If-Match", `"nope"`, "If-Modified-Since", time.Now().UTC().Format(http.TimeFormat))
+			ehttptest.Eq(t, "RFC 9110 §13.2.1", pre.StatusCode, 412)
+
+			// A range is a 206 with the bytes of the range.
+			rng, part := do(t, c, url, "Range", "bytes=0-9")
+			ehttptest.Eq(t, "RFC 9110 §14.4", rng.StatusCode, 206)
+			ehttptest.Eq(t, "RFC 9110 §14.4", part, "0123456789")
 		})
 	}
 }

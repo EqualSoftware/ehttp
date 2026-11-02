@@ -76,15 +76,6 @@ linters:
         text: 'G304'
         source: 'os\.Open\(name\)'
 
-      # The write fails only when the client is gone. The range path moves to
-      # http.ServeContent, which removes this call.
-      - path: '^response-writer\.go$'
-        linters:
-          - errcheck
-          - gosec
-        text: '(Error return value of `file\.Seek` is not checked|G104: Errors unhandled)'
-        source: 'file\.Seek\(start, io\.SeekStart\)'
-
 formatters:
   enable:
     - gofmt

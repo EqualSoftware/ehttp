@@ -117,7 +117,7 @@ func goldenServer(t *testing.T) *httptest.Server {
 
 type goldenScenario struct {
 	name string
-	// bug lists the known-bug names ("range-first-byte-returns-whole-file+route-params-not-decoded") while the golden file differs
+	// bug lists the known-bug names ("first-bug+second-bug") while the golden file differs
 	// from the response. Empty: the file is a plain regression snapshot.
 	bug     string
 	method  string
@@ -269,9 +269,9 @@ func TestGolden(t *testing.T) {
 		{name: "file_full", method: "GET", path: "/file"},
 		{name: "file_head", method: "HEAD", path: "/file"},
 		{name: "file_range_0_9", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-9"}},
-		{name: "file_range_0_0", bug: "range-first-byte-returns-whole-file", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-0"}},
-		{name: "file_range_suffix", bug: "range-suffix-returns-416", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=-5"}},
-		{name: "file_range_unsatisfiable", bug: "range-416-lacks-content-range", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=99999999-"}},
+		{name: "file_range_0_0", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-0"}},
+		{name: "file_range_suffix", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=-5"}},
+		{name: "file_range_unsatisfiable", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=99999999-"}},
 		{name: "file_if_modified_since", method: "GET", path: "/file", headers: map[string]string{
 			"If-Modified-Since": goldenFixedTime.Format(http.TimeFormat),
 		}},

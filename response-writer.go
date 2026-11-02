@@ -10,7 +10,6 @@ import (
 	"hash/crc32"
 	"html/template"
 	"io"
-	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -19,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"go.uber.org/zap"
 
@@ -135,7 +133,7 @@ type ResponseWriter struct {
 	template *template.Template
 	sent     bool
 	bodySent bool // a body was written; a status line alone is not a body
-	mode     Mode // the mode of the server: how a strict error ends (see fail)
+	mode     Mode // the mode of the server: how a strict error ends
 
 	// owned are the fields that a middleware set before the handler (see Own).
 	// ownedBuf keeps the first ones without an allocation (CORS and Secure fit).
@@ -602,8 +600,8 @@ func (res *ResponseWriter) checkSpecial(method, name string) bool {
 	return true
 }
 
-// Set replaces all values of the field name with value. These are mistakes
-// (see fail): an invalid name or value, Set-Cookie and Vary (use Cookie and
+// Set replaces all values of the field name with value. These are mistakes:
+// an invalid name or value, Set-Cookie and Vary (use Cookie and
 // Vary), a call after the header was sent, and a field that a middleware owns
 // (see Own). Development panics. Production logs and does not change the
 // field. It does nothing after the client is gone.
@@ -640,7 +638,7 @@ func (res *ResponseWriter) setField(method, name, value string) {
 // values is one member: nothing is split. It does nothing after the client is
 // gone.
 //
-// These are mistakes (see fail), as for Set: an empty member (Production skips
+// These are mistakes, as for Set: an empty member (Production skips
 // it), a singleton field such as Content-Type (Production does a Set with the
 // last value), an invalid name or value, Set-Cookie and Vary, a call after the
 // header was sent, and a field that a middleware owns.
@@ -876,7 +874,7 @@ func skipOWS(s string) string {
 // change Vary. Each argument can list names with commas. An empty name is
 // skipped, a name that is already there (ASCII case-insensitive) is skipped
 // and "*" replaces all. Vary stays one field line. An invalid value and a call
-// after the header was sent are mistakes (see fail). It does nothing after the
+// after the header was sent are mistakes, as for Set. It does nothing after the
 // client is gone. A handler can add members to a Vary that a middleware owns.
 func (res *ResponseWriter) Vary(names ...string) {
 	res.addVary("Vary", names)
@@ -1019,7 +1017,7 @@ func varyHasLine(line, name string) bool {
 
 // Cookie adds a Set-Cookie field line (RFC 6265 §3). It is the only field that
 // can have many lines. A nil or invalid cookie and a call after the header was
-// sent are mistakes (see fail): Production does not send the cookie. It does
+// sent are mistakes, as for Set: Production does not send the cookie. It does
 // nothing after the client is gone.
 func (res *ResponseWriter) Cookie(cookie *http.Cookie) {
 	if !res.checkCookie(cookie) {
@@ -1308,78 +1306,69 @@ func (res *ResponseWriter) SendFile(name string) {
 	file_name := filepath.Base(name)
 
 	hash := crc32.ChecksumIEEE([]byte(file_name + file_modtime.String() + strconv.FormatInt(file_size, 10)))
-	etag := fmt.Sprintf(`W/"%d-%08x"`, file_size, hash)
+	res.Header().Set(HeaderEtag, fmt.Sprintf(`W/"%d-%08x"`, file_size, hash))
 
-	res.Header().Set(HeaderAcceptRanges, "bytes")
-	res.Header().Set(HeaderEtag, etag)
-	res.Header().Set(HeaderLastModified, file_modtime.UTC().Format(http.TimeFormat))
-
-	if fileIsNotModified(res, etag, file_modtime) {
-		res.SendStatus(StatusNotModified)
-		return
-	}
-
+	// http.ServeContent answers the conditional and range fields (RFC 9110
+	// section 13 and 14): If-Match, If-None-Match, If-Modified-Since,
+	// If-Unmodified-Since, If-Range and Range with one or more ranges.
+	w := http.ResponseWriter(res)
 	req := res.request
 
-	if ims := req.Header.Get(HeaderIfModifiedSince); ims != "" {
-		if t, err := time.Parse(http.TimeFormat, ims); err == nil && !file_modtime.After(t) {
-			res.SendStatus(StatusNotModified)
-			return
-		}
+	if req.Header.Get(HeaderRange) != "" {
+		req = fileRangeRequest(req)
+		w = rangeWriter{ResponseWriter: res, size: file_size}
 	}
 
-	{
-		file_mimetype := mime.TypeByExtension(filepath.Ext(name))
+	http.ServeContent(w, req, file_name, file_modtime, file)
+}
 
-		if file_mimetype == "" {
-			var buf [512]byte
-			n, _ := io.ReadFull(file, buf[:])
-			file_mimetype = http.DetectContentType(buf[:n])
-			_, err := file.Seek(0, io.SeekStart)
+// rangeWriter fixes two answers of http.ServeContent. A 416 gets
+// "Content-Range: bytes */size", also for a Range with an invalid syntax (RFC
+// 9110 section 15.5.17). A single range of no byte, as in "bytes=-0", is not
+// satisfiable: it is 416, not an empty 206 (RFC 9110 section 14.1.2).
+type rangeWriter struct {
+	*ResponseWriter
+	size int64
+}
 
-			if err != nil {
-				res.logger().Error("seeker can't seek", zap.Error(err))
-				res.SendStatus(StatusInternalServerError)
-				return
-			}
-		}
+func (w rangeWriter) WriteHeader(code int) {
+	h := w.Header()
+	empty := code == StatusPartialContent && h.Get(HeaderContentRange) != "" && h.Get(HeaderContentLength) == "0"
 
-		res.Header().Set(HeaderContentType, file_mimetype)
+	if empty {
+		code = StatusRequestedRangeNotSatisfiable
+		h.Del(HeaderContentRange)
 	}
 
-	if req.Method == MethodHead {
-		res.Header().Set(HeaderContentLength, strconv.FormatInt(file_size, 10))
-		res.SendStatus(res.code)
-		return
+	if code == StatusRequestedRangeNotSatisfiable && h.Get(HeaderContentRange) == "" {
+		h.Set(HeaderContentRange, "bytes */"+strconv.FormatInt(w.size, 10))
 	}
 
-	header_range := req.Header.Get(HeaderRange)
+	w.ResponseWriter.WriteHeader(code)
+}
 
-	if header_range != "" {
-		start, end, code := fileParseRange(header_range, file_size)
+// fileRangeRequest returns the request that http.ServeContent gets. A Range
+// with a unit that is not "bytes" is ignored (RFC 9110 section 14.2), and the
+// unit is not case-sensitive (section 14.1). Any other value stays: the
+// server answers 416 when the syntax is invalid.
+func fileRangeRequest(req *http.Request) *http.Request {
+	unit, set, ok := strings.Cut(req.Header.Get(HeaderRange), "=")
 
-		if code != http.StatusPartialContent {
-			res.SendStatus(code)
-			return
-		}
-
-		res.Header().Set(HeaderContentRange, fmt.Sprintf("bytes %d-%d/%d", start, end, file_size))
-		res.Header().Set(HeaderContentLength, strconv.FormatInt(end-start+1, 10))
-
-		res.Status(http.StatusPartialContent)
-
-		res.writeHeader(res.code)
-		res.bodySent = true
-		file.Seek(start, io.SeekStart)
-		_, _ = io.CopyN(res.w, file, end-start+1)
-		return
+	if !ok || unit == "" || unit == "bytes" || !isToken(unit) {
+		return req
 	}
 
-	res.Header().Set(HeaderContentLength, strconv.FormatInt(file_size, 10))
+	req = req.WithContext(req.Context())
+	req.Header = req.Header.Clone()
 
-	res.writeHeader(res.code)
-	res.bodySent = true
-	_, _ = file.WriteTo(res.w)
+	if strings.EqualFold(unit, "bytes") {
+		req.Header.Set(HeaderRange, "bytes="+set)
+		return req
+	}
+
+	req.Header.Del(HeaderRange)
+
+	return req
 }
 
 // hasDotDot reports if any element of the path is "..".
@@ -1391,42 +1380,4 @@ func hasDotDot(name string) bool {
 	}
 
 	return false
-}
-
-func fileIsNotModified(res *ResponseWriter, etag string, modTime time.Time) bool {
-	req := res.request
-
-	if inm := req.Header.Get(HeaderIfNoneMatch); inm != "" && inm == etag {
-		return true
-	}
-
-	if ims := req.Header.Get(HeaderIfModifiedSince); ims != "" {
-		if t, err := time.Parse(http.TimeFormat, ims); err == nil && !modTime.After(t) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func fileParseRange(rangeHeader string, fileSize int64) (start, end int64, statusCode int) {
-	var s, e int64
-
-	if _, err := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &s, &e); err != nil {
-		return 0, 0, StatusRequestedRangeNotSatisfiable
-	}
-
-	if s < 0 || s >= fileSize {
-		return 0, 0, StatusRequestedRangeNotSatisfiable
-	}
-
-	if e <= 0 || e >= fileSize {
-		e = fileSize - 1
-	}
-
-	if s > e {
-		return 0, 0, StatusRequestedRangeNotSatisfiable
-	}
-
-	return s, e, StatusPartialContent
 }

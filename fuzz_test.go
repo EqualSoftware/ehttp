@@ -1,5 +1,5 @@
 // Fuzzing with invariants. Package ehttp (internal) so the targets can
-// reach route.match, fileParseRange, fileIsNotModified, corsAcceptOrigin.
+// reach route.match, SendFile, corsAcceptOrigin.
 //
 // How known bugs are handled: a fuzz target cannot be an expected failure.
 // When fuzzing finds a bug that already has a name, the crasher stays in
@@ -17,6 +17,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -241,28 +243,56 @@ func FuzzRouterMatch(f *testing.F) {
 // dRangeSimple matches a valid single byte range: a-b, a- or -n (RFC 9110 §14.1.2).
 var dRangeSimple = regexp.MustCompile(`^bytes=(?:(\d{1,9})-(\d{0,9})|-(\d{1,9}))$`)
 
-// dRangeClass reports whether header is a valid single range for the oracle
-// (a <= b, n > 0), and whether it is in the known-bug domain, where fileParseRange
-// differs from http.ServeContent today: open ended, suffix, or an end of 0.
-func dRangeClass(header string) (valid, known bool) {
+// dRangeValid reports whether header is a valid single range for the oracle
+// (a <= b, n > 0).
+func dRangeValid(header string) bool {
 	m := dRangeSimple.FindStringSubmatch(header)
 	if m == nil {
-		return false, false
+		return false
 	}
 
 	if m[3] != "" { // bytes=-n
 		n, _ := strconv.ParseInt(m[3], 10, 64)
-		return n > 0, true
+		return n > 0
 	}
 
 	if m[2] == "" { // bytes=a-
-		return true, true
+		return true
 	}
 
 	a, _ := strconv.ParseInt(m[1], 10, 64)
 	b, _ := strconv.ParseInt(m[2], 10, 64)
 
-	return a <= b, b == 0
+	return a <= b
+}
+
+// dRangeBody is the body of the file that the range targets serve.
+const dRangeBody = "0123456789"
+
+// dRangeServer serves a file of dRangeBody at /f.
+func dRangeServer(tb testing.TB) *Server {
+	tb.Helper()
+
+	name := filepath.Join(tb.TempDir(), "f.txt")
+	if err := os.WriteFile(name, []byte(dRangeBody), 0o600); err != nil {
+		tb.Fatal(err)
+	}
+
+	s := NewServer()
+	s.GET("/f", func(res *ResponseWriter, _ *Request) { res.SendFile(name) })
+
+	return s
+}
+
+// dSendFile asks /f of s with a Range header and returns the answer.
+func dSendFile(s *Server, header string) *httptest.ResponseRecorder {
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/f", http.NoBody)
+	req.Header.Set(HeaderRange, header)
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	return rec
 }
 
 // dServeContentRange is the oracle: what http.ServeContent answers for header
@@ -289,52 +319,89 @@ func dServeContentRange(header string, size int64) (start, end int64, code int, 
 	return 0, 0, rec.Code, false
 }
 
+// dUnknownUnit reports that header is a token and "=", and the token is not "bytes".
+func dUnknownUnit(header string) bool {
+	unit, _, ok := strings.Cut(header, "=")
+	return ok && isToken(unit) && !strings.EqualFold(unit, "bytes")
+}
+
 func FuzzParseRange(f *testing.F) {
 	for _, h := range []string{
 		"bytes=0-0", "bytes=0-", "bytes=-5", "bytes=5-2", "bytes=0-99", "bytes=9-9",
 		"bytes=10-10", "bytes=-1-2", "bytes=0-1,3-4", "", "bytes=", "items=0-1",
 		"bytes=9223372036854775807-9223372036854775807", "bytes=0-9223372036854775807",
-		"bytes=+1-2", "bytes= 1-2", "bytes=1 -2", "bytes=00-01",
+		"bytes=+1-2", "bytes= 1-2", "bytes=1 -2", "bytes=00-01", "Bytes=0-1", "bytes=2-5",
 	} {
-		f.Add(h, int64(10))
+		f.Add(h)
 	}
-	f.Add("bytes=2-5", int64(10))
-	f.Add("bytes=0-99", int64(10))
-	f.Add("bytes=0-0", int64(0))
-	f.Add("bytes=0-0", int64(1))
-	f.Add("bytes=0-5", int64(-1))
 
-	f.Fuzz(func(t *testing.T, header string, size int64) {
-		s, e, code := fileParseRange(header, size) // invariant 1: no panic
+	s := dRangeServer(f)
 
-		// invariant 2 (RFC 9110 §14.1.2 / §15.5.17): 206 carries a satisfiable
-		// range inside the representation; anything else is 416 with no range.
-		switch code {
-		case http.StatusPartialContent:
-			if s < 0 || s > e || e >= size {
-				t.Errorf("[RFC 9110 §14.1.2] %q size=%d: 206 with out-of-bounds range %d-%d", header, size, s, e)
-			}
-		case http.StatusRequestedRangeNotSatisfiable:
-			if s != 0 || e != 0 {
-				t.Errorf("[RFC 9110 §15.5.17] %q size=%d: 416 returned range %d-%d", header, size, s, e)
-			}
-		default:
-			t.Errorf("status %d is neither 206 nor 416", code)
-		}
-
-		// invariant 3: for a valid single range outside the known-bug domain, the
-		// answer is exactly the one of http.ServeContent (RFC 9110 §14.1.2).
-		// The oracle is unreliable for an empty body, so size starts at 1.
-		valid, known := dRangeClass(header)
-		if !valid || known || size < 1 || size > 1<<20 {
+	f.Fuzz(func(t *testing.T, header string) {
+		if header == "" || !validFieldValue(header) {
 			return
 		}
 
-		ws, we, wcode, ok := dServeContentRange(header, size)
-		if ok && [3]int64{s, e, int64(code)} != [3]int64{ws, we, int64(wcode)} {
-			t.Errorf("[RFC 9110 §14.1.2] %q size=%d: got %d-%d/%d, ServeContent %d-%d/%d", header, size, s, e, code, ws, we, wcode)
+		rec := dSendFile(s, header) // invariant 1: no panic
+
+		// invariant 2 (RFC 9110 §14.2, §15.5.17): the answer is 200, 206 or 416.
+		switch rec.Code {
+		case http.StatusOK:
+			ehttptest.Eq(t, "RFC 9110 §14.2 "+header, rec.Body.String(), dRangeBody)
+		case http.StatusPartialContent:
+			checkPartial(t, header, rec)
+		case http.StatusRequestedRangeNotSatisfiable:
+			ehttptest.Eq(t, "RFC 9110 §15.5.17 "+header, rec.Header().Get(HeaderContentRange), "bytes */10")
+		default:
+			t.Errorf("%q: status %d is not 200, 206 or 416", header, rec.Code)
+		}
+
+		// invariant 3: a unit that is not "bytes" is ignored (RFC 9110 §14.2).
+		if dUnknownUnit(header) {
+			ehttptest.Eq(t, "RFC 9110 §14.2 "+header, rec.Code, http.StatusOK)
+		}
+
+		// invariant 4: a valid single range gets the answer of http.ServeContent.
+		if !dRangeValid(header) {
+			return
+		}
+
+		ws, we, wcode, ok := dServeContentRange(header, int64(len(dRangeBody)))
+		if !ok {
+			return
+		}
+
+		want := fmt.Sprintf("bytes %d-%d/10", ws, we)
+		if wcode == http.StatusRequestedRangeNotSatisfiable {
+			want = "bytes */10"
+		}
+
+		if rec.Code != wcode || rec.Header().Get(HeaderContentRange) != want {
+			t.Errorf("[RFC 9110 §14.1.2] %q: got %d %q, ServeContent %d %q", header, rec.Code, rec.Header().Get(HeaderContentRange), wcode, want)
 		}
 	})
+}
+
+// checkPartial checks a 206: one range inside the file with its bytes, or many.
+func checkPartial(t *testing.T, header string, rec *httptest.ResponseRecorder) {
+	t.Helper()
+
+	if strings.HasPrefix(rec.Header().Get(HeaderContentType), "multipart/byteranges") {
+		return
+	}
+
+	var s, e, total int64
+	if _, err := fmt.Sscanf(rec.Header().Get(HeaderContentRange), "bytes %d-%d/%d", &s, &e, &total); err != nil {
+		t.Errorf("[RFC 9110 §14.4] %q: 206 without a valid Content-Range: %v", header, err)
+		return
+	}
+
+	if s < 0 || s > e || e >= total || total != int64(len(dRangeBody)) {
+		t.Errorf("[RFC 9110 §14.1.2] %q: 206 with out-of-bounds range %d-%d/%d", header, s, e, total)
+		return
+	}
+
+	ehttptest.Eq(t, "RFC 9110 §14.4 "+header, rec.Body.String(), dRangeBody[s:e+1])
 }
 
 // ---------------------------------------------------------------- accepts
@@ -517,6 +584,45 @@ func FuzzCorsOrigin(f *testing.F) {
 	})
 }
 
+// SendFile answers a Range through http.ServeContent (RFC 9110 §14).
+func TestSendFileRange(t *testing.T) {
+	t.Parallel()
+
+	s := dRangeServer(t)
+	tests := []struct {
+		name, header string
+		code         int
+		contentRange string
+		body         string
+	}{
+		{"bytes=0-0 is the first byte", "bytes=0-0", 206, "bytes 0-0/10", "0"},
+		{"bytes=N- is open ended", "bytes=5-", 206, "bytes 5-9/10", "56789"},
+		{"bytes=-N is a suffix", "bytes=-3", 206, "bytes 7-9/10", "789"},
+		{"first-pos beyond the size", "bytes=10-12", 416, "bytes */10", ""},
+		{"invalid syntax", "bytes=abc", 416, "bytes */10", ""},
+		{"last-pos before first-pos", "bytes=5-2", 416, "bytes */10", ""},
+		{"suffix of no byte", "bytes=-0", 416, "bytes */10", ""},
+		{"unit is not case-sensitive", "Bytes=0-1", 206, "bytes 0-1/10", "01"},
+		{"unknown unit is ignored", "items=0-1", 200, "", dRangeBody},
+		{"no unit is invalid", "0-1", 416, "bytes */10", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := dSendFile(s, tt.header)
+
+			ehttptest.Eq(t, "RFC 9110 §14", rec.Code, tt.code)
+			ehttptest.Eq(t, "RFC 9110 §14.4", rec.Header().Get(HeaderContentRange), tt.contentRange)
+
+			if tt.code != http.StatusRequestedRangeNotSatisfiable {
+				ehttptest.Eq(t, "RFC 9110 §14.4", rec.Body.String(), tt.body)
+			}
+		})
+	}
+}
+
 // ------------------------------------------------- known bugs found by fuzzing
 //
 // Each test reproduces, with a concrete input, a bug that a fuzz target above
@@ -530,97 +636,6 @@ func TestFuzzKnownBugs(t *testing.T) {
 		res.Vary("Accept-Encoding")
 		res.Vary("Accept")
 		ehttptest.Eq(t, "RFC 9110 §12.5.5", rec.Header().Get(HeaderVary), "Accept-Encoding, Accept")
-	})
-
-	rangeCases := []struct {
-		name, header string
-		size         int64
-		s, e         int64
-		code         int
-	}{
-		{"bytes=0-0 is the first byte", "bytes=0-0", 10, 0, 0, http.StatusPartialContent},
-		{"bytes=N- is open ended", "bytes=5-", 10, 5, 9, http.StatusPartialContent},
-		{"bytes=-N is a suffix", "bytes=-3", 10, 7, 9, http.StatusPartialContent},
-	}
-	for _, tc := range rangeCases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			ehttptest.KnownBug(t, "range-parser-differs-from-servecontent", func(t testing.TB) {
-				s, e, code := fileParseRange(tc.header, tc.size)
-				ehttptest.Eq(t, "RFC 9110 §14.1.2", [3]int64{s, e, int64(code)}, [3]int64{tc.s, tc.e, int64(tc.code)})
-			})
-		})
-	}
-
-	t.Run("fileParseRange equals http.ServeContent", func(t *testing.T) {
-		t.Parallel()
-
-		headers := []string{
-			"bytes=0-0", "bytes=2-5", "bytes=0-99", "bytes=9-9", "bytes=10-10", "bytes=0-9",
-			"bytes=0-", "bytes=5-", "bytes=9-", "bytes=-1", "bytes=-3", "bytes=-99",
-		}
-
-		for _, h := range headers {
-			valid, known := dRangeClass(h)
-			if !valid {
-				t.Fatalf("test header %q is not a valid single range", h)
-			}
-
-			check := func(t testing.TB) {
-				ws, we, wcode, ok := dServeContentRange(h, 10)
-				if !ok {
-					t.Fatalf("oracle ignored %q", h)
-				}
-
-				s, e, code := fileParseRange(h, 10)
-				ehttptest.Eq(t, "RFC 9110 §14.1.2 (oracle: http.ServeContent) "+h, [3]int64{s, e, int64(code)}, [3]int64{ws, we, int64(wcode)})
-			}
-
-			t.Run(h, func(t *testing.T) {
-				if known {
-					ehttptest.KnownBug(t, "range-parser-differs-from-servecontent", check)
-					return
-				}
-
-				check(t)
-			})
-		}
-	})
-
-	const inmEtag = `W/"1-00000001"`
-	for _, inm := range []string{"*", `"x", ` + inmEtag, strings.TrimPrefix(inmEtag, "W/")} {
-		t.Run("If-None-Match "+inm, func(t *testing.T) {
-			t.Parallel()
-			ehttptest.KnownBug(t, "if-none-match-list-ignored", func(t testing.TB) {
-				r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)
-				r.Header.Set(HeaderIfNoneMatch, inm)
-				res := &ResponseWriter{request: r}
-				ehttptest.Eq(t, "RFC 9110 §13.1.2", fileIsNotModified(res, inmEtag, time.Unix(100, 0)), true)
-			})
-		})
-	}
-
-	t.Run("If-None-Match wins over If-Modified-Since", func(t *testing.T) {
-		t.Parallel()
-		ehttptest.KnownBug(t, "file-conditional-headers-ignored", func(t testing.TB) {
-			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)
-			r.Header.Set(HeaderIfNoneMatch, `W/"other"`)
-			r.Header.Set(HeaderIfModifiedSince, time.Unix(200, 0).UTC().Format(http.TimeFormat))
-			res := &ResponseWriter{request: r}
-			got := fileIsNotModified(res, `W/"1-00000001"`, time.Unix(100, 0))
-			ehttptest.Eq(t, "RFC 9110 §13.1.3", got, false)
-		})
-	})
-
-	t.Run("If-Modified-Since never matches a sub-second mtime", func(t *testing.T) {
-		t.Parallel()
-		ehttptest.KnownBug(t, "if-modified-since-subsecond-mtime", func(t testing.TB) {
-			mod := time.Unix(100, 500_000_000) // real file systems keep ns; Last-Modified is truncated to s
-			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)
-			r.Header.Set(HeaderIfModifiedSince, time.Unix(100, 0).UTC().Format(http.TimeFormat))
-			res := &ResponseWriter{request: r}
-			ehttptest.Eq(t, "RFC 9110 §13.1.3", fileIsNotModified(res, `W/"e"`, mod), true)
-		})
 	})
 
 	t.Run("params leak from a route that did not match", func(t *testing.T) {
