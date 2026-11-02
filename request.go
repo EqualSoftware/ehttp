@@ -148,6 +148,11 @@ func (req *Request) UserAgent() string {
 	return req.Header(HeaderUserAgent)
 }
 
+// Param returns a route param. The value is percent-decoded once, per segment
+// (RFC 3986 §2.1). A wildcard ("...") value can hold "/", ".." and NUL: confine
+// it before file use, for example with os.Root or filepath.IsLocal. Static
+// segments compare the raw, still-escaped path, so "/us%65rs" does not match
+// "/users".
 func (req *Request) Param(name string) string {
 	return req.Request.PathValue(name)
 }

@@ -45,7 +45,7 @@ func LastModified(last_modified time.Time) ehttp.MiddlewareHandlerFunc {
 			next.ServeHTTP(res, req)
 
 			// A handler that wrote nothing has a 2xx response: 304.
-			if !res.HeadersSent() && (res.StatusCode() == 0 || res.StatusCode() < ehttp.StatusMultipleChoices) {
+			if !res.HeadersSent() && res.StatusCode() < ehttp.StatusMultipleChoices {
 				res.SendStatus(ehttp.StatusNotModified)
 			}
 		}

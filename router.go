@@ -331,7 +331,7 @@ func (route *route) match(segments []string) bool {
 		}
 
 		if route_segment == "..." {
-			return true
+			return validEscapes(segments[i:])
 		}
 
 		if !strings.HasPrefix(route_segment, ":") {
@@ -364,7 +364,8 @@ func (route *route) matchParam(i int, value string) bool {
 func (route *route) bind(req *Request, segments []string) {
 	for i, route_segment := range route.segments {
 		if route_segment == "..." {
-			req.Request.SetPathValue("...", decodeRest(segments[i:]))
+			rest, _ := decodeRest(segments[i:]) // match checked the escapes
+			req.Request.SetPathValue("...", rest)
 
 			return
 		}
@@ -379,21 +380,42 @@ func (route *route) bind(req *Request, segments []string) {
 	}
 }
 
-// decodeRest joins the segments of a wildcard and decodes each one.
-func decodeRest(segments []string) string {
+// validEscapes reports whether every segment has valid percent escapes. It
+// does not allocate for a segment without "%".
+func validEscapes(segments []string) bool {
+	for _, segment := range segments {
+		if _, ok := decodeSegment(segment); !ok {
+			return false
+		}
+	}
+
+	return true
+}
+
+// decodeRest joins the segments of a wildcard and decodes each one, once. The
+// value can hold "/", ".." and NUL: the caller must confine it before file use
+// (for example with os.Root or filepath.IsLocal). An invalid escape gives no
+// match, as for a single param. Over HTTP this cannot run: Request.Path is
+// URL.EscapedPath and net/http answers 400 for a bad escape.
+func decodeRest(segments []string) (string, bool) {
 	rest := strings.Join(segments, "/")
 
 	if !strings.Contains(rest, "%") {
-		return rest
+		return rest, true
 	}
 
 	decoded := make([]string, len(segments))
 
 	for i, segment := range segments {
-		decoded[i], _ = decodeSegment(segment)
+		value, ok := decodeSegment(segment)
+		if !ok {
+			return "", false
+		}
+
+		decoded[i] = value
 	}
 
-	return strings.Join(decoded, "/")
+	return strings.Join(decoded, "/"), true
 }
 
 // decodeSegment decodes the percent escapes of one path segment (RFC 3986

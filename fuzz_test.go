@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -52,6 +53,54 @@ func dNewFuzzRouter(got *dMatch) *Router {
 	r.GET("/w/:m|a|b", record("m"))
 	r.GET("/files/...", record("..."))
 	return r
+}
+
+// onlySlashEscapes reports whether every "%" of escaped starts %2F or %2f.
+func onlySlashEscapes(escaped string) bool {
+	rest := escaped
+
+	for {
+		_, after, found := strings.Cut(rest, "%")
+		if !found {
+			return true
+		}
+
+		if len(after) < 2 || after[0] != '2' || (after[1] != 'F' && after[1] != 'f') {
+			return false
+		}
+
+		rest = after[2:]
+	}
+}
+
+// dCheckDecodedParams checks the params of a path with percent escapes: each
+// one is the url.PathUnescape of its raw segment (RFC 3986 §2.1), and the
+// wildcard is the decoded rest of the path.
+func dCheckDecodedParams(t *testing.T, escaped string, params map[string]string) {
+	t.Helper()
+
+	for k, v := range params {
+		if k == "..." {
+			whole, err := url.PathUnescape(strings.TrimSuffix(escaped, "/"))
+			if err == nil && !strings.HasSuffix(whole, v) {
+				t.Errorf("[RFC 3986 §2.1] wildcard %q is not a decoded suffix of %q", v, escaped)
+			}
+
+			continue
+		}
+
+		found := false
+
+		for _, seg := range strings.Split(escaped, "/") {
+			if dec, err := url.PathUnescape(seg); err == nil && dec == v {
+				found = true
+			}
+		}
+
+		if !found {
+			t.Errorf("[RFC 3986 §2.1] param %s=%q is not the decoded form of a segment of %q", k, v, escaped)
+		}
+	}
 }
 
 var dDigitsRe = regexp.MustCompile(`^\d+$`)
@@ -119,7 +168,10 @@ func FuzzRouterMatch(f *testing.F) {
 		// A path with percent-encoding is the percent-decoding domain: the router may decode
 		// segments before it matches (RFC 3986 §2.1), so the oracle on the
 		// escaped form does not apply. TestRouterParamDecoding covers it.
-		if want := dExpectedRoute(req.URL.EscapedPath()); !strings.Contains(req.URL.EscapedPath(), "%") && got.pattern != want {
+		// A decoded "/" must not change the route: when %2F is the only escape,
+		// the oracle on the escaped form still applies.
+		oracleApplies := !strings.Contains(req.URL.EscapedPath(), "%") || onlySlashEscapes(req.URL.EscapedPath())
+		if want := dExpectedRoute(req.URL.EscapedPath()); oracleApplies && got.pattern != want {
 			t.Errorf("[README routing] %q routed to %q, want %q", req.URL.EscapedPath(), got.pattern, want)
 		}
 
@@ -133,6 +185,7 @@ func FuzzRouterMatch(f *testing.F) {
 		// §2.1, §2.2); only check the values when no "%" is present.
 		escaped := req.URL.EscapedPath()
 		if strings.Contains(escaped, "%") {
+			dCheckDecodedParams(t, escaped, got.params)
 			return
 		}
 
