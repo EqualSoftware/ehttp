@@ -20,6 +20,7 @@ import (
 	"github.com/EqualSoftware/ehttp/internal/ehttptest"
 	"github.com/EqualSoftware/ehttp/internal/fixtures"
 
+	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 )
 
@@ -680,3 +681,211 @@ func TestResponseBodyHelpers(t *testing.T) {
 type bFailingReader struct{}
 
 func (bFailingReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+// net/http drops Authorization on a redirect to another host, and keeps it on
+// the same host.
+func TestClientRedirectAuthorization(t *testing.T) {
+	t.Parallel()
+
+	run := func(t *testing.T, sameHost bool) string {
+		t.Helper()
+
+		var got atomic.Value
+		got.Store("")
+
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got.Store(r.Header.Get("Authorization"))
+		}))
+		t.Cleanup(target.Close)
+
+		dest := target.URL
+		if sameHost {
+			dest = "" // the redirecting server is the target
+		}
+
+		var front *httptest.Server
+		front = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if sameHost && r.URL.Path == "/final" {
+				got.Store(r.Header.Get("Authorization"))
+				return
+			}
+
+			if sameHost {
+				http.Redirect(w, r, front.URL+"/final", http.StatusFound)
+				return
+			}
+
+			http.Redirect(w, r, dest+"/final", http.StatusFound)
+		}))
+		t.Cleanup(front.Close)
+
+		// Another host name: net/http compares host names without the port.
+		from := front.URL
+		if !sameHost {
+			from = strings.Replace(from, "127.0.0.1", "localhost", 1)
+		}
+
+		res, err := ehttp.NewClient(ehttp.WithAuthorization("Bearer secret")).Execute(ehttp.WithSource("GET", from))
+		ehttptest.True(t, "the request works", err == nil, "err = %v", err)
+		res.Body.Close()
+
+		return got.Load().(string)
+	}
+
+	t.Run("other host drops Authorization", func(t *testing.T) {
+		t.Parallel()
+		ehttptest.Eq(t, "net/http client.go: sensitive headers are dropped on a cross-host redirect", run(t, false), "")
+	})
+	t.Run("same host keeps Authorization", func(t *testing.T) {
+		t.Parallel()
+		ehttptest.Eq(t, "net/http client.go: same-host redirects keep the headers", run(t, true), "Bearer secret")
+	})
+}
+
+// No client log has the userinfo, the password or a sensitive query value.
+// Warn and Error logs have no path.
+func TestClientLogHygiene(t *testing.T) {
+	logs := fixtures.CaptureLogs(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	ok := strings.Replace(srv.URL, "http://", "http://user:pass@", 1) + "/p?token=S&page=2"
+	t.Cleanup(srv.Close)
+
+	res, err := ehttp.NewClient().Execute(ehttp.WithSource("GET", ok))
+	ehttptest.True(t, "the request works", err == nil, "err = %v", err)
+	res.Body.Close()
+
+	_, _ = ehttp.NewClient().Execute(ehttp.WithSource("GET", "http://user:pass@127.0.0.1:1/p?token=S&page=2"))
+	_, _ = ehttp.NewClient().Execute(ehttp.WithSource("", "http://user:pass@127.0.0.1:1/p?token=S"))
+
+	debug := 0
+
+	for _, e := range logs.All() {
+		text := e.Message + fmt.Sprint(e.ContextMap())
+		for _, s := range []string{"user", ":pass", "pass@", "token=S", "=S&", "=S "} {
+			ehttptest.True(t, "no credentials in the log", !strings.Contains(text, s), "log %q leaks %q: %v", e.Message, s, e.ContextMap())
+		}
+
+		if e.Level.String() == "debug" {
+			debug++
+			ehttptest.True(t, "Debug shows the path and the masked query", strings.Contains(text, "/p?token=***&page=2"), "log = %v", text)
+
+			continue
+		}
+
+		ehttptest.True(t, "Warn and Error logs have no path", !strings.Contains(text, "/p"), "log %q has a path: %v", e.Message, e.ContextMap())
+	}
+
+	ehttptest.Eq(t, "one Debug line from the successful request", debug, 1)
+}
+
+// The returned error of a failed request keeps the path and the harmless query
+// and hides the secrets. The error keeps the stdlib shape.
+func TestClientErrorMasksURL(t *testing.T) {
+	t.Parallel()
+
+	_, err := ehttp.NewClient().Execute(ehttp.WithSource("GET", "http://user:pass@127.0.0.1:1/p?token=S&page=2"))
+
+	var urlErr *url.Error
+	ehttptest.True(t, "the error is a *url.Error", errors.As(err, &urlErr), "err = %T %v", err, err)
+
+	text := err.Error()
+	ehttptest.True(t, "the path stays", strings.Contains(text, "/p"), "err = %v", text)
+	ehttptest.True(t, "the harmless query stays", strings.Contains(text, "page=2"), "err = %v", text)
+
+	for _, s := range []string{"user", "pass", "S&", "=S"} {
+		ehttptest.True(t, "the secrets are masked", !strings.Contains(text, s), "err %q has %q", text, s)
+	}
+
+	ehttptest.Eq(t, "Op stays", urlErr.Op, "Get")
+
+	var opErr *net.OpError
+	ehttptest.True(t, "errors.As reaches the cause", errors.As(err, &opErr), "err = %v", err)
+}
+
+// A developer mistake at request time is an error, not a panic, and it is
+// logged once.
+func TestClientMisuseIsAnError(t *testing.T) {
+	for name, opts := range map[string]func() (*ehttp.Response, error){
+		"empty method": func() (*ehttp.Response, error) {
+			return ehttp.NewClient().Execute(ehttp.WithSource("", "http://127.0.0.1:1"))
+		},
+		"no source": func() (*ehttp.Response, error) { return ehttp.NewClient().Execute() },
+	} {
+		t.Run(name, func(t *testing.T) {
+			logs := fixtures.CaptureLogs(t)
+
+			res, err := opts()
+
+			ehttptest.True(t, "an error and no response", res == nil && err != nil, "res=%v err=%v", res, err)
+			ehttptest.True(t, "the message has a fix", strings.Contains(err.Error(), "Fix:"), "err = %v", err)
+			ehttptest.Eq(t, "one Error log", logs.FilterLevelExact(zapcore.ErrorLevel).Len(), 1)
+		})
+	}
+}
+
+func TestClientMaxResponseBytes(t *testing.T) {
+	t.Parallel()
+
+	const body = `{"a":"0123456789"}`
+
+	serve := func(t *testing.T, chunked bool) string {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if chunked {
+				w.(http.Flusher).Flush() // no Content-Length
+			}
+			_, _ = io.WriteString(w, body)
+		}))
+		t.Cleanup(srv.Close)
+
+		return srv.URL
+	}
+
+	readers := map[string]func(*ehttp.Response) error{
+		"JSON":   func(r *ehttp.Response) error { var v map[string]string; return r.JSON(&v) },
+		"String": func(r *ehttp.Response) error { _, err := r.String(); return err },
+		"Bytes":  func(r *ehttp.Response) error { _, err := r.Bytes(); return err },
+	}
+
+	for name, read := range readers {
+		for _, chunked := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s chunked=%v", name, chunked), func(t *testing.T) {
+				t.Parallel()
+
+				u := serve(t, chunked)
+				limit := int64(len(body))
+
+				res, err := ehttp.NewClient(ehttp.WithMaxResponseBytes(limit - 1)).Execute(ehttp.WithSource("GET", u))
+				ehttptest.True(t, "request works", err == nil, "err = %v", err)
+				err = read(res)
+				ehttptest.True(t, "over the limit", errors.Is(err, ehttp.ErrResponseTooLarge), "err = %v", err)
+				ehttptest.True(t, "the message names the option", strings.Contains(err.Error(), "WithMaxResponseBytes"), "err = %v", err)
+
+				res, _ = ehttp.NewClient(ehttp.WithMaxResponseBytes(limit)).Execute(ehttp.WithSource("GET", u))
+				ehttptest.True(t, "at the limit is fine", read(res) == nil, "error at the limit")
+
+				res, _ = ehttp.NewClient().Execute(ehttp.WithSource("GET", u))
+				ehttptest.True(t, "no limit by default", read(res) == nil, "error with no limit")
+
+				res, _ = ehttp.NewClient(ehttp.WithMaxResponseBytes(0)).Execute(ehttp.WithSource("GET", u))
+				ehttptest.True(t, "0 is no limit", read(res) == nil, "error with 0")
+			})
+		}
+	}
+
+	t.Run("Body stays unlimited", func(t *testing.T) {
+		t.Parallel()
+
+		res, _ := ehttp.NewClient(ehttp.WithMaxResponseBytes(1)).Execute(ehttp.WithSource("GET", serve(t, false)))
+		defer res.Body.Close()
+		b, err := io.ReadAll(res.Body)
+		ehttptest.True(t, "raw body is whole", err == nil && string(b) == body, "b=%q err=%v", b, err)
+	})
+
+	t.Run("negative panics", func(t *testing.T) {
+		t.Parallel()
+
+		defer func() { ehttptest.True(t, "panic", recover() != nil, "no panic") }()
+		ehttp.WithMaxResponseBytes(-1)
+	})
+}

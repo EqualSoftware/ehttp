@@ -25,6 +25,7 @@ type Client struct {
 	baseUrl       *url.URL
 	authorization string
 	redact        *redact.Matcher // nil is the default list
+	maxBytes      int64           // limit of the Response helpers; 0 is no limit
 }
 
 type clientRequestConfig struct {
@@ -83,6 +84,24 @@ func WithClientRedactNames(patterns ...string) clientOptionFunc {
 	}
 }
 
+// WithMaxResponseBytes sets the largest body that Response.JSON, String and
+// Bytes read. A value of 0 means no limit, which is the default. A negative
+// value panics. If Content-Length is known and above the limit, the helpers
+// return ErrResponseTooLarge without a read of the body. Else they stop at one
+// byte over the limit. Response.Body stays unlimited, for streaming. The
+// limit is opt-in, as in resty (SetResponseBodyLimit) and req
+// (SetMaxResponseSize).
+func WithMaxResponseBytes(n int64) clientOptionFunc {
+	if n < 0 {
+		bootPanic("WithMaxResponseBytes", "a negative limit", fmt.Sprintf("the limit is %d", n),
+			"use a positive number of bytes, or 0 for no limit, for example WithMaxResponseBytes(10 << 20)")
+	}
+
+	return func(cfg *Client) {
+		cfg.maxBytes = n
+	}
+}
+
 func WithTransport(value *http.Transport) clientOptionFunc {
 	return func(cfg *Client) {
 		cfg.httpClient.Transport = value
@@ -98,12 +117,6 @@ func WithContext(value context.Context) requestOptionFunc {
 func WithSource(m, u string) requestOptionFunc {
 	return func(cfg *clientRequestConfig) {
 		cfg.method = m
-
-		if cfg.method == "" {
-			zap.L().Panic("invalid source method option",
-				zap.String("method", m),
-			)
-		}
 
 		parsed_url, err := url.Parse(u)
 
@@ -149,8 +162,11 @@ func NewClient(options ...clientOptionFunc) *Client {
 	return c
 }
 
-// Execute sends the request. The returned error can hold the request URL, with
-// its query and credentials. Do not log it as it is.
+// Execute sends the request. A missing method or URL is an error, not a panic.
+// The returned error of a failed request is a *url.Error that holds the URL
+// path. The userinfo and the sensitive query values are masked (see
+// WithClientRedactNames). Warn and Error logs of the client show only the
+// scheme, the host and the method.
 func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 	var err error
 	var req *http.Request
@@ -174,11 +190,15 @@ func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 	}
 
 	if cfg.method == "" {
-		zap.L().Panic("you are trying to execute a request without define a method.")
+		return nil, misuse("Execute", "a request without a method",
+			"the method is empty or WithSource was not used",
+			"pass a method, for example WithSource(\"GET\", \"https://example.com\")")
 	}
 
 	if cfg.url == nil {
-		zap.L().Panic("you are trying to execute a request without define a url.")
+		return nil, misuse("Execute", "a request without a URL",
+			"WithSource was not used",
+			"pass a URL, for example WithSource(\"GET\", \"https://example.com\")")
 	}
 
 	if client.baseUrl != nil {
@@ -197,7 +217,7 @@ func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 				zap.Dict("request",
 					zap.Bool("context", cfg.ctx != nil),
 					zap.String("method", cfg.method),
-					zap.String("url", logURL(req_url)),
+					zap.String("target", logTarget(req_url)),
 					zap.Duration("timeout", cfg.timeout),
 				),
 				zap.Error(logErr(err)),
@@ -213,7 +233,7 @@ func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 				zap.Dict("request",
 					zap.Bool("context", cfg.ctx != nil),
 					zap.String("method", cfg.method),
-					zap.String("url", logURL(req_url)),
+					zap.String("target", logTarget(req_url)),
 					zap.Duration("timeout", cfg.timeout),
 				),
 				zap.Error(logErr(err)),
@@ -235,13 +255,13 @@ func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 			zap.Dict("request",
 				zap.Bool("context", cfg.ctx != nil),
 				zap.String("method", cfg.method),
-				zap.String("url", logURL(req_url)),
+				zap.String("target", logTarget(req_url)),
 				zap.Duration("timeout", cfg.timeout),
 			),
 			zap.Error(logErr(err)),
 		)
 
-		return nil, err
+		return nil, maskErr(err, req_url, client.redact)
 	}
 
 	if cfg.jsonPayload != nil {
@@ -262,25 +282,25 @@ func (client *Client) Execute(options ...requestOptionFunc) (*Response, error) {
 		zap.L().Error("failure to execute the request",
 			zap.Dict("request",
 				zap.String("method", req.Method),
-				zap.String("url", logURL(req.URL)),
+				zap.String("target", logTarget(req.URL)),
 			),
 			zap.Error(logErr(err)),
 		)
 
-		return nil, err
+		return nil, maskErr(err, req.URL, client.redact)
 	}
 
 	zap.L().Debug("request executed",
 		zap.Dict("payload",
 			zap.String("method", req.Method),
-			zap.String("url", logURL(req.URL)),
+			zap.String("url", client.redact.URL(req.URL)),
 		),
 		zap.Dict("response",
 			zap.Int("code", res.StatusCode),
 		),
 	)
 
-	return &Response{res}, nil
+	return &Response{Response: res, maxBytes: client.maxBytes}, nil
 }
 
 // logErr removes the URL from a *url.Error, because the URL can hold secrets.
@@ -293,17 +313,30 @@ func logErr(err error) error {
 	return err
 }
 
-// logURL gives the URL for a log line. It drops the credentials, the query
-// and the fragment, because they can hold secrets.
-func logURL(u *url.URL) string {
-	safe := *u
-	safe.User = nil
-	safe.RawQuery = ""
-	safe.ForceQuery = false
-	safe.Fragment = ""
-	safe.RawFragment = ""
+// logTarget gives the scheme and the host for a Warn or Error log line. It
+// has no path, no query and no credentials, because they can hold secrets.
+func logTarget(u *url.URL) string {
+	return u.Scheme + "://" + u.Host
+}
 
-	return safe.String()
+// maskErr hides the secrets of the URL in a *url.Error. The new error has the
+// same Op and Err, so errors.Is, errors.As and Timeout keep working. Other
+// errors do not change.
+func maskErr(err error, u *url.URL, m *redact.Matcher) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+
+	return &url.Error{Op: urlErr.Op, URL: m.URL(u), Err: urlErr.Err}
+}
+
+// misuse logs a developer mistake once at Error level and returns it.
+func misuse(where, what, why, fix string) error {
+	msg := bootMessage(where, what, why, fix)
+	zap.L().Error(msg)
+
+	return errors.New(msg)
 }
 
 // joinBaseURL puts the path of target under the path of base. The path stays

@@ -3,6 +3,7 @@ package ehttp
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -14,6 +15,68 @@ import (
 
 type Response struct {
 	*http.Response
+
+	maxBytes int64 // from WithMaxResponseBytes; 0 is no limit
+}
+
+// ErrResponseTooLarge is returned by Response.JSON, String and Bytes when the
+// body is larger than the limit of WithMaxResponseBytes.
+var ErrResponseTooLarge = errors.New("response body too large")
+
+func (res *Response) tooLarge(where string) error {
+	return fmt.Errorf("ehttp: %w in %s: the body is over the limit of %d bytes. "+
+		"Fix: raise the limit with WithMaxResponseBytes, or use 0 for no limit", ErrResponseTooLarge, where, res.maxBytes)
+}
+
+// reader gives the body for a helper. With a limit, a known Content-Length
+// above it is an error, and the read stops at one byte over it.
+func (res *Response) reader(where string) (io.Reader, error) {
+	if res.maxBytes == 0 {
+		return res.Body, nil
+	}
+
+	if res.ContentLength > res.maxBytes {
+		return nil, res.tooLarge(where)
+	}
+
+	return &capReader{r: io.LimitReader(res.Body, res.maxBytes+1), limit: res.maxBytes, err: res.tooLarge(where)}, nil
+}
+
+// capReader fails when more than limit bytes come from r.
+type capReader struct {
+	r     io.Reader
+	n     int64
+	limit int64
+	err   error
+}
+
+func (c *capReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+
+	if c.n > c.limit {
+		return 0, c.err
+	}
+
+	return n, err
+}
+
+// readAll reads the body for String and Bytes.
+func (res *Response) readAll(where string) ([]byte, error) {
+	defer res.Body.Close()
+
+	body, err := res.reader(where)
+	if err == nil {
+		var data []byte
+
+		if data, err = io.ReadAll(body); err == nil {
+			return data, nil
+		}
+	}
+
+	zap.L().Error("failure to read the response body", zap.Error(err))
+
+	return nil, err
 }
 
 // maxAgeCap is 2^31 seconds: the value for a max-age that is too large
@@ -71,11 +134,15 @@ func maxAgeValue(value string) time.Duration {
 	return time.Duration(min(age, maxAgeCap)) * time.Second
 }
 
-// Read the response.Body as JSON. It reads the JSON value into memory.
+// Read the response.Body as JSON. It reads the JSON value into memory. The
+// limit of WithMaxResponseBytes applies.
 func (res *Response) JSON(value interface{}) error {
 	defer res.Body.Close()
 
-	err := json.NewDecoder(res.Body).Decode(value)
+	body, err := res.reader("Response.JSON")
+	if err == nil {
+		err = json.NewDecoder(body).Decode(value)
+	}
 
 	if err != nil {
 		zap.L().Error("failure to parse the json response", zap.Error(err))
@@ -90,32 +157,19 @@ func (res *Response) JSON(value interface{}) error {
 	return nil
 }
 
-// Read the response.Body as String. It reads the full body into memory.
+// Read the response.Body as String. It reads the full body into memory. The
+// limit of WithMaxResponseBytes applies.
 func (res *Response) String() (string, error) {
-	defer res.Body.Close()
-
-	bytes, err := io.ReadAll(res.Body)
-
+	data, err := res.readAll("Response.String")
 	if err != nil {
-		zap.L().Error("failure to parse the json response", zap.Error(err))
-
 		return "", err
 	}
 
-	return string(bytes), nil
+	return string(data), nil
 }
 
-// Read the response.Body as Bytes. It reads the full body into memory.
+// Read the response.Body as Bytes. It reads the full body into memory. The
+// limit of WithMaxResponseBytes applies.
 func (res *Response) Bytes() ([]byte, error) {
-	defer res.Body.Close()
-
-	bytes, err := io.ReadAll(res.Body)
-
-	if err != nil {
-		zap.L().Error("failure to parse the json response", zap.Error(err))
-
-		return nil, err
-	}
-
-	return bytes, nil
+	return res.readAll("Response.Bytes")
 }
