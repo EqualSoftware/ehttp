@@ -1,6 +1,5 @@
 # An experiment environment for the example: the app behind nginx (a trusted
-# proxy), with Prometheus, Grafana and an on-demand k6 load test.
-# See README.md in this folder.
+# proxy), with Prometheus and Grafana. Run k6 from the host (see README.md).
 name: ehttp-example
 
 services:
@@ -76,21 +75,6 @@ services:
     volumes:
       - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
-    networks: [stack]
-
-  # Run on demand: docker compose --profile load run --rm k6
-  # The k6 image is Alpine-based; the project publishes no -alpine tag.
-  k6:
-    image: grafana/k6:1.8.2
-    profiles: [load]
-    depends_on: [nginx]
-    environment:
-      BASE_URL: http://nginx:8080
-      K6_VUS: "${K6_VUS:-5}"
-      K6_DURATION: "${K6_DURATION:-20s}"
-    volumes:
-      - ./docker/k6/script.js:/script.js:ro
-    command: ["run", "/script.js"]
     networks: [stack]
 
 networks:

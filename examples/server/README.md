@@ -24,11 +24,12 @@ docker compose -f examples/server/compose.yaml down        # stop and remove
 
 The app has limits (1 CPU, 256 MB) and nginx too (0.5 CPU, 64 MB); the Containers dashboard shows use against them.
 
-Load test with k6 through nginx (a compose profile, run on demand):
+Load test with k6 from the host (install: https://grafana.com/docs/k6/latest/set-up/install-k6/). The default target is nginx on 127.0.0.1:8080:
 
 ```
-docker compose -f examples/server/compose.yaml --profile load run --rm k6
-K6_VUS=20 K6_DURATION=60s docker compose -f examples/server/compose.yaml --profile load run --rm k6
+k6 run examples/server/docker/k6/script.js
+K6_VUS=20 K6_DURATION=60s k6 run examples/server/docker/k6/script.js
+BASE_URL=http://127.0.0.1:3000 k6 run examples/server/docker/k6/script.js   # direct to the app, without nginx
 ```
 
 k6 only makes load; its summary is in the terminal. Watch the two dashboards while it runs to see the effect on the app and on the containers.

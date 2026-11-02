@@ -1,10 +1,10 @@
-// A short load test through nginx. Run: docker compose --profile load run --rm k6
-// K6_VUS and K6_DURATION set the size (defaults: 5 users, 20 s).
+// A short load test through nginx. Run from the repo root: k6 run examples/server/docker/k6/script.js
+// K6_VUS and K6_DURATION set the size (defaults: 5 users, 20 s). BASE_URL sets the target.
 import http from 'k6/http';
 import encoding from 'k6/encoding';
 import { check, sleep } from 'k6';
 
-const base = __ENV.BASE_URL || 'http://nginx:8080';
+const base = __ENV.BASE_URL || 'http://127.0.0.1:8080';
 // Demo credentials of the /admin group (examples/server/app/app.go).
 const basic = 'Basic ' + encoding.b64encode('demo:demo-password');
 

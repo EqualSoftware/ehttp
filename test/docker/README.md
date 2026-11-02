@@ -17,4 +17,4 @@ make bench BENCHCOUNT=1 BENCHOUT=/tmp/run1
 Limit on macOS: Docker runs in a Linux VM, so the numbers depend on the VM
 size and the host load. Compare only runs from the same environment.
 
-The example stack (nginx, Prometheus, Grafana, k6) is in `examples/server/`.
+The example stack (nginx, Prometheus, Grafana) is in `examples/server/`.
