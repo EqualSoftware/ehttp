@@ -1,5 +1,5 @@
 # An experiment environment for the example: the app behind nginx (a trusted
-# proxy), with Prometheus and Grafana. Run k6 from the host (see README.md).
+# proxy), with Prometheus and Grafana (see README.md).
 name: ehttp-example
 
 services:
