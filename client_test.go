@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"go.uber.org/zap/zaptest/observer"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +19,8 @@ import (
 	"github.com/EqualSoftware/ehttp"
 	"github.com/EqualSoftware/ehttp/internal/ehttptest"
 	"github.com/EqualSoftware/ehttp/internal/fixtures"
+
+	"go.uber.org/zap/zaptest/observer"
 )
 
 type bSeen struct {

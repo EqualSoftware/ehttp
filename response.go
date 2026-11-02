@@ -48,7 +48,7 @@ func (res *Response) GetCacheControlMaxAge() time.Duration {
 	return duration
 }
 
-// Read the response.Body as JSON. It reads the full body into memory.
+// Read the response.Body as JSON. It reads the JSON value into memory.
 func (res *Response) JSON(value interface{}) error {
 	defer res.Body.Close()
 
