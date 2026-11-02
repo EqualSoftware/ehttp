@@ -176,12 +176,29 @@ func ErrorCache(duration time.Duration, opts ...ErrorCacheOption) ehttp.Middlewa
 	return cacheControlMiddleware(cfg.value)
 }
 
-// cacheControlMiddleware wraps the writer. value gives the Cache-Control for
-// the final status, or empty for none.
-func cacheControlMiddleware(value func(code int, auth bool) string) ehttp.MiddlewareHandlerFunc {
+// cachePolicy gives the Cache-Control for the final status, or empty for none.
+type cachePolicy func(code int, auth bool) string
+
+// cacheControlMiddleware registers a policy for the request. The first policy
+// of a request installs the writer. A later policy (a Cache or ErrorCache
+// further in) only joins it: no new writer, closure or hook. The policy
+// closest to the handler that gives a value wins.
+func cacheControlMiddleware(policy cachePolicy) ehttp.MiddlewareHandlerFunc {
 	return func(next ehttp.Handler) ehttp.HandlerFunc {
 		return func(res *ehttp.ResponseWriter, req *ehttp.Request) {
-			cc := &cacheControlWriter{value: value, req: req}
+			if cc, ok := res.Unwrap().(*cacheControlWriter); ok {
+				cc.push(policy)
+				defer cc.pop()
+
+				next.ServeHTTP(res, req)
+
+				return
+			}
+
+			cc := &cacheControlWriter{req: req}
+			cc.policies = cc.buf[:0]
+			cc.push(policy)
+
 			restore := hook.WrapWriter(res, func(w http.ResponseWriter) http.ResponseWriter {
 				cc.ResponseWriter = w
 				return cc
@@ -197,10 +214,15 @@ func cacheControlMiddleware(value func(code int, auth bool) string) ehttp.Middle
 // goes on the wire. It fills the header only when it is empty.
 type cacheControlWriter struct {
 	http.ResponseWriter
-	value func(code int, auth bool) string
-	req   *ehttp.Request
-	done  bool
+	req      *ehttp.Request
+	policies []cachePolicy // outermost first
+	buf      [2]cachePolicy
+	done     bool
 }
+
+func (c *cacheControlWriter) push(p cachePolicy) { c.policies = append(c.policies, p) }
+
+func (c *cacheControlWriter) pop() { c.policies = c.policies[:len(c.policies)-1] }
 
 func (c *cacheControlWriter) WriteHeader(code int) {
 	if c.done {
@@ -224,8 +246,13 @@ func (c *cacheControlWriter) setCacheControl(code int) {
 		return
 	}
 
-	if v := c.value(code, c.req.Header(ehttp.HeaderAuthorization) != ""); v != "" {
-		h.Set(ehttp.HeaderCacheControl, v)
+	auth := c.req.Header(ehttp.HeaderAuthorization) != ""
+
+	for i := len(c.policies) - 1; i >= 0; i-- {
+		if v := c.policies[i](code, auth); v != "" {
+			h.Set(ehttp.HeaderCacheControl, v)
+			return
+		}
 	}
 }
 

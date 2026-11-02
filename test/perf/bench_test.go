@@ -168,6 +168,19 @@ func BenchmarkCache(b *testing.B) {
 	bench(b, s, httptest.NewRequestWithContext(context.Background(), "GET", "/", http.NoBody))
 }
 
+func BenchmarkCacheAndErrorCache(b *testing.B) {
+	s := ehttp.NewServer()
+	s.Use(middleware.ErrorCache(time.Minute))
+	s.GET("/", func(res *ehttp.ResponseWriter, _ *ehttp.Request) { res.String("ok") }, middleware.Cache(time.Minute))
+	s.GET("/err", func(res *ehttp.ResponseWriter, _ *ehttp.Request) { res.SendStatus(ehttp.StatusNotFound) }, middleware.Cache(time.Minute))
+
+	for _, p := range []string{"/", "/err"} {
+		b.Run(p, func(b *testing.B) {
+			bench(b, s, httptest.NewRequestWithContext(context.Background(), "GET", p, http.NoBody))
+		})
+	}
+}
+
 func BenchmarkCorsPreflight(b *testing.B) {
 	s := ehttp.NewServer()
 	s.Use(ehttp.Cors(ehttp.DefaultCorsOptions()))
