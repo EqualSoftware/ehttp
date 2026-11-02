@@ -89,18 +89,16 @@ func bStatusName(code int) string { return "status " + strconv.Itoa(code) }
 func TestErrorCacheDoesNotBufferBody(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "error-cache-buffers-body", func(t testing.TB) {
-		rec := httptest.NewRecorder()
-		seen := -1
-		h := fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
-			res.String("first chunk")
-			seen = rec.Body.Len() // what has reached the client before the handler returns
-		}, middleware.ErrorCache(time.Minute))
+	rec := httptest.NewRecorder()
+	seen := -1
+	h := fixtures.Handler(func(res *ehttp.ResponseWriter, req *ehttp.Request) {
+		res.String("first chunk")
+		seen = rec.Body.Len() // what has reached the client before the handler returns
+	}, middleware.ErrorCache(time.Minute))
 
-		h.ServeHTTP(rec, fixtures.Req("GET", "/x"))
+	h.ServeHTTP(rec, fixtures.Req("GET", "/x"))
 
-		ehttptest.True(t, "ErrorCache streams the body to the client", seen > 0, "handler wrote a body but %d bytes reached the underlying writer before it returned", seen)
-	})
+	ehttptest.True(t, "ErrorCache streams the body to the client", seen > 0, "handler wrote a body but %d bytes reached the underlying writer before it returned", seen)
 }
 
 // Statuses that depend on who asked must not be cached by URL.

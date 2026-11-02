@@ -117,7 +117,7 @@ func goldenServer(t *testing.T) *httptest.Server {
 
 type goldenScenario struct {
 	name string
-	// bug lists the known-bug names ("xss-protection-not-zero+range-suffix-returns-416") while the golden file differs
+	// bug lists the known-bug names ("range-first-byte-returns-whole-file+route-params-not-decoded") while the golden file differs
 	// from the response. Empty: the file is a plain regression snapshot.
 	bug     string
 	method  string
@@ -247,41 +247,41 @@ func TestGolden(t *testing.T) {
 	origin := map[string]string{"Origin": "http://localhost:3000"}
 
 	scenarios := []goldenScenario{
-		{name: "get_root_html", bug: "xss-protection-not-zero", method: "GET", path: "/", headers: htmlAccept},
-		{name: "get_root_json", bug: "xss-protection-not-zero", method: "GET", path: "/", headers: map[string]string{"Accept": "application/json"}},
-		{name: "get_root_plain_default", bug: "xss-protection-not-zero", method: "GET", path: "/"},
-		{name: "head_root", bug: "xss-protection-not-zero", method: "HEAD", path: "/", headers: htmlAccept},
-		{name: "cors_simple_allowed_origin", bug: "xss-protection-not-zero", method: "GET", path: "/healthcheck", headers: origin},
-		{name: "cors_simple_foreign_origin", bug: "xss-protection-not-zero", method: "GET", path: "/healthcheck", headers: map[string]string{"Origin": "http://evil.example"}},
-		{name: "cors_preflight_allowed", bug: "xss-protection-not-zero", method: "OPTIONS", path: "/body", headers: map[string]string{
+		{name: "get_root_html", method: "GET", path: "/", headers: htmlAccept},
+		{name: "get_root_json", method: "GET", path: "/", headers: map[string]string{"Accept": "application/json"}},
+		{name: "get_root_plain_default", method: "GET", path: "/"},
+		{name: "head_root", method: "HEAD", path: "/", headers: htmlAccept},
+		{name: "cors_simple_allowed_origin", method: "GET", path: "/healthcheck", headers: origin},
+		{name: "cors_simple_foreign_origin", method: "GET", path: "/healthcheck", headers: map[string]string{"Origin": "http://evil.example"}},
+		{name: "cors_preflight_allowed", method: "OPTIONS", path: "/body", headers: map[string]string{
 			"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST",
 		}},
-		{name: "cors_preflight_allowed_with_sec_fetch_site", bug: "xss-protection-not-zero", method: "OPTIONS", path: "/body", headers: map[string]string{
+		{name: "cors_preflight_allowed_with_sec_fetch_site", method: "OPTIONS", path: "/body", headers: map[string]string{
 			"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST", "Sec-Fetch-Site": "cross-site",
 		}},
-		{name: "cors_preflight_foreign", bug: "xss-protection-not-zero", method: "OPTIONS", path: "/body", headers: map[string]string{
+		{name: "cors_preflight_foreign", method: "OPTIONS", path: "/body", headers: map[string]string{
 			"Origin": "http://evil.example", "Access-Control-Request-Method": "POST", "Sec-Fetch-Site": "cross-site",
 		}},
-		{name: "conditional_etag_304", bug: "xss-protection-not-zero", method: "GET", path: "/", headers: htmlAccept, before: goldenETag},
-		{name: "conditional_if_modified_since_root", bug: "xss-protection-not-zero", method: "GET", path: "/", headers: map[string]string{
+		{name: "conditional_etag_304", method: "GET", path: "/", headers: htmlAccept, before: goldenETag},
+		{name: "conditional_if_modified_since_root", method: "GET", path: "/", headers: map[string]string{
 			"If-Modified-Since": goldenFixedTime.Format(http.TimeFormat),
 		}},
-		{name: "file_full", bug: "xss-protection-not-zero", method: "GET", path: "/file"},
-		{name: "file_head", bug: "xss-protection-not-zero", method: "HEAD", path: "/file"},
-		{name: "file_range_0_9", bug: "xss-protection-not-zero", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-9"}},
-		{name: "file_range_0_0", bug: "xss-protection-not-zero+range-first-byte-returns-whole-file", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-0"}},
-		{name: "file_range_suffix", bug: "xss-protection-not-zero+range-suffix-returns-416", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=-5"}},
-		{name: "file_range_unsatisfiable", bug: "xss-protection-not-zero+range-416-lacks-content-range", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=99999999-"}},
-		{name: "file_if_modified_since", bug: "xss-protection-not-zero", method: "GET", path: "/file", headers: map[string]string{
+		{name: "file_full", method: "GET", path: "/file"},
+		{name: "file_head", method: "HEAD", path: "/file"},
+		{name: "file_range_0_9", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-9"}},
+		{name: "file_range_0_0", bug: "range-first-byte-returns-whole-file", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=0-0"}},
+		{name: "file_range_suffix", bug: "range-suffix-returns-416", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=-5"}},
+		{name: "file_range_unsatisfiable", bug: "range-416-lacks-content-range", method: "GET", path: "/file", headers: map[string]string{"Range": "bytes=99999999-"}},
+		{name: "file_if_modified_since", method: "GET", path: "/file", headers: map[string]string{
 			"If-Modified-Since": goldenFixedTime.Format(http.TimeFormat),
 		}},
-		{name: "not_found", bug: "xss-protection-not-zero", method: "GET", path: "/nope"},
-		{name: "method_not_allowed", bug: "xss-protection-not-zero", method: "POST", path: "/healthcheck"},
-		{name: "body_created", bug: "xss-protection-not-zero", method: "POST", path: "/body", body: "hello"},
-		{name: "body_over_limit_declared", bug: "xss-protection-not-zero", method: "POST", path: "/body", body: strings.Repeat("a", 5000)},
-		{name: "param_route_encoded", bug: "xss-protection-not-zero+route-params-not-decoded", method: "GET", path: "/api/v1/hello/John%20Doe"},
-		{name: "native_handler", bug: "xss-protection-not-zero", method: "GET", path: "/native"},
-		{name: "request_id_echo", bug: "xss-protection-not-zero", method: "GET", path: "/healthcheck", headers: map[string]string{"X-Request-Id": "fixed-id-1"}},
+		{name: "not_found", method: "GET", path: "/nope"},
+		{name: "method_not_allowed", method: "POST", path: "/healthcheck"},
+		{name: "body_created", method: "POST", path: "/body", body: "hello"},
+		{name: "body_over_limit_declared", method: "POST", path: "/body", body: strings.Repeat("a", 5000)},
+		{name: "param_route_encoded", bug: "route-params-not-decoded", method: "GET", path: "/api/v1/hello/John%20Doe"},
+		{name: "native_handler", method: "GET", path: "/native"},
+		{name: "request_id_echo", method: "GET", path: "/healthcheck", headers: map[string]string{"X-Request-Id": "fixed-id-1"}},
 	}
 
 	for _, sc := range scenarios {

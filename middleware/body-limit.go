@@ -1,11 +1,13 @@
 package middleware
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/EqualSoftware/ehttp"
+	"github.com/EqualSoftware/ehttp/internal/hook"
 )
 
 // bytes in IEC
@@ -19,38 +21,12 @@ const (
 
 // Maximum allowed size for a request body, it can be specified
 // as `4x` or `4xB`, where x is one of the multiple from K, M, G, T or P.
+// A value in any other form panics at boot.
 func BodyLimit(l string) ehttp.MiddlewareHandlerFunc {
-	l = strings.ToUpper(l)
-	last_n := len(l)
-
-	for i := len(l) - 1; i >= 0; i-- {
-		c := l[i]
-
-		if c >= '0' && c <= '9' {
-			break
-		}
-
-		last_n = i
-	}
-
-	v, _ := strconv.ParseFloat(l[:last_n], 64)
-	u := l[last_n:]
-
-	var limit int64
-
-	switch u {
-	case "KB", "K":
-		limit = int64(v * kibibyte)
-	case "MB", "M":
-		limit = int64(v * mebibyte)
-	case "GB", "G":
-		limit = int64(v * gibibyte)
-	case "TB", "T":
-		limit = int64(v * tebibyte)
-	case "PB", "P":
-		limit = int64(v * pebibyte)
-	default:
-		limit = int64(v)
+	limit, ok := parseBodyLimit(l)
+	if !ok {
+		hook.BootPanic("BodyLimit", "limit "+strconv.Quote(l), "a size is a positive number with an optional unit K, M, G, T or P, and an optional B (author decision)",
+			`pass a value like "512", "4K", "4KB" or "1.5M"`)
 	}
 
 	return func(next ehttp.Handler) ehttp.HandlerFunc {
@@ -69,6 +45,49 @@ func BodyLimit(l string) ehttp.MiddlewareHandlerFunc {
 			next.ServeHTTP(res, req)
 		}
 	}
+}
+
+// parseBodyLimit parses a size like "4K" or "1.5MB". It reports false for
+// an empty, signed, spaced, non-positive or too large value.
+func parseBodyLimit(l string) (int64, bool) {
+	l = strings.ToUpper(l)
+	n := 0
+
+	for n < len(l) && (l[n] >= '0' && l[n] <= '9' || l[n] == '.') {
+		n++
+	}
+
+	v, err := strconv.ParseFloat(l[:n], 64)
+	if err != nil || v <= 0 {
+		return 0, false
+	}
+
+	var mult float64
+
+	switch strings.TrimSuffix(l[n:], "B") {
+	case "":
+		mult = 1
+	case "K":
+		mult = kibibyte
+	case "M":
+		mult = mebibyte
+	case "G":
+		mult = gibibyte
+	case "T":
+		mult = tebibyte
+	case "P":
+		mult = pebibyte
+	default:
+		return 0, false
+	}
+
+	if v*mult >= math.MaxInt64 {
+		return 0, false
+	}
+
+	limit := int64(v * mult)
+
+	return limit, limit > 0
 }
 
 // rawWriter unwraps w down to the real writer. MaxBytesReader never writes. It

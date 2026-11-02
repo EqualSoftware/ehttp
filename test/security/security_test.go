@@ -541,13 +541,11 @@ func TestCSecurityRequestId(t *testing.T) {
 		"with slash": "a/b",
 	} {
 		t.Run(name+" is replaced by a valid id", func(t *testing.T) {
-			ehttptest.KnownBug(t, "request-id-echoed-unvalidated", func(t testing.TB) {
-				resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL, http.Header{"X-Request-Id": {id}})
-				got := resp.Header.Get("X-Request-Id")
+			resp, _ := fixtures.Fetch(t, http.MethodGet, ts.URL, http.Header{"X-Request-Id": {id}})
+			got := resp.Header.Get("X-Request-Id")
 
-				ehttptest.True(t, "the untrusted id is not echoed", got != id, "echoed %d bytes", len(got))
-				ehttptest.True(t, "the new id follows the same rule", validID.MatchString(got), "id = %q", got)
-			})
+			ehttptest.True(t, "the untrusted id is not echoed", got != id, "echoed %d bytes", len(got))
+			ehttptest.True(t, "the new id follows the same rule", validID.MatchString(got), "id = %q", got)
 		})
 	}
 
@@ -707,39 +705,26 @@ func TestCSecurityBodyLimit(t *testing.T) {
 		ehttptest.Eq(t, "a body at the limit is accepted", body, "1024")
 	})
 
-	t.Run("limit with a space silently becomes 4 bytes", func(t *testing.T) {
-		ehttptest.KnownBug(t, "body-limit-accepts-invalid-value", func(t testing.TB) {
-			panicked := func() (p bool) {
-				defer func() { p = recover() != nil }()
-				middleware.BodyLimit("4 KB")
+	t.Run("limit with a space fails at boot", func(t *testing.T) {
+		panicked := func() (p bool) {
+			defer func() { p = recover() != nil }()
+			middleware.BodyLimit("4 KB")
 
-				return false
-			}()
+			return false
+		}()
 
-			ehttptest.True(t, "invalid limit must fail at boot", panicked, `BodyLimit("4 KB") accepted`)
-		})
-	})
-
-	t.Run("limit with a space rejects a 100-byte body", func(t *testing.T) {
-		spaced, _, _ := cBodyServer(t, "4 KB")
-
-		ehttptest.KnownBug(t, "body-limit-accepts-invalid-value", func(t testing.TB) {
-			resp, _ := cPost(t, spaced.URL+"/up", strings.NewReader(strings.Repeat("a", 100)), 100)
-			ehttptest.Eq(t, "\"4 KB\" must not mean 4 bytes", resp.StatusCode, 200)
-		})
+		ehttptest.True(t, "invalid limit must fail at boot", panicked, `BodyLimit("4 KB") accepted`)
 	})
 
 	t.Run("unparsable limit fails at boot", func(t *testing.T) {
-		ehttptest.KnownBug(t, "body-limit-accepts-invalid-value", func(t testing.TB) {
-			panicked := func() (p bool) {
-				defer func() { p = recover() != nil }()
-				middleware.BodyLimit("lots")
+		panicked := func() (p bool) {
+			defer func() { p = recover() != nil }()
+			middleware.BodyLimit("lots")
 
-				return false
-			}()
+			return false
+		}()
 
-			ehttptest.True(t, "invalid limit must fail at boot", panicked, `BodyLimit("lots") accepted`)
-		})
+		ehttptest.True(t, "invalid limit must fail at boot", panicked, `BodyLimit("lots") accepted`)
 	})
 }
 

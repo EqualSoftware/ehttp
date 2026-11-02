@@ -38,11 +38,9 @@ func TestSecureDefaults(t *testing.T) {
 func TestSecureXSSProtectionDefault(t *testing.T) {
 	t.Parallel()
 
-	ehttptest.KnownBug(t, "xss-protection-not-zero", func(t testing.TB) {
-		rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Secure(middleware.DefaultSecureConfig)), fixtures.Req("GET", "/x"))
+	rec := ehttptest.Do(fixtures.Handler(fixtures.OK, middleware.Secure(middleware.DefaultSecureConfig)), fixtures.Req("GET", "/x"))
 
-		ehttptest.Eq(t, "OWASP Secure Headers: X-XSS-Protection is 0", rec.Header().Get("X-XSS-Protection"), "0")
-	})
+	ehttptest.Eq(t, "OWASP Secure Headers: X-XSS-Protection is 0", rec.Header().Get("X-XSS-Protection"), "0")
 }
 
 func TestSecureCustomValues(t *testing.T) {

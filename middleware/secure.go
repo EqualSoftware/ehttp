@@ -10,7 +10,7 @@ import (
 type SecureOptions struct {
 	// XSSProtection provides protection against cross-site scripting attack (XSS)
 	// by setting the `X-XSS-Protection` header.
-	// Optional. Default value "1; mode=block".
+	// Optional. Default value "0" (OWASP: the browser auditor is removed and has its own leaks).
 	XSSProtection string
 
 	// ContentTypeNosniff provides protection against overriding Content-Type
@@ -70,7 +70,7 @@ type SecureOptions struct {
 }
 
 var DefaultSecureConfig = SecureOptions{
-	XSSProtection:      "1; mode=block",
+	XSSProtection:      "0",
 	ContentTypeNosniff: "nosniff",
 	XFrameOptions:      "SAMEORIGIN",
 	HSTSPreloadEnabled: false,

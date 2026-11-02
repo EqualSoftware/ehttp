@@ -117,13 +117,11 @@ func TestRequestIdUntrustedInput(t *testing.T) {
 		t.Run("replaces "+tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			ehttptest.KnownBug(t, "request-id-echoed-unvalidated", func(t testing.TB) {
-				rec := ehttptest.Do(h, fixtures.Req("GET", "/x", "X-Request-Id", tt.id))
-				got := rec.Header().Get("X-Request-Id")
+			rec := ehttptest.Do(h, fixtures.Req("GET", "/x", "X-Request-Id", tt.id))
+			got := rec.Header().Get("X-Request-Id")
 
-				ehttptest.True(t, "an invalid id is replaced", got != tt.id, "untrusted id echoed back unchanged (len %d)", len(got))
-				ehttptest.True(t, "the new id follows the same rule", bValidID.MatchString(got), "response id %q breaks the rule", got)
-			})
+			ehttptest.True(t, "an invalid id is replaced", got != tt.id, "untrusted id echoed back unchanged (len %d)", len(got))
+			ehttptest.True(t, "the new id follows the same rule", bValidID.MatchString(got), "response id %q breaks the rule", got)
 		})
 	}
 }
