@@ -206,6 +206,16 @@ Read these limits before you use ehttp in production.
 - **One field line for `Append`.** `Append` puts all members in one field line.
   It does not add a second line for the same header. Use `Cookie` for
   `Set-Cookie`.
+- **Use `frame-ancestors` to control framing.** `middleware.Secure` sets
+  `X-Frame-Options: SAMEORIGIN` by default. Current browsers ignore the
+  `ALLOW-FROM` value. To let specific origins put your pages in a frame, set
+  the `frame-ancestors` directive through `ContentSecurityPolicy`:
+
+  ```go
+  middleware.Secure(middleware.SecureOptions{
+  	ContentSecurityPolicy: "frame-ancestors 'self' https://app.example.com",
+  })
+  ```
 
 ## Trusted proxies
 
