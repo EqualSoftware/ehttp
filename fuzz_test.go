@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -559,7 +560,7 @@ func FuzzAccepts(f *testing.F) {
 
 // ---------------------------------------------------------------- vary
 
-// dLowerASCII folds ASCII only: field names are ASCII tokens (RFC 9110 §5.6.2).
+// dLowerASCII folds ASCII only: field names are case-insensitive (RFC 9110 §5.1).
 func dLowerASCII(s string) string {
 	b := []byte(s)
 	for i := range b {
@@ -590,8 +591,7 @@ func FuzzVary(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, a, b string) {
-		if a == "" || b == "" || strings.ContainsAny(a+b, ",") || strings.TrimSpace(a) != a || strings.TrimSpace(b) != b ||
-			!validFieldValue(a) || !validFieldValue(b) { // an invalid value is a mistake and not added
+		if a == "" || b == "" || strings.ContainsAny(a+b, ",") || strings.TrimSpace(a) != a || strings.TrimSpace(b) != b {
 			t.Skip()
 		}
 
@@ -601,23 +601,45 @@ func FuzzVary(f *testing.F) {
 		res.Vary(b)
 		res.Vary(a)
 
-		// invariant (RFC 9110 §12.5.5): "*" covers every other name, so the
-		// field is exactly "*". Else every requested name is listed, once.
-		if a == "*" || b == "*" {
-			ehttptest.Eq(t, "RFC 9110 §12.5.5", rec.Header().Get(HeaderVary), "*")
+		// invariant: an invalid value is a mistake and changes nothing (RFC 9110
+		// §5.5). Of the valid names: "*" covers every other name, so the field is
+		// exactly "*" (§12.5.5). Else every valid name is listed, once.
+		var valid []string
+		for _, n := range []string{a, b} {
+			if validFieldValue(n) {
+				valid = append(valid, n)
+			}
+		}
+
+		got := rec.Header().Get(HeaderVary)
+		if len(valid) == 0 {
+			ehttptest.Eq(t, "RFC 9110 §5.5", got, "")
 
 			return
 		}
 
-		tokens := dVaryTokens(rec.Header().Get(HeaderVary))
+		if slices.Contains(valid, "*") {
+			ehttptest.Eq(t, "RFC 9110 §12.5.5", got, "*")
+
+			return
+		}
+
+		want := map[string]bool{}
+		for _, n := range valid {
+			want[dLowerASCII(n)] = true
+		}
+
 		count := map[string]int{}
-		for _, tk := range tokens {
+		for _, tk := range dVaryTokens(got) {
 			count[tk]++
 		}
-		for _, n := range []string{a, b} {
-			if count[dLowerASCII(n)] != 1 {
-				t.Errorf("[RFC 9110 §12.5.5] Vary %q: %q appears %d times", rec.Header().Get(HeaderVary), n, count[dLowerASCII(n)])
+		for n := range want {
+			if count[n] != 1 {
+				t.Errorf("[RFC 9110 §12.5.5] Vary %q: %q appears %d times", got, n, count[n])
 			}
+		}
+		if len(count) != len(want) {
+			t.Errorf("[RFC 9110 §5.5] Vary %q lists a name that is not in %q", got, valid)
 		}
 	})
 }
