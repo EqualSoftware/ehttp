@@ -573,6 +573,7 @@ func FuzzVary(f *testing.F) {
 	for _, s := range [][2]string{
 		{"Origin", "Accept"}, {"Accept", "Accept"}, {"Accept", "accept"},
 		{"Accept-Encoding", "Origin"}, {"A", "B"}, {"", "Origin"}, {"Origin", ""},
+		{"0", "*"}, {"*", "Origin"}, // run 41611842708: "*" covers every name
 	} {
 		f.Add(s[0], s[1])
 	}
@@ -588,7 +589,14 @@ func FuzzVary(f *testing.F) {
 		res.Vary(b)
 		res.Vary(a)
 
-		// invariant (RFC 9110 §12.5.5): every requested name is listed, once.
+		// invariant (RFC 9110 §12.5.5): "*" covers every other name, so the
+		// field is exactly "*". Else every requested name is listed, once.
+		if a == "*" || b == "*" {
+			ehttptest.Eq(t, "RFC 9110 §12.5.5", rec.Header().Get(HeaderVary), "*")
+
+			return
+		}
+
 		tokens := dVaryTokens(rec.Header().Get(HeaderVary))
 		count := map[string]int{}
 		for _, tk := range tokens {
