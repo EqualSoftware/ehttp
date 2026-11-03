@@ -17,11 +17,9 @@
 - Commit scopes: `router`, `server`, `client`, `breaker`, `cache`, `middleware`, `test`, `build`
 - Main branch: `main`
 
-## Task files
+## Tasks and decisions
 
-- At session start, read `.tasks/lessons.md` and open `.tasks/todo.md`.
-- Write each approved plan to `.tasks/todo.md` with checkable items: Goal, Plan, Verify, Review. Mark items complete as you go. Add the Review section at the end.
-- After a correction from the user, add one rule to `.tasks/lessons.md`: Mistake, Rule, Check.
+- Use the dx tools for tasks and decisions. At session start, run `task_list` and `adr_list`.
 
 ## Communication
 
