@@ -559,11 +559,20 @@ func FuzzAccepts(f *testing.F) {
 
 // ---------------------------------------------------------------- vary
 
+// dLowerASCII folds ASCII only: field names are ASCII tokens (RFC 9110 §5.6.2).
+func dLowerASCII(s string) string {
+	b := []byte(s)
+	for i := range b {
+		b[i] = lowerASCII(b[i])
+	}
+	return string(b)
+}
+
 func dVaryTokens(h string) []string {
 	var out []string
 	for _, p := range strings.Split(h, ",") {
 		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, strings.ToLower(p))
+			out = append(out, dLowerASCII(p))
 		}
 	}
 	return out
@@ -574,6 +583,7 @@ func FuzzVary(f *testing.F) {
 		{"Origin", "Accept"}, {"Accept", "Accept"}, {"Accept", "accept"},
 		{"Accept-Encoding", "Origin"}, {"A", "B"}, {"", "Origin"}, {"Origin", ""},
 		{"0", "*"}, {"*", "Origin"}, // run 41611842708: "*" covers every name
+		{"ġ", "Ġ"}, // ASCII fold only: these are two names
 	} {
 		f.Add(s[0], s[1])
 	}
@@ -603,8 +613,8 @@ func FuzzVary(f *testing.F) {
 			count[tk]++
 		}
 		for _, n := range []string{a, b} {
-			if count[strings.ToLower(n)] != 1 {
-				t.Errorf("[RFC 9110 §12.5.5] Vary %q: %q appears %d times", rec.Header().Get(HeaderVary), n, count[strings.ToLower(n)])
+			if count[dLowerASCII(n)] != 1 {
+				t.Errorf("[RFC 9110 §12.5.5] Vary %q: %q appears %d times", rec.Header().Get(HeaderVary), n, count[dLowerASCII(n)])
 			}
 		}
 	})
