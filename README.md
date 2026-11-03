@@ -236,15 +236,19 @@ To find the peer ranges of your platform:
 - **Kubernetes:** use the pod network CIDR of the cluster, or the address
   range of the ingress controller. Your cluster administrator knows these
   values. ehttp does not publish them.
-- **AWS ALB and NLB:** the load balancer nodes use addresses from the subnets
-  of your VPC. Trust the CIDR of your VPC or of the load balancer subnets.
-  AWS publishes the ranges of its services in `https://ip-ranges.amazonaws.com/ip-ranges.json`.
-  This file does not list the addresses of your own load balancers.
-- **Google Cloud:** the load balancer probes use the ranges that Google lists
-  on the page
-  `https://docs.cloud.google.com/load-balancing/docs/health-check-concepts`
-  (for example `35.191.0.0/16` and `130.211.0.0/22`). Check the page for
-  other ranges that your load balancer type uses.
+- **AWS Application Load Balancer:** the load balancer nodes send requests
+  from their private addresses and add `X-Forwarded-For`, `X-Forwarded-Proto`
+  and `X-Forwarded-Port`. Trust the CIDRs of the load balancer subnets. Do not
+  trust the full VPC CIDR: each host in the VPC can send a false
+  `X-Forwarded-For`. The file `https://ip-ranges.amazonaws.com/ip-ranges.json`
+  does not list the addresses of your own load balancers.
+- **AWS Network Load Balancer:** it works at layer 4 and does not add
+  `X-Forwarded-*` headers. Do not add its addresses to the trusted list.
+- **Google Cloud:** a regional external Application Load Balancer sends
+  requests from the proxy-only subnet of the region. Trust that subnet. For
+  other load balancer types, find the source ranges in the firewall rules of
+  `https://docs.cloud.google.com/load-balancing/docs/tcp` and
+  `https://docs.cloud.google.com/load-balancing/docs/health-check-concepts`.
 - **Cloudflare:** the ranges are listed at `https://www.cloudflare.com/ips-v4/`
   and `https://www.cloudflare.com/ips-v6/`.
 
