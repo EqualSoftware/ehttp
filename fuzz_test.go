@@ -584,12 +584,14 @@ func FuzzVary(f *testing.F) {
 		{"Accept-Encoding", "Origin"}, {"A", "B"}, {"", "Origin"}, {"Origin", ""},
 		{"0", "*"}, {"*", "Origin"}, // run 41611842708: "*" covers every name
 		{"ġ", "Ġ"}, // ASCII fold only: these are two names
+		{"0", "\x06"},
 	} {
 		f.Add(s[0], s[1])
 	}
 
 	f.Fuzz(func(t *testing.T, a, b string) {
-		if a == "" || b == "" || strings.ContainsAny(a+b, ",") || strings.TrimSpace(a) != a || strings.TrimSpace(b) != b {
+		if a == "" || b == "" || strings.ContainsAny(a+b, ",") || strings.TrimSpace(a) != a || strings.TrimSpace(b) != b ||
+			!validFieldValue(a) || !validFieldValue(b) { // an invalid value is a mistake and not added
 			t.Skip()
 		}
 
